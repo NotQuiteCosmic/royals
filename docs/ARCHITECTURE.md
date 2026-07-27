@@ -223,6 +223,19 @@ behind a proxy every request otherwise appears to come from one address and the 
 shares a single rate-limit bucket, while trusting the header unconditionally lets anyone
 spoof their way out of the limit.
 
+The page is laid out by CSS grid areas rather than flex, because the four parts of a game
+screen want a different *order* on a phone than on a desktop and not merely a different
+wrap. `aside.side` used to hold the status, hint, controls and move list together; stacked
+into a column that put whose turn it is underneath a full-width board, off the bottom of a
+phone. They are four siblings now — `#turnbar`, `.board-wrap`, `#turn-controls`, `.side` —
+placed by named areas, so the turn line sits beside the board on a desktop and above it on
+a phone. Every id survived the split, so `app.js` was untouched by it.
+
+`ROYALS_MAX_DEPTH` caps the search a public deployment will agree to run. A depth-6 search
+is seconds of pinned CPU available to anyone who can click a menu; `allowed_difficulties()`
+is used by both the menu and the validator so what is offered and what is accepted cannot
+drift apart. Unset means no ceiling, so playing at home keeps every difficulty.
+
 There is no push. The client polls `GET /api/games/{id}?since={version}`, which compares a
 counter and returns forty bytes when nothing has happened — before `to_json`, which would
 otherwise regenerate every legal move on every poll. The client pauses entirely while its
@@ -266,9 +279,9 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for the workflow. In short:
 - **`tests/golden_search.txt`** — node counts per move. Expected to churn.
 - **`tests/test_engine_purity.py`** — enforces the no-dependencies, no-UI rule. (22)
 - **`tests/test_notation.py`** — round-trips for the text and JSON move forms. (51)
-- **`tests/test_web_api.py`** — the REST surface, against FastAPI's `TestClient`. (46)
+- **`tests/test_web_api.py`** — the REST surface, against FastAPI's `TestClient`. (51)
 
-119 in total. The web tests import `fastapi`, so the full suite needs the server installed
+128 in total. The web tests import `fastapi`, so the full suite needs the server installed
 (`pip install -e ./web`); the engine's own tests need nothing but the standard library,
 which is the point. CI runs them in their own CPython-only job for that reason — the
 goldens matrix installs the engine alone, so `importorskip` would turn the entire server

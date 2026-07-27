@@ -196,14 +196,14 @@ export class BoardView {
     ctx.textBaseline = "middle";
 
     if (s.dragon) {
-      ctx.font = `600 ${Math.round(c * 0.30)}px ui-monospace, Menlo, monospace`;
+      ctx.font = `600 ${label(c, 0.30, 12)}px ui-monospace, Menlo, monospace`;
       ctx.fillText("D", x + c / 2, y + pad + bodyH / 2);
     } else {
       const bits = [];
       if (s.royal) bits.push("R");
       if (s.spy) bits.push("S");
       if (s.pawns) bits.push(String(s.pawns));
-      ctx.font = `600 ${Math.round(c * 0.26)}px ui-monospace, Menlo, monospace`;
+      ctx.font = `600 ${label(c, 0.26, 11)}px ui-monospace, Menlo, monospace`;
       ctx.fillText(bits.join(" ") || "·", x + c / 2, y + pad + bodyH / 2);
     }
 
@@ -222,7 +222,7 @@ export class BoardView {
       if (s.capSpy) held.push("S");
       if (s.capPawns) held.push(String(s.capPawns));
       ctx.fillStyle = isDark() ? "#12141a" : "#fbf8f0";
-      ctx.font = `600 ${Math.round(c * 0.13)}px ui-monospace, Menlo, monospace`;
+      ctx.font = `600 ${label(c, 0.13, 9)}px ui-monospace, Menlo, monospace`;
       ctx.fillText(held.join(" "), x + c / 2, stripY + stripH / 2);
     }
   }
@@ -231,7 +231,7 @@ export class BoardView {
     const ctx = this.ctx;
     ctx.fillStyle = p.dim;
     ctx.globalAlpha = 0.75;
-    ctx.font = `${Math.round(c * 0.13)}px ui-monospace, Menlo, monospace`;
+    ctx.font = `${label(c, 0.13, 9)}px ui-monospace, Menlo, monospace`;
     ctx.textBaseline = "top";
     if (col === 0) {
       ctx.textAlign = "left";
@@ -243,6 +243,17 @@ export class BoardView {
     }
     ctx.globalAlpha = 1;
   }
+}
+
+// Text sized to the cell, but never below what a person can read.
+//
+// Everything on a square scales with the cell so the board looks the same at any size,
+// which is right until the cell gets small. On a 360px phone a cell is about 50px, and
+// the prisoner strip's 0.13 of that is 6px -- present, correctly positioned, and
+// illegible. The floor costs nothing on a desktop, where the proportional size is
+// always the larger of the two.
+function label(cell, ratio, floor) {
+  return Math.max(floor, Math.round(cell * ratio));
 }
 
 function roundRect(ctx, x, y, w, h, r) {

@@ -1057,3 +1057,90 @@ def test_a_game_played_over_http_survives_a_restart(tmp_path):
     finally:
         os.environ.pop("ROYALS_DB", None)
         live._games.clear()
+
+
+# ---------------------------------------------------------------------------
+# Facing the internet
+# ---------------------------------------------------------------------------
+
+def test_the_search_depth_can_be_capped(client, monkeypatch):
+    """A depth-6 search is seconds of pinned CPU that anyone can ask for by clicking a
+    menu. On a laptop nobody else can reach, that is fine; on a public address it is the
+    one request that costs meaningfully more than it takes to make."""
+    from royals_web import main as M
+
+    monkeypatch.setattr(M, "MAX_DEPTH", None)
+    assert set(M.allowed_difficulties()) == set(G.DIFFICULTIES), "uncapped by default"
+
+    monkeypatch.setattr(M, "MAX_DEPTH", 4)
+    offered = M.allowed_difficulties()
+    assert "royal" not in offered and "expert" not in offered
+    assert "strong" in offered and max(offered.values()) == 4
+
+    # what the menu offers and what the server accepts are the same list
+    listed = {d["name"] for d in client.get("/api/difficulties").json()["difficulties"]}
+    assert listed == set(offered)
+
+    refused = client.post("/api/games", json={"mode": "ai", "difficulty": "royal"})
+    assert refused.status_code == 422, refused.text
+    assert client.post("/api/games",
+                       json={"mode": "ai", "difficulty": "strong"}).status_code == 200
+
+
+def test_a_cap_never_leaves_an_empty_menu(monkeypatch):
+    """A nonsensical ceiling should still leave a playable game, not a server that
+    refuses everything and a menu with nothing in it."""
+    from royals_web import main as M
+    monkeypatch.setattr(M, "MAX_DEPTH", 1)
+    offered = M.allowed_difficulties()
+    assert len(offered) == 1
+    assert offered == {"novice": G.DIFFICULTIES["novice"]}, "the shallowest survives"
+
+
+def test_the_default_difficulty_falls_back_when_capped_away(client, monkeypatch):
+    from royals_web import main as M
+    monkeypatch.setattr(M, "MAX_DEPTH", 2)
+    body = client.get("/api/difficulties").json()
+    assert body["default"] in {d["name"] for d in body["difficulties"]}, \
+        "the menu must not default to an option it does not list"
+
+
+def test_a_tunnels_forwarded_address_is_honoured(monkeypatch):
+    """Cloudflare's header, because a quick tunnel is the first thing this runs behind.
+
+    Every request through one arrives from 127.0.0.1, so without reading a forwarded
+    header the whole internet shares one rate-limit bucket.
+    """
+    from royals_web import main as M
+
+    class FakeRequest:
+        def __init__(self, headers):
+            self.headers = headers
+            self.client = type("C", (), {"host": "127.0.0.1"})()
+
+    monkeypatch.setattr(M, "TRUSTED_PROXY", True)
+    assert M.client_key(FakeRequest({"cf-connecting-ip": "203.0.113.7"})) == "203.0.113.7"
+    # Fly's header still wins where both are present, and XFF remains the fallback.
+    assert M.client_key(FakeRequest({"fly-client-ip": "1.1.1.1",
+                                     "cf-connecting-ip": "2.2.2.2"})) == "1.1.1.1"
+    assert M.client_key(FakeRequest({"x-forwarded-for": "3.3.3.3, 10.0.0.1"})) == "3.3.3.3"
+
+    monkeypatch.setattr(M, "TRUSTED_PROXY", False)
+    assert M.client_key(FakeRequest({"cf-connecting-ip": "203.0.113.7"})) == "127.0.0.1"
+
+
+def test_the_page_can_be_installed(client):
+    """Everything a home-screen icon needs, served and permitted by the CSP."""
+    manifest = client.get("/static/manifest.webmanifest")
+    assert manifest.status_code == 200
+    body = manifest.json()
+    assert body["name"] == "Royals" and body["display"] == "standalone"
+
+    for icon in body["icons"]:
+        got = client.get(icon["src"])
+        assert got.status_code == 200, icon["src"]
+        assert got.headers["content-type"] == "image/png"
+
+    csp = client.get("/").headers["Content-Security-Policy"]
+    assert "manifest-src 'self'" in csp, "the browser will refuse to fetch it otherwise"
+    assert "unsafe-inline" not in csp

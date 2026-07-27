@@ -2,8 +2,20 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- viewport-fit=cover lets the page reach under the notch and the home indicator; the
+     body then pays that back with env(safe-area-inset-*) padding. Without the cover the
+     board is boxed into a letterbox on every recent iPhone. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Royals</title>
+<!-- The browser chrome takes its colour from these, so an installed Royals does not sit
+     under a white bar in dark mode. They match --bg in style.css and must be kept in step
+     with it; a meta tag cannot read a custom property. -->
+<meta name="theme-color" content="#f2efe7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#14161a" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-title" content="Royals">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="icon" href="/static/icon-192.png" sizes="192x192">
+<link rel="apple-touch-icon" href="/static/icon-180.png">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -78,23 +90,31 @@
     </details>
   </section>
 
-  <!-- game -->
+  <!-- game
+       Four siblings rather than a board and one panel holding everything else. The
+       reason is the phone: stacked into a column, a single panel puts whose turn it is
+       underneath a full-width board, which on a 390px screen is off the bottom. These
+       are laid out by grid areas (see style.css), so the turn line can sit above the
+       board on a phone and beside it on a desktop without the markup caring which.
+       Every id here is unchanged, so app.js reaches all of them exactly as before. -->
   <section id="game" class="hidden">
+    <div id="turnbar">
+      <div id="status" class="status">&nbsp;</div>
+      <div id="hint" class="hint-line">&nbsp;</div>
+    </div>
+
     <div class="board-wrap">
       <canvas id="board" width="700" height="700"></canvas>
       <div id="overlay" class="overlay hidden"><div id="overlay-text"></div></div>
     </div>
 
+    <div id="turn-controls" class="controls">
+      <button type="button" id="pass" class="hidden">Pass</button>
+      <button type="button" id="carry" class="hidden"></button>
+      <button type="button" id="cancel" class="hidden">Cancel</button>
+    </div>
+
     <aside class="side">
-      <div id="status" class="status">&nbsp;</div>
-      <div id="hint" class="hint-line">&nbsp;</div>
-
-      <div class="controls">
-        <button type="button" id="pass" class="hidden">Pass</button>
-        <button type="button" id="carry" class="hidden"></button>
-        <button type="button" id="cancel" class="hidden">Cancel</button>
-      </div>
-
       <h3>Moves</h3>
       <ol id="movelist" class="movelist"></ol>
 

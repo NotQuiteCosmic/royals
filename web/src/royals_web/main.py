@@ -47,6 +47,47 @@ MAX_TOKEN_CHARS = 128
 # somebody using this endpoint as a free hashing service.
 JOIN_LIMIT, JOIN_WINDOW = 60, 600
 
+# The deepest search this server will agree to run, or None for no ceiling.
+#
+# A depth-6 search is about two seconds of pinned CPU on this laptop and rather more on a
+# small shared machine, and it is available to anybody who can click a menu. That is
+# survivable while the only person who can reach the server is sitting at it, and stops
+# being survivable the moment the address is public: the AI pool bounds how many searches
+# run at once and how long each may take, but nothing else bounds how *expensive* the ones
+# that do run are allowed to be.
+#
+# Unset means no ceiling, so playing at home keeps every difficulty. A public deployment
+# sets it -- ROYALS_MAX_DEPTH=5 drops `royal` and leaves everything else.
+def _max_depth():
+    raw = os.environ.get("ROYALS_MAX_DEPTH", "").strip()
+    if not raw:
+        return None
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return None
+
+
+MAX_DEPTH = _max_depth()
+
+
+def allowed_difficulties():
+    """The difficulties this server is willing to play at, in the order declared.
+
+    One function, used both by the menu and by the validator, so what is offered and what
+    is accepted cannot drift apart -- a client showing an option the server then refuses
+    is a worse bug than the option simply not being there.
+    """
+    if MAX_DEPTH is None:
+        return dict(G.DIFFICULTIES)
+    kept = {name: depth for name, depth in G.DIFFICULTIES.items() if depth <= MAX_DEPTH}
+    # Never offer nothing: a nonsensically low ceiling should still leave a playable game
+    # rather than an empty menu and a server that refuses every request.
+    if not kept:
+        shallowest = min(G.DIFFICULTIES, key=G.DIFFICULTIES.get)
+        kept = {shallowest: G.DIFFICULTIES[shallowest]}
+    return kept
+
 
 @contextlib.asynccontextmanager
 async def lifespan(app):
@@ -87,7 +128,8 @@ async def security_headers(request: Request, call_next):
     # neutralises most of what an XSS bug could otherwise do.
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-        "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+        "connect-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; "
+        "frame-ancestors 'none'"
     )
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
@@ -108,9 +150,18 @@ TRUSTED_PROXY = os.environ.get("ROYALS_TRUSTED_PROXY", "").strip().lower() in (
     "1", "true", "yes", "on")
 
 
+# In order of how much the proxy in front of us is telling us. The first two are set by
+# one specific edge and contain one address; X-Forwarded-For is the generic chain and the
+# fallback. Cloudflare's is here because a tunnel is the first thing this will run behind:
+# every request through one arrives from 127.0.0.1, so without reading a forwarded header
+# the entire internet shares a single rate-limit bucket -- the same bug this function was
+# written to prevent on Fly, arriving through a different door.
+FORWARDED_HEADERS = ("fly-client-ip", "cf-connecting-ip", "x-forwarded-for")
+
+
 def client_key(request: Request):
     if TRUSTED_PROXY:
-        for header in ("fly-client-ip", "x-forwarded-for"):
+        for header in FORWARDED_HEADERS:
             value = request.headers.get(header)
             if value:
                 # X-Forwarded-For is a chain; the client is the leftmost entry.
@@ -318,14 +369,18 @@ async def _slow(request, exc):
 
 @app.get("/api/difficulties")
 async def difficulties():
+    offered = allowed_difficulties()
     return {"difficulties": [{"name": name, "depth": depth}
-                             for name, depth in G.DIFFICULTIES.items()],
-            "default": G.DEFAULT_DIFFICULTY}
+                             for name, depth in offered.items()],
+            "default": G.DEFAULT_DIFFICULTY if G.DEFAULT_DIFFICULTY in offered
+                       else max(offered, key=offered.get)}
 
 
 @app.post("/api/games")
 async def create_game(body: NewGame, request: Request):
-    if body.difficulty not in G.DIFFICULTIES:
+    if body.difficulty not in allowed_difficulties():
+        # Same answer for "no such difficulty" and "deeper than this server offers".
+        # A client should be reading /api/difficulties, not guessing.
         raise HTTPException(422, "unknown difficulty")
     if body.side not in (G.BLUE, G.RED, "random"):
         raise HTTPException(422, "side must be 0, 1 or 'random'")

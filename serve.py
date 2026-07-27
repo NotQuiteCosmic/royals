@@ -86,7 +86,17 @@ def main():
     parser.add_argument("--db", default=None,
                         help="where to keep games between runs (default: %s). "
                              "Pass ':memory:' to keep nothing." % DEFAULT_DB)
+    parser.add_argument("--behind-proxy", action="store_true",
+                        help="serving through a tunnel or reverse proxy on this machine: "
+                             "trust its forwarded client address and scheme")
     args = parser.parse_args()
+
+    # Behind a tunnel every request arrives from 127.0.0.1, so without this the rate
+    # limiter sees one client for the whole internet and the app thinks it is on plain
+    # http even when the public URL is https. Off by default, because a forwarded header
+    # is only worth believing when something we control put it there.
+    if args.behind_proxy:
+        os.environ["ROYALS_TRUSTED_PROXY"] = "1"
 
     # Set before uvicorn imports the app, since that is when the database is opened.
     # An explicit flag beats an inherited environment; the default only fills a gap.
@@ -135,7 +145,12 @@ def main():
 
     try:
         uvicorn.run("royals_web.main:app", host=args.host, port=port,
-                    reload=args.reload, log_level="warning")
+                    reload=args.reload, log_level="warning",
+                    # Only the proxy on this machine may speak for a client. Left at the
+                    # default the forwarded headers are ignored; widened to "*" anyone
+                    # could send them.
+                    proxy_headers=args.behind_proxy,
+                    forwarded_allow_ips="127.0.0.1" if args.behind_proxy else None)
     except KeyboardInterrupt:
         pass
 

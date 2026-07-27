@@ -27,12 +27,25 @@
 
 * { box-sizing: border-box; }
 
+html {
+  /* Safari on iOS inflates text in portrait unless told not to, which silently undoes
+     every size decision below. */
+  -webkit-text-size-adjust: 100%;
+  /* A rubber-band scroll on a game board reads as the board coming loose. */
+  overscroll-behavior-y: contain;
+}
+
 body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
   font: 15px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  padding: 20px;
+  /* max() rather than a plain value: the insets are 0 on a desktop, so this is the
+     ordinary 20px there and clears the notch and home indicator on a phone. */
+  padding: max(20px, env(safe-area-inset-top))
+           max(20px, env(safe-area-inset-right))
+           max(20px, env(safe-area-inset-bottom))
+           max(20px, env(safe-area-inset-left));
 }
 
 #app { max-width: 1120px; margin: 0 auto; }
@@ -97,10 +110,40 @@ input[type=text] {
 .resume input[type=text] { margin-top: 6px; }
 .resume b { color: var(--ink); }
 
-/* game */
-#game { display: flex; gap: 22px; align-items: flex-start; flex-wrap: wrap; }
+/* game
+   Grid rather than flex, because the four parts want a different *order* on a phone
+   than on a desktop, not just a different wrap. On a desktop the board sits left and
+   turn/controls/moves stack down the right, exactly as they did. On a phone the turn
+   line comes first -- above the board, where it can be read without scrolling past a
+   square that is as tall as the screen is wide. */
+#game {
+  display: grid;
+  gap: 8px 22px;
+  align-items: start;
+  /* 700px rather than 1fr, and start rather than stretch: the board column has to hug
+     the board. Given a fraction of the row it would take all the leftover width and the
+     side panel would float away from a board that has stopped growing at its maximum. */
+  justify-content: start;
+  grid-template-columns: minmax(0, 700px) minmax(250px, 300px);
+  grid-template-areas:
+    "board turn"
+    "board controls"
+    "board moves"
+    "board .";
+}
 
-.board-wrap { position: relative; flex: 1 1 460px; max-width: 700px; }
+#turnbar   { grid-area: turn; }
+.board-wrap { grid-area: board; }
+#turn-controls { grid-area: controls; }
+.side      { grid-area: moves; }
+
+.board-wrap {
+  position: relative;
+  /* vmin, not just a width: the board is square, so sizing it by width alone lets it
+     run off the bottom of a portrait screen and forces a scroll to see its own rank 1. */
+  width: 100%;
+  max-width: min(700px, 92vmin);
+}
 canvas { width: 100%; height: auto; display: block; border-radius: var(--radius); touch-action: manipulation; }
 
 .overlay {
@@ -112,8 +155,6 @@ canvas { width: 100%; height: auto; display: block; border-radius: var(--radius)
   padding: 20px;
 }
 #overlay-text { font-size: 19px; line-height: 1.6; color: #fff; }
-
-.side { flex: 0 1 300px; min-width: 250px; }
 
 .status { font-size: 16px; margin-bottom: 4px; min-height: 24px; }
 .status.blue { color: var(--blue); }
@@ -141,7 +182,41 @@ canvas { width: 100%; height: auto; display: block; border-radius: var(--radius)
 .legend b { color: var(--ink); }
 
 @media (max-width: 720px) {
-  body { padding: 12px; }
-  #game { flex-direction: column; }
-  .side { width: 100%; }
+  body {
+    padding: max(12px, env(safe-area-inset-top))
+             max(12px, env(safe-area-inset-right))
+             max(12px, env(safe-area-inset-bottom))
+             max(12px, env(safe-area-inset-left));
+  }
+
+  /* One column, and the turn line first. */
+  #game {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "turn" "board" "controls" "moves";
+  }
+
+  /* Sticky, so the one thing you always need to know -- whose move it is -- does not
+     scroll away behind the board. It needs an opaque background and a z-index of its
+     own: the canvas paints over anything that merely overlaps it. */
+  #turnbar {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--bg);
+    padding: 6px 0;
+    margin-bottom: 2px;
+  }
+  .hint-line { min-height: 0; }
+
+  /* 44px is the platform minimum for a comfortable tap; the desktop padding gives ~32. */
+  button { min-height: 44px; padding: 9px 15px; }
+
+  /* A 300px move list eats half a phone screen for something you glance at. */
+  .movelist { max-height: 22vh; }
+
+  .topbar { margin-bottom: 12px; }
+  .topbar h1 { font-size: 22px; }
+
+  /* Full-width inputs stop the Copy button wrapping onto its own line awkwardly. */
+  .share-row input[type=text] { flex: 1 1 100%; }
 }
