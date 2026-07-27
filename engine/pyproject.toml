@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "royals-engine"
+version = "0.1.0"
+description = "The Royals game engine: board representation, move generation, and alpha-beta search."
+readme = "../README.md"
+
+# >=3.10, not >=3.12, on purpose. PyPy3 tracks 3.10/3.11 and runs this search several
+# times faster than CPython, which is worth keeping available for the server's AI worker.
+# The engine is already pure standard library, so the only thing that could close that
+# door is a syntax or stdlib feature newer than 3.10. Don't add one.
+requires-python = ">=3.10"
+
+# Deliberately empty, and worth keeping that way. A dependency-free engine is what lets
+# the same code run under CPython, under PyPy, inside a web worker, and in the browser
+# under Pyodide without a compatibility matrix. It is also a real security property:
+# no third-party code sits in the path that validates moves.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

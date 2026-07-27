@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Royals</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div id="app">
+
+  <header class="topbar">
+    <h1>Royals</h1>
+    <p class="tagline">Gather your spy, four pawns and royal onto one square.</p>
+  </header>
+
+  <!-- setup -->
+  <section id="setup" class="panel">
+    <h2>New game</h2>
+
+    <div class="field">
+      <span class="label">You play</span>
+      <div class="choice" id="side-choice">
+        <button type="button" class="chip chip-blue selected" data-side="0">Blue</button>
+        <button type="button" class="chip chip-red" data-side="1">Red</button>
+      </div>
+      <p class="hint">Blue enters first, so red makes the first move.</p>
+    </div>
+
+    <div class="field">
+      <span class="label">Opponent strength</span>
+      <div class="choice" id="difficulty-choice"></div>
+      <p class="hint" id="difficulty-hint"></p>
+    </div>
+
+    <div class="field">
+      <span class="label">Opening variety</span>
+      <input type="range" id="noise" min="0" max="100" value="50">
+      <p class="hint">How much the computer varies its opening formation.</p>
+    </div>
+
+    <button type="button" id="start" class="primary">Start</button>
+  </section>
+
+  <!-- game -->
+  <section id="game" class="hidden">
+    <div class="board-wrap">
+      <canvas id="board" width="700" height="700"></canvas>
+      <div id="overlay" class="overlay hidden"><div id="overlay-text"></div></div>
+    </div>
+
+    <aside class="side">
+      <div id="status" class="status">&nbsp;</div>
+      <div id="hint" class="hint-line">&nbsp;</div>
+
+      <div class="controls">
+        <button type="button" id="pass" class="hidden">Pass</button>
+        <button type="button" id="carry" class="hidden"></button>
+        <button type="button" id="cancel" class="hidden">Cancel</button>
+      </div>
+
+      <h3>Moves</h3>
+      <ol id="movelist" class="movelist"></ol>
+
+      <div class="controls bottom">
+        <button type="button" id="resign">Resign</button>
+        <button type="button" id="newgame">New game</button>
+      </div>
+    </aside>
+  </section>
+
+  <section id="legend" class="panel hidden">
+    <h3>Reading the board</h3>
+    <ul class="legend">
+      <li><b>R</b> royal &middot; <b>S</b> spy &middot; a number is that many pawns</li>
+      <li><b>D</b> is the dragon: it flies over things, cannot be captured, and cannot win</li>
+      <li>A dim strip under a stack is <b>prisoners</b> &mdash; pieces of the other colour held there</li>
+      <li>A gold ring marks a jump that <b>wraps</b> around the edge of the board</li>
+    </ul>
+  </section>
+
+</div>
+
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# The point of this workflow is one thing above all others: golden.txt must not move.
+#
+# tests/golden.txt is a 13,496-line record of what every legal move does to the board and
+# what every resulting position is worth. It is the rules contract. Any change to the
+# engine that leaves it byte-identical is provably behaviour-preserving; any change that
+# moves it needs a human to say why. That check is worth more than every other test here.
+#
+# It runs under CPython and PyPy both, on purpose. The search scores in integers rather
+# than floats specifically because the two interpreters once disagreed in the last place
+# on a square root, which flipped an alpha-beta cutoff and changed the move played -- the
+# suite passed under one interpreter and failed under the other. Running only one of them
+# would let that class of bug back in.
+
+jobs:
+  goldens:
+    name: goldens (${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # PyPy is not decoration: it is several times faster on this search and is the
+        # intended interpreter for the server's AI worker, which is why the engine is
+        # pinned to requires-python >=3.10 and kept dependency-free.
+        python: ["3.12", "pypy3.10"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install the engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ./engine
+          python -m pip install pytest
+
+      - name: Rules contract -- golden.txt must be byte-identical
+        working-directory: tests
+        run: python regress.py check base
+
+      - name: Search internals -- golden_search.txt
+        working-directory: tests
+        run: python regress.py check search
+
+      - name: Unit tests
+        run: python -m pytest tests/ -q
+
+      - name: Engine imports cleanly with no UI present
+        run: |
+          python -c "
+          from royals_engine import hasher as Hasher
+          from royals_engine import engine as Engine
+          from royals_engine import ai as AI
+          b = Hasher.Entering_Board()
+          assert len(b) == 49 and all(0 <= v < 8192 for v in b)
+          print('engine OK on', __import__('sys').implementation.name)
+          "

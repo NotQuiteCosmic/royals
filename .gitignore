@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.eggs/
+
+# Stale Python 2 bytecode committed before this repo existed
+main.pyc
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Secrets — never commit these
+.env
+.env.*
+!.env.example
+
+# Claude Code local overrides (settings.json IS tracked, this one is per-machine)
+.claude/settings.local.json
+
+# NOTE: golden.txt and golden_search.txt ARE tracked deliberately, despite the size.
+# They are the rules contract — see tests/regress.py. Do not add them here.
