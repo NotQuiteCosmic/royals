@@ -1,0 +1,99 @@
+#!/bin/sh
+# Builds Royals.app -- the double-clickable launcher for the desktop window.
+#
+# The bundle carries its own copy of the game rather than pointing at this checkout, and
+# that is not laziness. The checkout lives under ~/Documents, which macOS protects: an
+# app launched from the Dock is refused entry there and is given no way to ask. Worse,
+# handing the path to python3 does not help either, because the framework python is
+# itself an application bundle -- it becomes the process responsible for the read and
+# arrives without any permission of its own.
+#
+# So the bundle reads only itself, which is always allowed, and this script is how a new
+# copy gets in. Re-run it after changing the game:
+#
+#     sh tools/build-royals-app.sh
+#
+# The launcher also tries to refresh itself from this checkout on every start, so if the
+# Mac does happen to allow the read, it stays current on its own and this script is only
+# needed the first time.
+
+set -e
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+APP="${1:-$HOME/Applications/Royals.app}"
+PY="$(command -v python3)"
+
+[ -f "$REPO/apps/desktop/royals_gui.py" ] || { echo "no royals_gui.py under $REPO" >&2; exit 1; }
+[ -n "$PY" ] || { echo "python3 not found" >&2; exit 1; }
+
+echo "building $APP"
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/game"
+
+# the game itself, engine and window, with nothing else along for the ride
+/usr/bin/rsync -a --exclude '__pycache__' --exclude '.*' \
+    "$REPO/apps/desktop/" "$APP/Contents/Resources/game/desktop/"
+/usr/bin/rsync -a --exclude '__pycache__' --exclude '.*' \
+    "$REPO/engine/src/" "$APP/Contents/Resources/game/engine/"
+date -u +"%Y-%m-%dT%H:%M:%SZ" > "$APP/Contents/Resources/game/BUILT"
+
+[ -f "$REPO/tools/royals-icon.icns" ] && cp "$REPO/tools/royals-icon.icns" "$APP/Contents/Resources/Royals.icns"
+
+cat > "$APP/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>               <string>Royals</string>
+    <key>CFBundleDisplayName</key>        <string>Royals</string>
+    <key>CFBundleExecutable</key>         <string>Royals</string>
+    <key>CFBundleIdentifier</key>         <string>local.royals.desktop</string>
+    <key>CFBundleIconFile</key>           <string>Royals</string>
+    <key>CFBundlePackageType</key>        <string>APPL</string>
+    <key>CFBundleShortVersionString</key> <string>1.0</string>
+    <key>CFBundleVersion</key>            <string>1</string>
+    <key>NSHighResolutionCapable</key>    <true/>
+</dict>
+</plist>
+PLIST
+
+cat > "$APP/Contents/MacOS/Royals" <<LAUNCH
+#!/bin/sh
+# Runs the copy of the game inside this bundle. See tools/build-royals-app.sh for why it
+# is a copy and not the checkout.
+
+BUNDLE="\$(cd "\$(dirname "\$0")/.." && pwd)"
+GAME="\$BUNDLE/Resources/game"
+REPO="$REPO"
+PY="$PY"
+
+LOG="\$HOME/Library/Logs/Royals.log"
+mkdir -p "\$(dirname "\$LOG")" 2>/dev/null
+{ echo; echo "=== \$(date) ==="; } >> "\$LOG" 2>&1
+
+# If this Mac lets us read the checkout, take a fresh copy so the launcher keeps up with
+# the source on its own. If it doesn't -- which is the normal case for ~/Documents -- say
+# nothing and run what is already here.
+if [ -f "\$REPO/apps/desktop/royals_gui.py" ] 2>/dev/null; then
+    /usr/bin/rsync -a --delete --exclude '__pycache__' --exclude '.*' \\
+        "\$REPO/apps/desktop/" "\$GAME/desktop/" 2>>"\$LOG" \\
+      && /usr/bin/rsync -a --delete --exclude '__pycache__' --exclude '.*' \\
+        "\$REPO/engine/src/" "\$GAME/engine/" 2>>"\$LOG" \\
+      && echo "refreshed from \$REPO" >> "\$LOG"
+fi
+
+if [ ! -x "\$PY" ]; then
+    /usr/bin/osascript -e 'display alert "Royals could not start" message "python3 was not found on this Mac." as critical' >/dev/null 2>&1
+    exit 1
+fi
+
+PYTHONPATH="\$GAME/engine"
+export PYTHONPATH
+cd "\$GAME" || exit 1
+exec "\$PY" "\$GAME/desktop/royals_gui.py" >> "\$LOG" 2>&1
+LAUNCH
+
+chmod +x "$APP/Contents/MacOS/Royals"
+touch "$APP"
+echo "done: $APP"

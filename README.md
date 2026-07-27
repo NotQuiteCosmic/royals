@@ -59,7 +59,25 @@ deliberately doesn't:
 
 ```bash
 python3 -m pip install -e ./web
-cd web && python3 -m uvicorn royals_web.main:app --reload    # then open :8000
+python3 serve.py                    # starts it and opens your browser
+```
+
+`serve.py` is a thin wrapper around uvicorn that handles the two things which otherwise
+look like the app being broken: **uvicorn never opens a browser** — it only listens and
+prints a URL — and if the port is taken it exits with `[Errno 48] Address already in
+use`, which reads like a crash rather than a second copy declining to start. The wrapper
+opens the page for you and steps to the next free port instead of failing.
+
+To run uvicorn directly, that is still fine — just visit the URL yourself:
+
+```bash
+cd web && python3 -m uvicorn royals_web.main:app --reload    # then open http://127.0.0.1:8000/
+```
+
+If a stale server is holding the port:
+
+```bash
+lsof -nP -iTCP:8000 -sTCP:LISTEN     # find it
 ```
 
 ## golden.txt is the contract
