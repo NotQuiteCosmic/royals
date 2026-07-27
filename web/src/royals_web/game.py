@@ -429,6 +429,118 @@ def _finish(game, winner_side, termination):
 
 
 # ---------------------------------------------------------------------------
+# Rebuilding a game from its move list
+# ---------------------------------------------------------------------------
+
+class ReplayError(Exception):
+    """A stored move list does not describe the game it claims to."""
+
+
+def replay(*, id, mode, ai_depth, entry_seed, entry_noise, moves, seats,
+           invite_hash=None, result=None, termination=None, ply=None,
+           version=0, created_at=None, updated_at=None):
+    """Rebuild a game by playing its moves again through `place` and `play_move`.
+
+    This is the load path, and it is a replay rather than a deserialization on purpose.
+    A Game carries `ko_boards` -- every position it has ever stood in, because the ko
+    rule is about the whole history and not a window of it. Storing the board alone loses
+    that; storing the history alongside the board means maintaining a second way of
+    building it, which is a second way of being wrong. Replaying rebuilds it as a side
+    effect of the same `_record_ko` that built it the first time, so there is only ever
+    one construction of a game's history and it is the one the rules use.
+
+    It also makes the record largely self-checking: the regenerated move list is compared
+    against the stored one, so a reordered, edited or unplayable row fails to load rather
+    than quietly producing a board nobody played to. That comparison does more than it
+    looks -- a placement records which *piece* was placed, so a row claiming a spy went
+    where a pawn went re-encodes differently and is caught, without this function having
+    to check pieces itself.
+
+    **Self-consistency has exactly one blind spot, and `ply` is here to cover it.** A
+    prefix of a legal game is a legal game: lop the last two moves off a record and it
+    replays perfectly, into a real position that simply is not the current one. Nothing
+    intrinsic to the move list can notice, because nothing is wrong with it. So the
+    length is stored separately and checked here, which turns "these moves are playable"
+    into "these moves are playable *and* there are as many of them as there were".
+    """
+    stored = moves.split() if isinstance(moves, str) else list(moves)
+
+    game = Game(
+        id=id, mode=mode, ai_depth=ai_depth,
+        entry_seed=int(entry_seed), entry_noise=float(entry_noise),
+        board=Hasher.Entering_Board(), seats=dict(seats), invite_hash=invite_hash,
+    )
+
+    # A game whose second seat was never claimed never started, and has no moves to
+    # replay -- claim_seat is what walks it into the entering phase.
+    waiting = mode == "human" and not all(s.claimed for s in game.seats.values())
+    if waiting:
+        game.phase = "waiting"
+    else:
+        _seek_entry_step(game)
+
+    try:
+        for token in stored:
+            if game.phase == "entering":
+                # A "--" during entering is a step some side had nowhere to make, and
+                # _seek_entry_step has already written it down again. Only placements are
+                # decisions anybody made.
+                if token == N.PASS:
+                    continue
+                _piece, square = N.decode_entry(token)
+                place(game, square, side=game.entry_side)
+            elif game.phase == "playing":
+                play_move(game, None if token == N.PASS else N.decode_move(token),
+                          side=game.turn % 2)
+            else:
+                raise ReplayError("%r comes after the game was already over" % (token,))
+    except (IllegalMove, GameOver, N.NotationError) as exc:
+        raise ReplayError("the stored move list is not playable: %s" % (exc,)) from exc
+
+    if game.moves != stored:
+        raise ReplayError("the move list does not replay to itself")
+    if ply is not None and len(game.moves) != ply:
+        raise ReplayError("the record says %d moves and carries %d"
+                          % (ply, len(game.moves)))
+
+    _restore_ending(game, result, termination)
+
+    game.version = int(version)
+    if created_at is not None:
+        game.created_at = float(created_at)
+    if updated_at is not None:
+        game.updated_at = float(updated_at)
+    return game
+
+
+def _restore_ending(game, result, termination):
+    """Put back an ending that the moves alone cannot describe.
+
+    Gathering and a double pass are in the move list, so replay reaches them by itself
+    and all that is left is to check the record agrees. A resignation is not a move and
+    leaves no trace in the list, so it is the one ending that has to be reapplied -- and
+    the only one this will accept from outside the moves.
+    """
+    if game.finished:
+        if (game.result, game.termination) != (result, termination):
+            raise ReplayError(
+                "the moves end %s by %s but the record says %s by %s"
+                % (game.result, game.termination, result, termination))
+        return
+
+    if termination is None:
+        return
+    if termination != "resign":
+        raise ReplayError("only a resignation ends a game outside its move list, not %r"
+                          % (termination,))
+    if result not in SIDE_NAMES.values():
+        raise ReplayError("a resignation needs a winner, not %r" % (result,))
+
+    winner = BLUE if result == SIDE_NAMES[BLUE] else RED
+    _finish(game, winner, "resign")
+
+
+# ---------------------------------------------------------------------------
 # Serialising for the client
 # ---------------------------------------------------------------------------
 

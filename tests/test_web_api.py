@@ -829,3 +829,231 @@ def test_the_lock_serialises_and_does_not_leak():
     asyncio.run(main())
     assert not overlapped, "two coroutines were inside the same game at once"
     assert len(reg) == 0, "the registry kept an entry nobody is waiting on"
+
+
+# ---------------------------------------------------------------------------
+# Persistence
+# ---------------------------------------------------------------------------
+# A game between two people is played over hours. Until it survived a restart, every
+# deploy silently destroyed one -- which is a different order of problem from losing a
+# session against the computer, and the reason this exists.
+
+@pytest.fixture
+def db(tmp_path):
+    from royals_web.persist import Database
+    d = Database(str(tmp_path / "games.db"))
+    yield d
+    d.close()
+
+
+def played_out(seed=2, plies=20, **kwargs):
+    """A game taken some way in, by both sides, with no HTTP involved."""
+    import random
+    rng = random.Random(seed)
+    game = pure_game(entry_seed=seed, **kwargs)
+    while game.phase == "entering":
+        options = G.entering_options(game.board, game.entry_side, game.entry_piece)
+        G.place(game, rng.choice(options), side=game.entry_side)
+    for _ in range(plies):
+        if game.phase != "playing":
+            break
+        contr = game.turn % 2
+        legal = G.legal_moves(game.board, contr, game.ko_set())
+        G.play_move(game, rng.choice(legal) if legal else None, side=contr)
+    return game
+
+
+def test_a_game_survives_being_written_and_read_back(db):
+    game = played_out()
+    db.save(game)
+    back = db.load(game.id)
+
+    assert back is not None
+    assert back.board == game.board
+    assert back.moves == game.moves
+    assert (back.turn, back.phase, back.passes) == (game.turn, game.phase, game.passes)
+    assert back.last_move == game.last_move
+    assert back.version == game.version
+    assert G.to_json(back, 0) == G.to_json(game, 0)
+
+    # The ko history is the reason this is a replay rather than a board being unpacked.
+    # It is the whole of the game's past, the rule depends on all of it, and nothing
+    # writes it down -- it is rebuilt by playing the moves again.
+    assert back.ko_boards == game.ko_boards
+    assert len(back.ko_boards) > 5
+    assert back.ko_set() == game.ko_set()
+
+
+def test_seats_and_the_invitation_survive_too(db):
+    game, seat_token, invite = G.new_game(mode="human", side=1)
+    db.save(game)
+    back = db.load(game.id)
+
+    assert back.phase == "waiting", "an unclaimed game did not start and must not"
+    assert back.seat_of(seat_token) == 1, "the token still opens the same seat"
+    assert back.seats[0].claimed is False
+    assert back.moves == []
+
+    # and the invitation still works after a restart
+    side, _new_token = G.claim_seat(back, invite)
+    assert side == 0
+    assert back.phase == "entering"
+
+
+def test_a_resignation_survives_although_it_is_not_a_move(db):
+    """Gathering and a double pass are in the move list; a resignation is not."""
+    game = played_out()
+    G.resign(game, G.BLUE)
+    db.save(game)
+    back = db.load(game.id)
+
+    assert back.phase == "over"
+    assert (back.result, back.termination) == ("red", "resign")
+
+
+def test_a_tampered_record_refuses_to_load(db):
+    """Refusing is the point. A board that replays differently from its own record is
+    worse than a lost game: both players would be told it was the real position."""
+    game = played_out()
+    db.save(game)
+
+    def corrupt(sql, *args):
+        db._conn.execute(sql, args)
+        db._conn.commit()
+        return db.load(game.id)
+
+    original = " ".join(game.moves)
+
+    assert corrupt("UPDATE games SET moves = ? WHERE id = ?",
+                   " ".join(game.moves[:-1] + ["Ja1b2"]), game.id) is None, "substituted"
+    assert corrupt("UPDATE games SET moves = ? WHERE id = ?",
+                   " ".join(reversed(game.moves)), game.id) is None, "reordered"
+    assert corrupt("UPDATE games SET moves = ? WHERE id = ?",
+                   " ".join(game.moves[3:]), game.id) is None, "beheaded"
+
+    # A placement records which piece was placed, so claiming a spy went where a pawn
+    # went re-encodes differently and is caught -- without replay checking pieces itself.
+    swapped = game.moves[:]
+    first = next(i for i, m in enumerate(swapped) if m.startswith("@"))
+    swapped[first] = "@S" + swapped[first][2:]
+    assert corrupt("UPDATE games SET moves = ? WHERE id = ?",
+                   " ".join(swapped), game.id) is None, "a piece swapped for another"
+
+    # and the untouched record still loads, so the checks are not simply always failing
+    assert corrupt("UPDATE games SET moves = ? WHERE id = ?",
+                   original, game.id) is not None
+
+
+def test_a_truncated_record_is_caught_by_its_stored_length(db):
+    """The one corruption replaying cannot see, and the only reason `ply` is a column.
+
+    Lopping moves off the end leaves a legal game -- a prefix of one is one -- so it
+    replays perfectly, into a position that is real and simply is not the current one.
+    Nothing about the move list is wrong, so nothing about the move list can notice.
+    """
+    game = played_out()
+    db.save(game)
+
+    shortened = " ".join(game.moves[:-2])
+    db._conn.execute("UPDATE games SET moves = ? WHERE id = ?", (shortened, game.id))
+    db._conn.commit()
+    assert db.load(game.id) is None, "two moves short and it loaded anyway"
+
+    # Proof that it is the length doing the work and not the replay: with ply corrected
+    # to match, the same shortened record is a perfectly good game two moves ago.
+    db._conn.execute("UPDATE games SET ply = ? WHERE id = ?",
+                     (len(game.moves) - 2, game.id))
+    db._conn.commit()
+    earlier = db.load(game.id)
+    assert earlier is not None
+    assert earlier.moves == game.moves[:-2]
+
+
+def test_an_impossible_ending_is_refused(db):
+    """Only a resignation may end a game from outside its move list."""
+    game = played_out()
+    db.save(game)
+    db._conn.execute(
+        "UPDATE games SET result = 'blue', termination = 'gather' WHERE id = ?",
+        (game.id,))
+    db._conn.commit()
+    assert db.load(game.id) is None
+
+
+def test_the_store_reloads_a_game_it_has_evicted(db):
+    """Eviction stops being data loss, which is what lets the cache stay small."""
+    from royals_web.store import GameStore
+    s = GameStore(max_games=2, db=db)
+
+    first = played_out(seed=3, plies=6)
+    s.put(first)
+    for seed in (4, 5, 6):
+        s.put(played_out(seed=seed, plies=4))
+
+    assert len(s) == 2, "the cache is bounded"
+    back = s.get(first.id)
+    assert back is not None, "evicted from memory is not gone"
+    assert back.board == first.board
+    assert back.ko_boards == first.ko_boards
+
+
+def test_the_sweep_deletes_only_what_is_long_dead(db):
+    import time as _time
+    fresh, stale = played_out(seed=7, plies=4), played_out(seed=8, plies=4)
+    stale.updated_at = _time.time() - 400 * 24 * 60 * 60
+    db.save(fresh)
+    db.save(stale)
+    assert db.count() == 2
+
+    assert db.sweep() == 1
+    assert db.load(stale.id) is None
+    assert db.load(fresh.id) is not None
+
+
+def test_a_game_played_over_http_survives_a_restart(tmp_path):
+    """The whole point, end to end: two people, a move each, and the server restarts.
+
+    Two TestClient blocks are two runs of the process -- lifespan opens the database on
+    the way in and closes it on the way out -- pointed at the same file.
+    """
+    import os
+    from royals_web.store import store as live
+
+    os.environ["ROYALS_DB"] = str(tmp_path / "restart.db")
+    try:
+        with TestClient(app) as c:
+            made = c.post("/api/games", json={"mode": "human", "side": 0}).json()
+            gid, blue = made["state"]["id"], {"X-Royals-Seat": made["seatToken"]}
+            joined = c.post(f"/api/games/{gid}/join",
+                            json={"invite": made["inviteToken"]}).json()
+            red = {"X-Royals-Seat": joined["seatToken"]}
+            state = enter_all(c, joined["state"], {0: blue, 1: red})
+            assert state["phase"] == "playing"
+            # Whoever entered second opens, so the side to move is not the creator's.
+            mover = {0: blue, 1: red}[state["sideToMove"]]
+            before = c.get(f"/api/games/{gid}", headers=mover).json()
+            assert before["origins"]
+
+        # The process is gone: nothing of this game is in memory any more.
+        live._games.clear()
+
+        with TestClient(app) as c:
+            after = c.get(f"/api/games/{gid}", headers=mover).json()
+            assert after["board"] == before["board"]
+            assert after["moves"] == before["moves"]
+            assert after["yourSide"] == before["yourSide"], "the token names the same seat"
+            assert after["origins"] == before["origins"]
+
+            # and it is still playable, which needs the ko history to have come back
+            m = c.get(f"/api/games/{gid}/moves",
+                      params={"origin": after["origins"][0]}, headers=mover
+                      ).json()["moves"][0]
+            body = {"kind": m["kind"], "origin": m["origin"], "pris": m.get("pris", False)}
+            body["dir" if m["kind"] == "break" else "target"] = \
+                m["dir"] if m["kind"] == "break" else m["target"]
+            played = c.post(f"/api/games/{gid}/move", json=body, headers=mover)
+            assert played.status_code == 200, played.text
+            assert played.json()["ply"] == before["ply"] + 1
+    finally:
+        os.environ.pop("ROYALS_DB", None)
+        live._games.clear()

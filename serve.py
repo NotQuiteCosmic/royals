@@ -17,6 +17,8 @@ Options are passed straight through to uvicorn's defaults otherwise:
 """
 
 import argparse
+import os
+import pathlib
 import socket
 import sys
 import threading
@@ -27,6 +29,13 @@ import webbrowser
 HOST = "127.0.0.1"
 FIRST_PORT = 8000
 PORT_ATTEMPTS = 20
+
+# Where games are kept between runs. The server itself defaults to memory when ROYALS_DB
+# is unset -- a database path that appeared on its own would drop a file wherever anyone
+# happened to run uvicorn from -- so asking for one is this script's job. Next to the
+# source, not in the current directory, so it is the same database whichever directory
+# you start from.
+DEFAULT_DB = pathlib.Path(__file__).resolve().parent / "royals.db"
 
 
 def port_is_free(host, port):
@@ -74,7 +83,17 @@ def main():
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--reload", action="store_true",
                         help="restart on file changes (development)")
+    parser.add_argument("--db", default=None,
+                        help="where to keep games between runs (default: %s). "
+                             "Pass ':memory:' to keep nothing." % DEFAULT_DB)
     args = parser.parse_args()
+
+    # Set before uvicorn imports the app, since that is when the database is opened.
+    # An explicit flag beats an inherited environment; the default only fills a gap.
+    if args.db:
+        os.environ["ROYALS_DB"] = args.db
+    else:
+        os.environ.setdefault("ROYALS_DB", str(DEFAULT_DB))
 
     try:
         import uvicorn
@@ -103,7 +122,11 @@ def main():
     banner = [""]
     if moved:
         banner.append("  Port %d was busy, so this is on %d instead." % (FIRST_PORT, port))
-    banner += ["  Royals is running at  %s" % url, "  Press Ctrl-C to stop.", ""]
+    banner += ["  Royals is running at  %s" % url]
+    where = os.environ["ROYALS_DB"]
+    banner.append("  Games are kept in       %s" % where if where != ":memory:"
+                  else "  Games are kept in memory and lost when this stops.")
+    banner += ["  Press Ctrl-C to stop.", ""]
     print("\n".join(banner), flush=True)
 
     if not args.no_browser:

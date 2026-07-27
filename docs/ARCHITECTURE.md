@@ -179,7 +179,8 @@ FastAPI, in `web/src/royals_web/`:
 | `game.py` | Game state and move validation. Decides *what is legal*. |
 | `seats.py` | Seat tokens: mint, hash, constant-time compare. |
 | `ai_pool.py` | Process pool, concurrency cap, wall-clock deadline per search. |
-| `store.py` | In-memory game store — bounded, TTL'd, per-client rate limits. |
+| `store.py` | Bounded in-memory cache in front of the database; per-client rate limits. |
+| `persist.py` | SQLite. One row per game, holding the move list rather than the board. |
 | `static/` | The browser client — `index.html`, `app.js`, `board.js`, `style.css`. |
 
 The design rests on two rules. The first:
@@ -233,10 +234,27 @@ an unattended endpoint that mints games is a memory attack that needs no clevern
 Hence the hard concurrency cap, the queue that refuses rather than grows, the deadline, the
 game ceiling and the TTL.
 
-Storage is still in memory, and that is now the sharpest limitation in the web layer: a
-restart loses every game in progress, which matters much more for a correspondence game
-between two people than it did for a session against the computer. The interface is
-deliberately the small one that survives being backed by a database.
+Games are kept in SQLite, and **what is stored is the move list, not the position.** The
+board is derived — replay the moves and you have it, along with `ko_boards`, `turn`,
+`passes` and the phase, all rebuilt by the same `place` and `play_move` that built them
+the first time. Storing the board instead would mean either losing the ko history, and
+the ko rule is about the whole history, or writing a second way to serialise and restore
+it, which is a second way to be wrong.
+
+That also makes a row checkable: a move list either replays to itself or it does not, so
+an edited or corrupted record fails to load rather than handing both players a plausible
+wrong board. It has exactly one blind spot — a prefix of a legal game is a legal game, so
+truncation replays perfectly into a stale position — and the stored `ply` is there to
+close it, which is the only reason that column exists.
+
+No `pickle`, anywhere. A board is a tuple and pickling it into a BLOB is the obvious
+shortcut and is remote code execution; everything written is text and numbers, and the
+only thing that turns them back into a game is a function that plays moves.
+
+`store.py` in front of it is a cache, so eviction stopped being data loss and became a
+memory policy. `ROYALS_DB` names the file; unset means in-memory, which is what keeps the
+test suite isolated and is why `serve.py` and the Dockerfile set it explicitly rather than
+letting a database path appear wherever someone happened to run the server from.
 
 ## Tests
 
@@ -248,9 +266,9 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for the workflow. In short:
 - **`tests/golden_search.txt`** — node counts per move. Expected to churn.
 - **`tests/test_engine_purity.py`** — enforces the no-dependencies, no-UI rule. (22)
 - **`tests/test_notation.py`** — round-trips for the text and JSON move forms. (51)
-- **`tests/test_web_api.py`** — the REST surface, against FastAPI's `TestClient`. (37)
+- **`tests/test_web_api.py`** — the REST surface, against FastAPI's `TestClient`. (46)
 
-110 in total. The web tests import `fastapi`, so the full suite needs the server installed
+119 in total. The web tests import `fastapi`, so the full suite needs the server installed
 (`pip install -e ./web`); the engine's own tests need nothing but the standard library,
 which is the point. CI runs them in their own CPython-only job for that reason — the
 goldens matrix installs the engine alone, so `importorskip` would turn the entire server

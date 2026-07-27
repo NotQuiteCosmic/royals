@@ -15,6 +15,12 @@ main.pyc
 # Written into the checkout by install-desktop.sh, not part of the source
 /royals-desktop
 
+# Games in progress, written by serve.py. Somebody's half-finished game is data, not
+# source -- and the WAL sidecars come and go with it.
+/royals.db
+/royals.db-wal
+/royals.db-shm
+
 # Editors / OS
 .idea/
 .vscode/

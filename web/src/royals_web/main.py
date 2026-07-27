@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from royals_engine import notation as N
 
 from royals_web import game as G
+from royals_web import persist
 from royals_web.ai_pool import pool, AIBusy, AITimeout
 from royals_web.store import store
 
@@ -50,10 +51,19 @@ JOIN_LIMIT, JOIN_WINDOW = 60, 600
 @contextlib.asynccontextmanager
 async def lifespan(app):
     pool.start()
+    db = persist.open_default()
+    store.attach(db)
+    # Deleting long-dead games is not urgent enough to want a scheduler for. Once at
+    # startup is enough on a server that gets deployed more often than a month.
+    store.sweep()
     try:
         yield
     finally:
         pool.shutdown()
+        # Detached before closing, so nothing can reach a closed connection through the
+        # module-level store afterwards.
+        store.attach(None)
+        db.close()
 
 
 app = FastAPI(title="Royals", lifespan=lifespan, docs_url=None, redoc_url=None)
@@ -327,6 +337,7 @@ async def create_game(body: NewGame, request: Request):
         entry_noise=body.noise)
     store.put(game)
     await _advance(game)
+    store.put(game)     # again after advancing: the store is write-through from M3.2 on
 
     # The only time either token is ever sent. The game keeps their hashes; there is no
     # endpoint that can hand them out again -- which is why the creating browser holds on
