@@ -258,25 +258,17 @@ H_CHIP = 0.16
 H_MAX = 6 * H_CHIP + 0.04
 
 # The dragon can't stack and never shares a square, so it gets a solid a pile can never
-# make: a cone, standing three chips high -- which is also what a dragon is worth. Its
-# foot is narrower than a chip, so a dragon and the three-high stack next to it are told
-# apart by the taper first and the footprint second.
+# make: a cone standing on a chip's own footprint, three chips high -- which is also what
+# a dragon is worth. Same foot, same height as the three-high stack next to it, and the
+# taper is the whole of the difference.
 #
-# Narrow matters more than it looks. A cone only has a silhouette while its apex projects
-# clear of its base; past that the eye is over the point and a cone is honestly a disc.
-# The pitch that happens at is atan(h/r), so 0.48 over 0.26 keeps the point up to about 62
-# degrees, and the board opens at 55. A broader foot looks better standing still and turns
-# into a dome the moment the board is tilted back, which is when it matters.
-R_DRAGON = 0.26
+# What that costs is worth knowing. A cone only shows a silhouette while its apex projects
+# clear of its base, and the pitch that stops at is atan(h/r) -- 0.48 over 0.40 is about
+# 50 degrees, and the board opens at 55. Tilted back the piece is a cone; from the default
+# angle up it is the disc a cone honestly projects to, and what tells it from a chip there
+# is that it has no pale lid and carries no icons.
+R_DRAGON = R_CHIP
 H_DRAGON = 3 * H_CHIP
-
-# Where the band round the cone sits, as a fraction of the way up the slant. Low, because
-# a fraction of the slant sits higher on screen than it sounds: what shows above the band
-# is the near face and the whole of the far one, so a band at the honest middle reads as a
-# hat. Wide, because the band is the whole of what a lid icon used to say and a hairline
-# would not survive the piece being small on screen.
-RING_LO = 0.26
-RING_HI = 0.46
 
 STUD_R = 0.09
 STUD_H = 0.05
@@ -342,6 +334,24 @@ CHIP_WALL = {
     0: (BLUE, "#ffffff", "#b6b1a7", "#6f6a62"),
     1: (RED, DARK_HI, DARK_LO, INK),
 }
+
+# A shade part way between two of the above, memoised because a cone asks for a score of
+# them every time the board is redrawn and the board is redrawn all the way through a
+# drag. This is not a gradient sneaking back in: what comes out is one more flat colour,
+# for one more flat polygon, on a canvas that still has no alpha in it anywhere.
+_MIXED = {}
+
+
+def mixShade(a, b, t):
+    key = (a, b, round(t, 2))
+    got = _MIXED.get(key)
+    if got is None:
+        parts = []
+        for i in (1, 3, 5):
+            lo, hi = int(a[i:i + 2], 16), int(b[i:i + 2], 16)
+            parts.append(int(round(lo + (hi - lo) * key[2])))
+        got = _MIXED[key] = "#%02x%02x%02x" % tuple(parts)
+    return got
 
 
 def pieceFill(side):
@@ -588,16 +598,21 @@ def chip(c, view, x, y, z0, r, h, walls, topFill, topEdge, w=2, tags=None):
 #
 # Rather than case-split on that, the surface is drawn as what it is -- a fan of triangles
 # from the apex out to the rim, laid down far ones first. That comes out right in both
-# regimes, and it shades without needing a clip: each triangle takes the band its own
-# position on screen puts it in, the same three bands lit from the same top left as the
-# chip's wall, so a cone and a chip standing next to each other agree about the light.
+# regimes and needs no clipping to shade, since each triangle can simply take the shade its
+# own facing earns.
 #
-# `ring` is a band round the middle in the other side's shade. It is the whole of what
-# this piece says about itself now -- there is no lid to paint an icon on -- and it is
-# drawn face by face inside the same loop so it inherits the same near-far ordering. The
-# cone is ruled from apex to rim and the projection is affine, so a point a fraction of
-# the way up a rule really is the straight lerp of the two ends on screen.
-def cone(c, view, x, y, z0, r, h, walls, ring=None, w=2, tags=None):
+# The chip's wall gets three hard stripes and that is right for a cylinder, whose whole
+# wall faces the same way at a given place across it. A cone's doesn't: its faces turn
+# through the vertical as well, and past the pitch where the apex falls inside the base
+# every one of them is in view at once. Three stripes there are three wedges meeting at
+# the point, and the piece reads as a pie chart. So the same three shades are used, but
+# ramped between rather than switched between -- the light is the top left the whole
+# cabinet is lit from, and a face's shade is how squarely it faces it.
+#
+# Nothing is painted on it. There is no lid to put an icon on and no marking round it
+# either: a cone is a shape nothing else on the board has, and a band round the middle
+# turned out to read as a piece wearing a hat rather than as a piece saying something.
+def cone(c, view, x, y, z0, r, h, walls, w=2, tags=None):
     wallMid, wallHi, wallLo, wallEdge = walls
     tags = tags or ()
     px, base = view.project(x, y, z0)
@@ -605,6 +620,7 @@ def cone(c, view, x, y, z0, r, h, walls, ring=None, w=2, tags=None):
     ry = r * view.scale * view.sinP
     d = h * view.scale * view.cosP
     ax, ay = px, base - d
+    apex = (ax, ay)
 
     # The rim in screen terms. A circle lying flat projects to an ellipse square-on to the
     # screen whatever the yaw -- the same fact View.disc leans on -- so it can be walked
@@ -616,44 +632,30 @@ def cone(c, view, x, y, z0, r, h, walls, ring=None, w=2, tags=None):
         t = 2.0 * math.pi * i / steps
         rim.append((px + rx * math.cos(t), base + ry * math.sin(t)))
 
-    band = rx * 0.35
-
-    # `sx` is a face's own place across the piece, not across the canvas
-    def shade(sx):
+    # How lit a face is, from where its own middle sits on the rim. That direction out from
+    # the axis is the face's normal seen on screen, which is all the light needs. The lamp
+    # leans mostly sideways and only a little down the screen: weight the two evenly and a
+    # cone seen from the side goes darkest across its front, where the eye expects it
+    # lightest, because from there "facing the camera" and "facing down" are the same
+    # projected direction and only the leaning tells them apart.
+    def shade(mx, my):
         if not view.detail: return wallMid
-        if sx < px - band: return wallHi
-        return wallMid if sx <= px + band else wallLo
-
-    def up(p, f):
-        return (p[0] + (ax - p[0]) * f, p[1] + (ay - p[1]) * f)
+        nx, ny = mx - px, my - base
+        n = math.hypot(nx, ny)
+        if not n: return wallMid
+        lit = -(0.85 * nx + 0.35 * ny) / n
+        if lit >= 0.0: return mixShade(wallMid, wallHi, min(1.0, lit))
+        return mixShade(wallMid, wallLo, min(1.0, -lit))
 
     faces = [(rim[i], rim[(i + 1) % steps]) for i in range(steps)]
     faces.sort(key=lambda f: f[0][1] + f[1][1])
 
-    # Every face outlined in its own fill: neighbours share an edge, and a hairline of
-    # board showing between two of them reads as a crack down the piece. That overlap is
-    # also why a face carrying a band has to be cut into three pieces at the band's edges
-    # rather than drawn whole and banded over. Cut, the next face round overpaints its
-    # neighbour foot on foot and band on band; whole, its foot would overpaint the
-    # neighbour's band, and the piece came out with a spoke in the ring for every face.
-    def facet(pts, fill):
-        flat = []
-        for sx, sy in pts:
-            flat.append(sx)
-            flat.append(sy)
-        c.create_polygon(flat, fill=fill, outline=fill, width=1, tags=tags)
-
-    apex = (ax, ay)
+    # Each face outlined in its own fill: neighbours share an edge, and a hairline of board
+    # showing between two of them reads as a crack down the piece.
     for p0, p1 in faces:
-        fill = shade(0.5 * (p0[0] + p1[0]))
-        if not ring:
-            facet((apex, p0, p1), fill)
-            continue
-        a0, a1 = up(p0, RING_LO), up(p1, RING_LO)
-        b0, b1 = up(p0, RING_HI), up(p1, RING_HI)
-        facet((p0, p1, a1, a0), fill)
-        facet((a0, a1, b1, b0), ring)
-        facet((b0, b1, apex), fill)
+        fill = shade(0.5 * (p0[0] + p1[0]), 0.5 * (p0[1] + p1[1]))
+        c.create_polygon(apex[0], apex[1], p0[0], p0[1], p1[0], p1[1],
+                         fill=fill, outline=fill, width=1, tags=tags)
 
     # The silhouette, over the top of the fan: two tangents and the front of the rim while
     # the apex stands clear, and the rim on its own once it doesn't. The tangents touch
@@ -1132,12 +1134,15 @@ class RoyalsWindow:
         # it and the dragon has no lid. So the key shows the piece itself, drawn by the
         # code the board draws it with -- standing on a baseline of its own rather than
         # centred on the row, since a piece that stands up has a foot and not a centre.
-        key.ox, key.oy = 164.0, 60.0
-        key.scale = 56.0   # a shade larger than the piles below: it is a smaller piece
-        cone(c, key, 0.0, 0.0, 0.0, R_DRAGON, H_DRAGON,
-             CHIP_WALL[0], INK, 1)
-        key.scale = 40.0
-        c.create_text(182, 55, text="dragon", font=FONT["small"], fill=TEXT_DIM,
+        #
+        # And drawn from lower down than everything else in this panel, which is the one
+        # place the key is allowed to disagree with the board. At the angle the board
+        # opens at, a cone this wide has its point inside its own base and is honestly a
+        # disc; a key that showed that would be telling the reader nothing at all. This is
+        # the same piece from a pitch the board reaches the moment it is tilted back.
+        low = View(YAW_DEF, math.radians(32.0), scale=40.0, ox=162.0, oy=64.0)
+        cone(c, low, 0.0, 0.0, 0.0, R_DRAGON, H_DRAGON, CHIP_WALL[0], 1)
+        c.create_text(182, 56, text="dragon", font=FONT["small"], fill=TEXT_DIM,
                       anchor="w")
 
         # The board stands its pieces up now, so the key has to as well. The shapes above
@@ -1914,15 +1919,11 @@ class RoyalsWindow:
                 bx, by = wx + dx, wy + dy
 
             if s[Hasher.DRAGON]:
-                # A cone three chips high where everything else is a pile, so the piece
-                # that cannot stack cannot be mistaken for a stack of three. It carries no
-                # icon: there is no lid to put one on, and a cone is already a shape
-                # nothing else on the board has. What the diamond's punched hole used to
-                # say -- this is neither a royal nor anything that can be gathered -- is
-                # said instead by a band round its middle in the other side's shade, which
-                # has the second virtue of showing up whichever square it is standing on.
-                cone(c, v, bx, by, 0.0, R_DRAGON, H_DRAGON,
-                     walls, PIECE_HALO if side else INK, 2, tag)
+                # A cone where everything else is a pile: a chip's own footprint and the
+                # height of three of them, tapering to a point. It carries no icon, and it
+                # is the one piece on the board with no pale lid -- there is nothing to
+                # tell apart on this square, because a dragon is all there ever is on it.
+                cone(c, v, bx, by, 0.0, R_DRAGON, H_DRAGON, walls, 2, tag)
             else:
                 # One chip per piece, all the same chip, piled up -- the same width the
                 # whole way up, so the pile is one column and not a stepped one. What
