@@ -25,6 +25,11 @@ if setting == 0:
 	aiDepth = 3
 	passes = 0
 
+	# The squares the last thing played touched, shaded by DisplayHashBoard. It is set
+	# everywhere the board changes and nowhere else, so what it shades while a side is
+	# choosing is always what the other side just did.
+	lastMove = []
+
 	hashModes = ["2 player", "1 player", "0 player"]
 	print("WELCOME!\nWhat Game Mode Would You Like To Play?")
 	for i in hashModes: print(" " + i)
@@ -103,7 +108,7 @@ if setting == 0:
 			sideName = "Blue"
 
 		print("")
-		DisplayHashBoard(board)
+		DisplayHashBoard(board, lastMove)
 
 		options = Engine.enteringOptions(board, enterContr, isSpy)
 
@@ -122,6 +127,7 @@ if setting == 0:
 					print("Not a square on the board.")
 				elif square in options:
 					board = Engine.dropPiece(board, square, enterContr, piece)
+					lastMove = [square]
 					placed = True
 				elif Check_For_Occupancy(Get_Space_Data(board, square)):
 					print("That square is taken.")
@@ -132,6 +138,7 @@ if setting == 0:
 			print(sideColor + sideName + " " + pieceName + bcolors.CEND
 				  + " enters at " + IndexToAlg(square - 1).upper())
 			board = Engine.dropPiece(board, square, enterContr, piece)
+			lastMove = [square]
 
 	# whoever entered second opens the game, so the side that placed the last spy moves now
 	turn = 1
@@ -155,7 +162,7 @@ if setting == 0:
 				print(format(tSquare, '013b') + " " + str(Parse_Space(tSquare)))
 
 				board = Mod_Space(board, square, Build_Space(0, 1, 0, 0, 0))
-		DisplayHashBoard(board)
+		DisplayHashBoard(board, lastMove)
 
 		if a >= 3:
 			# blue opens; getOrigin and checkMoves both read blue as 0 and red as 1.
@@ -165,6 +172,8 @@ if setting == 0:
 
 			moved = False
 			beforeMove = board
+			# what the shading has to go back to if the ko rule takes the move back
+			beforeLast = lastMove
 
 			if humanSides[contr]:
 				tOrigin = Engine.getOrigin(board, contr)
@@ -196,6 +205,9 @@ if setting == 0:
 						if word in alphBreaks:
 							# alphBreaks is built one entry per possBreaks entry, in step.
 							board = Engine.exeBreak(board, origin, possBreaks[alphBreaks.index(word)], contr)
+							# a break scatters the square rather than going anywhere in
+							# particular, so the square it left is all there is to shade
+							lastMove = [origin]
 							moved = True
 						else:
 							# possJumps and possPushes are 0-based, AlgebraToSquare is 1-based.
@@ -204,6 +216,7 @@ if setting == 0:
 								print("Not a square on the board.")
 							elif (destSquare - 1) in possJumps:
 								board = Engine.exeMove(board, origin, destSquare, contr, movingPris)
+								lastMove = [origin, destSquare]
 								moved = True
 							elif (destSquare - 1) in possPushes or (destSquare - 1) in possFrees:
 								# A square can be in both lists at once: shoving the whole thing along
@@ -221,6 +234,7 @@ if setting == 0:
 									freeing = answer.startswith("f")
 								
 								board = Engine.exePush(board, origin, destSquare, contr, movingPris, freeing)
+								lastMove = [origin, destSquare]
 								moved = True
 							else:
 								print("Not a legal move from " + IndexToAlg(origin - 1).upper() + ".")
@@ -233,6 +247,8 @@ if setting == 0:
 					# a side with nothing left to move just loses its turn -- without this
 					# the loop would sit here redrawing the same board forever.
 					print("  no legal move, passing.")
+					# nothing moved, so there is nothing to shade
+					lastMove = []
 					passes += 1
 					turn += 1
 					if passes > 1:
@@ -242,6 +258,13 @@ if setting == 0:
 					print("  " + artificialPlayer.describeMove(aiMove))
 					print("  " + bcolors.CGREY + "score " + artificialPlayer.scoreText(aiScore) + ", "
 						  + str(artificialPlayer.calcCount) + " boards considered" + bcolors.CEND)
+
+					aiOrigin = aiMove[artificialPlayer.MOVE_ORIGIN]
+					# a break has a direction where the others have a square, so the square
+					# it broke out of is the only one there is to shade
+					if aiMove[artificialPlayer.MOVE_KIND] == "break": lastMove = [aiOrigin]
+					else: lastMove = [aiOrigin, aiMove[artificialPlayer.MOVE_TARGET] + 1]
+
 					moved = True
 
 			# KO CHECK -- a move that returns the game to any position it has already been in
@@ -251,6 +274,7 @@ if setting == 0:
 				print(bcolors.CGREY + "  Ko: the game has already stood there. Move again."
 					  + bcolors.CEND)
 				board = beforeMove
+				lastMove = beforeLast
 				moved = False
 
 			# only a completed move ends the turn.
@@ -261,7 +285,7 @@ if setting == 0:
 
 				gameEnd, winner = Check_For_Winner(board)
 				if gameEnd:
-					DisplayHashBoard(board)
+					DisplayHashBoard(board, lastMove)
 					print("Game Finished!")
 					if winner == [1, 0]: print("Congratulations, " + blueT("Blue"))
 					elif winner == [0, 1]: print("Congratulations, " + redT("Red"))

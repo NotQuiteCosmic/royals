@@ -75,12 +75,15 @@ mkdir -p "\$(dirname "\$LOG")" 2>/dev/null
 # If this Mac lets us read the checkout, take a fresh copy so the launcher keeps up with
 # the source on its own. If it doesn't -- which is the normal case for ~/Documents -- say
 # nothing and run what is already here.
-if [ -f "\$REPO/apps/desktop/royals_gui.py" ] 2>/dev/null; then
-    /usr/bin/rsync -a --delete --exclude '__pycache__' --exclude '.*' \\
-        "\$REPO/apps/desktop/" "\$GAME/desktop/" 2>>"\$LOG" \\
-      && /usr/bin/rsync -a --delete --exclude '__pycache__' --exclude '.*' \\
-        "\$REPO/engine/src/" "\$GAME/engine/" 2>>"\$LOG" \\
-      && echo "refreshed from \$REPO" >> "\$LOG"
+if /usr/bin/rsync -a --delete --exclude '__pycache__' --exclude '.*' \\
+        "\$REPO/apps/desktop/" "\$GAME/desktop/" 2>/dev/null \\
+   && /usr/bin/rsync -a --delete --exclude '__pycache__' --exclude '.*' \\
+        "\$REPO/engine/src/" "\$GAME/engine/" 2>/dev/null; then
+    echo "refreshed from \$REPO" >> "\$LOG"
+else
+    # The normal outcome: ~/Documents is off limits to an app launched from the Dock.
+    # Nothing is wrong -- run the copy inside the bundle, which is what it is there for.
+    echo "using the copy built in on \$(cat "\$GAME/BUILT" 2>/dev/null)" >> "\$LOG"
 fi
 
 if [ ! -x "\$PY" ]; then
@@ -91,7 +94,15 @@ fi
 PYTHONPATH="\$GAME/engine"
 export PYTHONPATH
 cd "\$GAME" || exit 1
-exec "\$PY" "\$GAME/desktop/royals_gui.py" >> "\$LOG" 2>&1
+
+# Started detached, and deliberately not exec'd. The framework python is its own
+# application bundle, so exec'ing it leaves a process claiming to be this app while the
+# window server is told it is Python -- LaunchServices treats that as a launch that never
+# completed and kills it about ten seconds in, with no error anywhere to explain it.
+# Handing the window off to a detached child and letting this script finish avoids the
+# whole argument.
+nohup "\$PY" "\$GAME/desktop/royals_gui.py" >> "\$LOG" 2>&1 &
+exit 0
 LAUNCH
 
 chmod +x "$APP/Contents/MacOS/Royals"

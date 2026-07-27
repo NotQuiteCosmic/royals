@@ -3,8 +3,8 @@
 # These three functions used to live in Hasher.py, next to the board representation they
 # print. They were moved here unchanged when the engine became an importable package,
 # because the engine is now imported by a web worker as well as by a terminal, and a
-# module that prints ANSI escapes to stdout has no business inside it. Nothing about what
-# they draw has changed -- only where they live.
+# module that prints ANSI escapes to stdout has no business inside it. They arrived
+# unchanged; the last-move shading below is the only thing added to them since.
 #
 # tests/test_engine_purity.py is what keeps them from drifting back.
 
@@ -16,15 +16,34 @@ from royals_engine.hasher import (
 from royals_lib import bcolors
 
 
+# The square a move came from and the one it landed on, shaded so that what just changed
+# can be found without re-reading the whole board -- the terminal's answer to the tinted
+# tile the other two front ends draw.
+#
+# Reverse video rather than a background colour, for two reasons. The board has already
+# spent colour twice over -- grey and white for the squares, blue and red for the sides --
+# so a third meaning on the same channel would be one too many. And reversing is defined
+# against whatever the terminal's own background happens to be, so it shades on a light
+# terminal and a dark one alike, where a fixed background would be a grey block behind
+# grey text on one of them.
+SHADE = bcolors.CSELECTED
+
+
 # Each rank prints twice: once showing what blue has standing there, once what red has.
 # The two passes used to be separate blocks indexing the same bit offsets against different
 # constants, which is how they drifted apart. They are one block now, because the question
 # is the same either way -- a side sees its own stack where it holds the square, and its
 # people in captivity where the other side does.
-def displaySquare(code, who, spaceColor, sideColor):
+#
+# `shade` is re-armed after every reset rather than wrapped once around the whole square:
+# CEND clears the shading along with the colour it was there to end, so a square printed
+# a token at a time would keep its shading only as far as its first token.
+def displaySquare(code, who, spaceColor, sideColor, shade=""):
+    end = bcolors.CEND + shade
+
     # a wholly empty square, which is the only thing a code of 0 can be
     if not code:
-        print(spaceColor + ". . ." + bcolors.CEND, end=' ')
+        print(spaceColor + ". . ." + end, end=' ')
         return
 
     s = Parse_Space(code)
@@ -32,7 +51,7 @@ def displaySquare(code, who, spaceColor, sideColor):
     if s[SIDE] == who:
         # our own stack
         if s[DRAGON]:
-            print(sideColor + "DRAGN" + bcolors.CEND, end=' ')
+            print(sideColor + "DRAGN" + end, end=' ')
             return
 
         spy, pawns, royal = s[SPY], s[PAWNS], s[ROYAL]
@@ -43,22 +62,26 @@ def displaySquare(code, who, spaceColor, sideColor):
         tail = ".x"
     else:
         # theirs, with nothing of ours in it
-        print(spaceColor + ". . ." + bcolors.CEND, end=' ')
+        print(spaceColor + ". . ." + end, end=' ')
         return
 
-    if spy: print(sideColor + "S" + bcolors.CEND, end=' ')
-    else: print(spaceColor + "." + bcolors.CEND, end=' ')
+    if spy: print(sideColor + "S" + end, end=' ')
+    else: print(spaceColor + "." + end, end=' ')
 
-    if pawns: print(sideColor + str(pawns) + bcolors.CEND, end=' ')
-    else: print(spaceColor + "." + bcolors.CEND, end=' ')
+    if pawns: print(sideColor + str(pawns) + end, end=' ')
+    else: print(spaceColor + "." + end, end=' ')
 
     # prisoners can't include a royal, so that column is the marker instead
-    if tail is not None: print(spaceColor + tail + bcolors.CEND, end='')
-    elif royal: print(sideColor + "R" + bcolors.CEND, end=' ')
-    else: print(spaceColor + "." + bcolors.CEND, end=' ')
+    if tail is not None: print(spaceColor + tail + end, end='')
+    elif royal: print(sideColor + "R" + end, end=' ')
+    else: print(spaceColor + "." + end, end=' ')
 
 
-def DisplayHashBoard(hashBoard):
+# lastMove -- the 1-based squares the move just played touched, which is what the shading
+# is for. Origin and destination, in that order, or the one square for a break or an
+# entering placement. Empty for the opening position and for a pass, both of which are
+# positions nothing moved into.
+def DisplayHashBoard(hashBoard, lastMove=()):
     print("     A       B       C       D       E       F       G   \n")
     blue = True
     spaceNum = 1
@@ -70,8 +93,13 @@ def DisplayHashBoard(hashBoard):
             if blue: print(spaceNum // 7 + 1, end=' ')
             else: print(' ', end=' ')
 
+        shade = SHADE if spaceNum in lastMove else ""
 
-        print(" ", end=' ')
+        # The shading starts one column early and runs one past, so it is a band around
+        # the square rather than a band starting at it -- the square is five characters
+        # wide and the gap between two of them is three, so one on each side leaves the
+        # block centred and still leaves daylight between neighbours.
+        print(" " + shade, end=' ')
 
         # sets square color
         if spaceNum % 2 != 0:
@@ -80,8 +108,10 @@ def DisplayHashBoard(hashBoard):
             spaceColor = bcolors.CWHITE
 
         # the space in question
-        if blue: displaySquare(hashBoard[spaceNum - 1], 0, spaceColor, bcolors.CBLUE)
-        else: displaySquare(hashBoard[spaceNum - 1], 1, spaceColor, bcolors.CRED)
+        if blue: displaySquare(hashBoard[spaceNum - 1], 0, spaceColor, bcolors.CBLUE, shade)
+        else: displaySquare(hashBoard[spaceNum - 1], 1, spaceColor, bcolors.CRED, shade)
+
+        if shade: print(bcolors.CEND, end='')
 
         spaceNum += 1
         rowC += 1
