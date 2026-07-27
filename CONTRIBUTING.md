@@ -12,6 +12,10 @@ python3 -m pip install -e ./web           # only if you're touching the server
 The engine itself has **no dependencies and must keep none** — see below. `pytest` and the
 web layer's FastAPI are development and server concerns, not engine ones.
 
+`install-desktop.sh` at the repo root is for people who only want to play, not for working
+on the game: it clones to `~/Royals` and runs the window from there via `PYTHONPATH`,
+deliberately installing nothing. Keep using the editable installs above.
+
 ## Running things
 
 ```bash

@@ -44,6 +44,44 @@ docs/                       the rulebook and the architecture notes
 Backup/                     frozen Python-2-era originals, kept as the historical record
 ```
 
+## Installing it
+
+To just play the game on a Mac or a Linux box, there is an installer. Download it, read it —
+it is short, and you should never run a script off the internet you haven't looked at — then
+run it:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/NotQuiteCosmic/royals/master/install-desktop.sh
+less install-desktop.sh
+sh install-desktop.sh
+```
+
+Or, if you'd rather not:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NotQuiteCosmic/royals/master/install-desktop.sh | sh
+```
+
+It clones the game to `~/Royals`, writes a launcher next to it, and on macOS builds
+`~/Applications/Royals.app` so it's double-clickable. Then it opens the window.
+
+It **installs no Python packages** — no pip, no virtualenv, nothing added to your system
+Python. It doesn't need to: `royals_engine` imports the standard library and nothing else,
+so the launcher just puts `engine/src` on `PYTHONPATH`. It writes to those two paths in your
+home directory and nowhere else, needs no sudo, and refuses to run with it. Pass
+`--dry-run` to see exactly what it would do without it doing anything.
+
+It won't overwrite things it didn't create: if `~/Royals` is already something else, or if
+an `Royals.app` is there that this installer didn't build, it stops and says so rather than
+clearing the way. Run it again any time to update — a checkout with local edits is left
+alone, not overwritten.
+
+To remove it, `sh ~/Royals/uninstall.sh`, or delete `~/Royals` and `~/Applications/Royals.app`
+by hand. That's all there is.
+
+The installer covers the desktop window only. For the terminal and browser front ends, and
+for working on any of it, carry on below.
+
 ## Running it
 
 ```bash

@@ -244,22 +244,39 @@ E_HALF = 3.5 + E_FRAME
 SLAB_T = 0.30
 
 # A piece is a chip, and every chip is the same chip -- what a piece is gets said by the
-# icon on its lid, not by its shape, exactly as it was said by its shape before. The top
-# chip of a stack is drawn wider than the rest: it is the one that has to carry the icons
-# for the whole square, and a capping stone makes the top of a pile findable at a glance
-# when the board is tilted low and the chips below have merged into a column.
-R_CHIP = 0.30
-R_CAP = 0.40
+# icon on its lid, not by its shape, exactly as it was said by its shape before. One
+# radius for all of them, top of the pile included: the top chip used to be drawn wider,
+# as a capping stone that made the head of a pile findable at a glance, and it cost more
+# than it bought. A stack whose top step is wider than the step under it reads as a piece
+# of a different size rather than as the same piece higher up, and the overhang throws a
+# step into the silhouette that no stack actually has.
+R_CHIP = 0.40
 # Tall enough that six of them are half a square high on screen at the angle the board
 # opens at. Thinner chips are prettier and say nothing: the whole point of standing the
 # pieces up is that a full square should be visible as a full square from across the room.
 H_CHIP = 0.16
 H_MAX = 6 * H_CHIP + 0.04
 
-# The dragon can't stack and never shares a square, so it gets a silhouette that stacking
-# could never produce: one wide, low slab rather than a pile.
-R_DRAGON = 0.44
-H_DRAGON = 0.20
+# The dragon can't stack and never shares a square, so it gets a solid a pile can never
+# make: a cone, standing three chips high -- which is also what a dragon is worth. Its
+# foot is narrower than a chip, so a dragon and the three-high stack next to it are told
+# apart by the taper first and the footprint second.
+#
+# Narrow matters more than it looks. A cone only has a silhouette while its apex projects
+# clear of its base; past that the eye is over the point and a cone is honestly a disc.
+# The pitch that happens at is atan(h/r), so 0.48 over 0.26 keeps the point up to about 62
+# degrees, and the board opens at 55. A broader foot looks better standing still and turns
+# into a dome the moment the board is tilted back, which is when it matters.
+R_DRAGON = 0.26
+H_DRAGON = 3 * H_CHIP
+
+# Where the band round the cone sits, as a fraction of the way up the slant. Low, because
+# a fraction of the slant sits higher on screen than it sounds: what shows above the band
+# is the near face and the whole of the far one, so a band at the honest middle reads as a
+# hat. Wide, because the band is the whole of what a lid icon used to say and a hairline
+# would not survive the piece being small on screen.
+RING_LO = 0.26
+RING_HI = 0.46
 
 STUD_R = 0.09
 STUD_H = 0.05
@@ -299,7 +316,10 @@ ROOT2 = math.sqrt(2.0)
 #   royal    square      the one that has to arrive last, and the one worth most
 #   spy      triangle    the one everything else gathers on to
 #   pawn     disc        one per pawn, up to four
-#   dragon   diamond     the piece that is none of the above and can't stack
+#
+# There is no dragon here. It is the one piece that never shares a square with anything,
+# so it never has to be told apart from its neighbours on a lid -- it is drawn as a cone
+# instead, and the shape of the piece is the whole of the icon. See cone().
 
 # A pale halo is laid down under every piece before the piece itself. Without it the code
 # inverted with the square: a light piece read as a hollow ring on a white square and as a
@@ -342,7 +362,6 @@ def drawPiece(c, draw, x, y, r, side, w=2):
 # and create_oval draws it better than any number of them would.
 SHAPE_ROYAL = ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0))
 SHAPE_SPY = ((0.0, -1.0), (1.0, 0.78), (-1.0, 0.78))
-SHAPE_DRAGON = ((0.0, -1.0), (1.0, 0.0), (0.0, 1.0), (-1.0, 0.0))
 SHAPE_DISC = None
 
 
@@ -369,10 +388,6 @@ def iconSpy(c, x, y, r, fill, edge, w=2):
 
 def iconPawn(c, x, y, r, fill, edge, w=2):
     shapeAt(c, SHAPE_DISC, x, y, r, r, fill, edge, w)
-
-
-def iconDragon(c, x, y, r, fill, edge, w=2):
-    shapeAt(c, SHAPE_DRAGON, x, y, r, r, fill, edge, w)
 
 
 # Lays a row of shapes out centred on x, and draws them. `items` is a list of the icon
@@ -564,6 +579,101 @@ def chip(c, view, x, y, z0, r, h, walls, topFill, topEdge, w=2, tags=None):
     c.create_oval(px - rx, lid - ry, px + rx, lid + ry,
                   fill=topFill, outline=topEdge, width=w, tags=tags)
     return lid
+
+
+# The dragon. A cone is harder than a chip for one reason: a cylinder's silhouette is its
+# two vertical sides at every angle the board can be turned to, and a cone's is a pair of
+# tangents that walk round the base as it tilts, until at a steep enough pitch the apex
+# falls inside the base and there is no silhouette left at all.
+#
+# Rather than case-split on that, the surface is drawn as what it is -- a fan of triangles
+# from the apex out to the rim, laid down far ones first. That comes out right in both
+# regimes, and it shades without needing a clip: each triangle takes the band its own
+# position on screen puts it in, the same three bands lit from the same top left as the
+# chip's wall, so a cone and a chip standing next to each other agree about the light.
+#
+# `ring` is a band round the middle in the other side's shade. It is the whole of what
+# this piece says about itself now -- there is no lid to paint an icon on -- and it is
+# drawn face by face inside the same loop so it inherits the same near-far ordering. The
+# cone is ruled from apex to rim and the projection is affine, so a point a fraction of
+# the way up a rule really is the straight lerp of the two ends on screen.
+def cone(c, view, x, y, z0, r, h, walls, ring=None, w=2, tags=None):
+    wallMid, wallHi, wallLo, wallEdge = walls
+    tags = tags or ()
+    px, base = view.project(x, y, z0)
+    rx = r * view.scale
+    ry = r * view.scale * view.sinP
+    d = h * view.scale * view.cosP
+    ax, ay = px, base - d
+
+    # The rim in screen terms. A circle lying flat projects to an ellipse square-on to the
+    # screen whatever the yaw -- the same fact View.disc leans on -- so it can be walked
+    # here directly, and how near the camera a rim point is is just how far down the screen
+    # it has fallen.
+    steps = 20 if view.detail else 10
+    rim = []
+    for i in range(steps):
+        t = 2.0 * math.pi * i / steps
+        rim.append((px + rx * math.cos(t), base + ry * math.sin(t)))
+
+    band = rx * 0.35
+
+    # `sx` is a face's own place across the piece, not across the canvas
+    def shade(sx):
+        if not view.detail: return wallMid
+        if sx < px - band: return wallHi
+        return wallMid if sx <= px + band else wallLo
+
+    def up(p, f):
+        return (p[0] + (ax - p[0]) * f, p[1] + (ay - p[1]) * f)
+
+    faces = [(rim[i], rim[(i + 1) % steps]) for i in range(steps)]
+    faces.sort(key=lambda f: f[0][1] + f[1][1])
+
+    # Every face outlined in its own fill: neighbours share an edge, and a hairline of
+    # board showing between two of them reads as a crack down the piece. That overlap is
+    # also why a face carrying a band has to be cut into three pieces at the band's edges
+    # rather than drawn whole and banded over. Cut, the next face round overpaints its
+    # neighbour foot on foot and band on band; whole, its foot would overpaint the
+    # neighbour's band, and the piece came out with a spoke in the ring for every face.
+    def facet(pts, fill):
+        flat = []
+        for sx, sy in pts:
+            flat.append(sx)
+            flat.append(sy)
+        c.create_polygon(flat, fill=fill, outline=fill, width=1, tags=tags)
+
+    apex = (ax, ay)
+    for p0, p1 in faces:
+        fill = shade(0.5 * (p0[0] + p1[0]))
+        if not ring:
+            facet((apex, p0, p1), fill)
+            continue
+        a0, a1 = up(p0, RING_LO), up(p1, RING_LO)
+        b0, b1 = up(p0, RING_HI), up(p1, RING_HI)
+        facet((p0, p1, a1, a0), fill)
+        facet((a0, a1, b1, b0), ring)
+        facet((b0, b1, apex), fill)
+
+    # The silhouette, over the top of the fan: two tangents and the front of the rim while
+    # the apex stands clear, and the rim on its own once it doesn't. The tangents touch
+    # where the polar line of the apex cuts the base ellipse, which at a low pitch is a
+    # long way round from the widest point -- drawing them to the widest point instead is
+    # the wrong figure, and looks it.
+    if d > ry:
+        t0 = math.asin(ry / d)
+        pts = []
+        for i in range(steps + 1):
+            t = -t0 + (math.pi + 2.0 * t0) * i / float(steps)
+            pts.append(px + rx * math.cos(t))
+            pts.append(base + ry * math.sin(t))
+        c.create_line(pts, fill=wallEdge, width=w, tags=tags)
+        c.create_line(ax, ay, pts[0], pts[1], fill=wallEdge, width=w, tags=tags)
+        c.create_line(ax, ay, pts[-2], pts[-1], fill=wallEdge, width=w, tags=tags)
+    else:
+        c.create_oval(px - rx, base - ry, px + rx, base + ry,
+                      fill="", outline=wallEdge, width=w, tags=tags)
+    return ay
 
 
 ####### the icons, lying flat on whatever they are painted on #######
@@ -1008,8 +1118,7 @@ class RoyalsWindow:
         def pile(x, base, count, side, label):
             key.ox, key.oy = x + 16, base
             for k in range(count):
-                chip(c, key, 0.0, 0.0, k * H_CHIP,
-                     R_CAP if k == count - 1 else R_CHIP, H_CHIP,
+                chip(c, key, 0.0, 0.0, k * H_CHIP, R_CHIP, H_CHIP,
                      CHIP_WALL[side], PIECE_HALO, INK, 1)
             c.create_text(x + 38, base - 6, text=label, font=FONT["small"],
                           fill=TEXT_DIM, anchor="w")
@@ -1018,7 +1127,18 @@ class RoyalsWindow:
         entry(4, 30, iconSpy, "spy")
         entry(150, 30, iconPawn, "pawn")
         entry(4, 52, iconRoyal, "royal")
-        entry(150, 52, iconDragon, "dragon")
+
+        # The dragon has left this list, because the list is of things a lid can have on
+        # it and the dragon has no lid. So the key shows the piece itself, drawn by the
+        # code the board draws it with -- standing on a baseline of its own rather than
+        # centred on the row, since a piece that stands up has a foot and not a centre.
+        key.ox, key.oy = 164.0, 60.0
+        key.scale = 56.0   # a shade larger than the piles below: it is a smaller piece
+        cone(c, key, 0.0, 0.0, 0.0, R_DRAGON, H_DRAGON,
+             CHIP_WALL[0], INK, 1)
+        key.scale = 40.0
+        c.create_text(182, 55, text="dragon", font=FONT["small"], fill=TEXT_DIM,
+                      anchor="w")
 
         # The board stands its pieces up now, so the key has to as well. The shapes above
         # are what a lid can have on it; the piles below are what a square looks like from
@@ -1794,26 +1914,23 @@ class RoyalsWindow:
                 bx, by = wx + dx, wy + dy
 
             if s[Hasher.DRAGON]:
-                # One wide low slab where everything else is a pile, so the piece that
-                # cannot stack cannot be mistaken for a stack of one. Its lid keeps the
-                # hole punched through the diamond, which is what said it was neither a
-                # royal nor anything that could be gathered.
-                chip(c, v, bx, by, 0.0, R_DRAGON, H_DRAGON,
-                     walls, PIECE_HALO, INK, 2, tag)
-                inner = PIECE_HALO if side else INK
-                lz = H_DRAGON + 0.001
-                planePiece(c, v, SHAPE_DRAGON, bx, by, lz, 0.0, 0.0, 0.235, side, 2, tag)
-                planeShape(c, v, SHAPE_DRAGON, bx, by, lz, 0.0, 0.0, 0.10,
-                           inner, inner, 1, tag)
+                # A cone three chips high where everything else is a pile, so the piece
+                # that cannot stack cannot be mistaken for a stack of three. It carries no
+                # icon: there is no lid to put one on, and a cone is already a shape
+                # nothing else on the board has. What the diamond's punched hole used to
+                # say -- this is neither a royal nor anything that can be gathered -- is
+                # said instead by a band round its middle in the other side's shade, which
+                # has the second virtue of showing up whichever square it is standing on.
+                cone(c, v, bx, by, 0.0, R_DRAGON, H_DRAGON,
+                     walls, PIECE_HALO if side else INK, 2, tag)
             else:
-                # One chip per piece, all the same chip, piled up. The top one is drawn
-                # wider than the rest: it is the one carrying the icons for the whole
-                # square, and a capping stone makes the top of a pile findable at a
-                # glance when the board is low and the chips under it have run together.
+                # One chip per piece, all the same chip, piled up -- the same width the
+                # whole way up, so the pile is one column and not a stepped one. What
+                # finds the head of it is the pale lid, which no chip below the top one
+                # shows any of.
                 n = s[Hasher.SPY] + s[Hasher.PAWNS] + s[Hasher.ROYAL]
                 for k in range(n):
-                    chip(c, v, bx, by, k * H_CHIP,
-                         R_CAP if k == n - 1 else R_CHIP, H_CHIP,
+                    chip(c, v, bx, by, k * H_CHIP, R_CHIP, H_CHIP,
                          walls, PIECE_HALO, INK, 2, tag)
 
                 # The same icons the board always used, the same royal-and-spy-then-pawns
