@@ -17,17 +17,18 @@ Read [docs/RULES.md](docs/RULES.md) before reasoning about game logic and
 
 ```bash
 cd tests && python3 regress.py check all      # the goldens
-python3 -m pytest tests/ -q                   # 95 unit tests
+python3 -m pytest tests/ -q                   # 110 unit tests
 python3 -m py_compile engine/src/royals_engine/*.py apps/*/*.py    # quick syntax check
 ```
 
 Expected green state: `golden.txt` 13,496 lines identical, `golden_search.txt` 245 lines
-identical, 95 tests passing (22 engine-purity, 51 notation, 22 web API).
+identical, 110 tests passing (22 engine-purity, 51 notation, 37 web API).
 
 The web API tests call `pytest.importorskip("fastapi")`, so without `pip install -e ./web`
-they skip silently and the run reports 73 passed, not 95. **Check the count, not just the
-colour.** CI doesn't install the web package either, so the web layer is currently
-uncovered there. Both packages are already installed editable in this environment.
+they skip silently and the run reports 73 passed, not 110. **Check the count, not just
+the colour.** CI runs them in a separate CPython-only job that installs the web package,
+because the goldens matrix installs the engine alone. Both packages are already installed
+editable in this environment.
 
 ## The rule that governs everything
 

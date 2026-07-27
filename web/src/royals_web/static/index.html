@@ -20,27 +20,62 @@
     <h2>New game</h2>
 
     <div class="field">
+      <span class="label">Opponent</span>
+      <div class="choice" id="opponent-choice">
+        <button type="button" class="chip selected" data-mode="ai">The computer</button>
+        <button type="button" class="chip" data-mode="human">A friend</button>
+      </div>
+      <p class="hint" id="opponent-hint">Play against the engine on this machine.</p>
+    </div>
+
+    <div class="field">
       <span class="label">You play</span>
       <div class="choice" id="side-choice">
         <button type="button" class="chip chip-blue selected" data-side="0">Blue</button>
         <button type="button" class="chip chip-red" data-side="1">Red</button>
+        <button type="button" class="chip hidden" data-side="random" id="side-random">Random</button>
       </div>
       <p class="hint">Blue enters first, so red makes the first move.</p>
     </div>
 
-    <div class="field">
-      <span class="label">Opponent strength</span>
-      <div class="choice" id="difficulty-choice"></div>
-      <p class="hint" id="difficulty-hint"></p>
-    </div>
+    <div id="ai-options">
+      <div class="field">
+        <span class="label">Opponent strength</span>
+        <div class="choice" id="difficulty-choice"></div>
+        <p class="hint" id="difficulty-hint"></p>
+      </div>
 
-    <div class="field">
-      <span class="label">Opening variety</span>
-      <input type="range" id="noise" min="0" max="100" value="50">
-      <p class="hint">How much the computer varies its opening formation.</p>
+      <div class="field">
+        <span class="label">Opening variety</span>
+        <input type="range" id="noise" min="0" max="100" value="50">
+        <p class="hint">How much the computer varies its opening formation.</p>
+      </div>
     </div>
 
     <button type="button" id="start" class="primary">Start</button>
+    <p class="hint" id="setup-error"></p>
+  </section>
+
+  <!-- the invite link, while the other seat is empty -->
+  <section id="share" class="panel hidden">
+    <h2>Invite your opponent</h2>
+    <p class="hint">Send them this link. The first person to open it takes the other
+      seat, and the link stops working after that.</p>
+
+    <div class="share-row">
+      <input type="text" id="invite-url" readonly>
+      <button type="button" id="copy-invite">Copy</button>
+      <button type="button" id="send-invite" class="hidden">Send</button>
+    </div>
+    <p class="hint" id="share-status">Waiting for them to join…</p>
+
+    <details class="resume">
+      <summary>Playing on another device?</summary>
+      <p class="hint">Your seat is held by this browser. To take it elsewhere, open this
+        link there instead — <b>anyone who has it can play as you</b>, so don't post it
+        anywhere you wouldn't post the game itself.</p>
+      <input type="text" id="resume-url" readonly>
+    </details>
   </section>
 
   <!-- game -->
@@ -66,6 +101,7 @@
       <div class="controls bottom">
         <button type="button" id="resign">Resign</button>
         <button type="button" id="newgame">New game</button>
+        <button type="button" id="invite-again" class="hidden">Invite link</button>
       </div>
     </aside>
   </section>

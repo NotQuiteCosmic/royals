@@ -4,7 +4,7 @@ This is the state MainPlay keeps on its call stack and RoyalsGUI writes down as 
 A server can do neither: a request handler must be able to pick up a game it has never
 seen, decide one thing, and put it back down. So the whole of a game is data --
 
-    phase        "entering", "playing" or "over"
+    phase        "waiting", "entering", "playing" or "over"
     enter_index  how far down Engine.enteringSequence() the entering has got
     turn         as MainPlay counts it; side to move is turn % 2
     ko_boards    every position the game has stood in, in order
@@ -12,6 +12,13 @@ seen, decide one thing, and put it back down. So the whole of a game is data --
 
 -- and `advance` is the loop MainPlay runs, stopping wherever MainPlay would have
 called input().
+
+**A game has two seats, and either may be a person.** Until M3 one of them was always
+the computer, and the code said so: a single `human_side` field, with everything else
+derived by subtracting it from one. Two people playing each other has no such field --
+"the human" is whoever is asking -- so a seat is a thing in its own right, and the
+question a request answers is not "is this the human's turn" but "is the side to move
+the seat this token belongs to". Nothing about the rules changed; only who may ask.
 
 One thing worth knowing before changing anything here: **validating a move needs no
 engine globals at all.** AI.listAllMoves and AI.performOneStep are pure, and the ko rule
@@ -21,6 +28,8 @@ inside an AI worker process, in ai_pool.py. That is what makes concurrent games 
 here without refactoring the engine.
 """
 
+import secrets
+import time
 import uuid
 from dataclasses import dataclass, field
 
@@ -29,9 +38,14 @@ from royals_engine import engine as Engine
 from royals_engine import ai as AI
 from royals_engine import notation as N
 
+from royals_web import seats as S
+
 
 BLUE, RED = 0, 1
 SIDE_NAMES = {BLUE: "blue", RED: "red"}
+
+HUMAN, COMPUTER = "human", "ai"
+MODES = ("ai", "human")
 
 PIECE_NAMES = {Hasher.ROYAL: "royal", Hasher.PAWNS: "pawn", Hasher.SPY: "spy"}
 
@@ -86,12 +100,32 @@ def entering_options(board, contr, piece):
 # ---------------------------------------------------------------------------
 
 @dataclass
+class Seat:
+    """One side of a game, and the token that proves you are sitting in it.
+
+    `token_hash` is None for a computer seat -- nobody holds it -- and `claimed` is what
+    separates "this seat is yours" from "this seat is waiting for whoever opens the
+    invite". A human seat is created unclaimed for the second player and claimed for
+    whoever created the game.
+    """
+    kind: str                   # "human" | "ai"
+    token_hash: str = None
+    claimed: bool = False
+
+
+@dataclass
 class Game:
     id: str
-    human_side: int
+    mode: str                   # "ai" | "human"
     ai_depth: int
     entry_seed: int
     entry_noise: float
+
+    # side -> Seat. Always both sides; for an ai game one of them is the computer.
+    seats: dict = field(default_factory=dict)
+
+    # sha256 of the single-use token that claims the empty seat, or None once claimed.
+    invite_hash: str = None
 
     board: tuple = ()
     phase: str = "entering"
@@ -109,17 +143,20 @@ class Game:
     termination: str = None     # "gather" | "resign" | "double_pass" | "no_moves"
     last_move: list = field(default_factory=list)   # squares to highlight, 1-based
 
-    # set while the entering phase is waiting on a human placement
+    # set while the entering phase is waiting on a placement
     entry_piece: int = None
     entry_side: int = None
+
+    # Bumped by every mutation. The client polls on this, so it has to move for things
+    # `ply` cannot see -- a seat being claimed, a resignation -- not just for moves.
+    version: int = 0
+
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
 
     _ko_set: set = field(default_factory=set, repr=False)
 
     # -- derived ------------------------------------------------------------
-
-    @property
-    def ai_side(self):
-        return 1 - self.human_side
 
     @property
     def side_to_move(self):
@@ -134,11 +171,31 @@ class Game:
         return self.phase == "over"
 
     @property
-    def awaiting_human(self):
-        """True when the game cannot go further without a person deciding something."""
-        if self.finished:
-            return False
-        return self.side_to_move == self.human_side
+    def ai_to_move(self):
+        """True when the server can go further on its own. This is what drives _advance."""
+        side = self.side_to_move
+        return side is not None and self.seats[side].kind == COMPUTER
+
+    def awaits(self, side):
+        """True when the game is waiting on this particular seat."""
+        return side is not None and self.side_to_move == side
+
+    def seat_of(self, token):
+        """Which side this token sits in, or None. Constant-time against both seats.
+
+        Both seats are always checked, and the result is not short-circuited on the
+        first match, so the time taken says nothing about which seat a wrong token
+        nearly matched.
+        """
+        found = None
+        for side, seat in self.seats.items():
+            if S.verify(token, seat.token_hash):
+                found = side
+        return found
+
+    def touch(self):
+        self.version += 1
+        self.updated_at = time.time()
 
     def ko_set(self):
         return self._ko_set
@@ -148,10 +205,20 @@ class Game:
         self._ko_set.add(board)
 
 
-def new_game(human_side=BLUE, difficulty=DEFAULT_DIFFICULTY, entry_noise=0.5,
+def new_game(mode="ai", side=BLUE, difficulty=DEFAULT_DIFFICULTY, entry_noise=0.5,
              entry_seed=None, rng=None):
-    if human_side not in (BLUE, RED):
-        raise ValueError("side must be 0 (blue) or 1 (red)")
+    """Start a game and return (game, seat_token, invite_token).
+
+    `side` is the side the *creator* takes, or "random". The tokens are returned here and
+    nowhere else, ever again: the game stores only their hashes. `invite_token` is None
+    for a game against the computer, which has no empty seat to claim.
+    """
+    if mode not in MODES:
+        raise ValueError("mode must be one of %s" % (MODES,))
+    if side == "random":
+        side = secrets.choice((BLUE, RED))
+    if side not in (BLUE, RED):
+        raise ValueError("side must be 0 (blue), 1 (red) or 'random'")
     if difficulty not in DIFFICULTIES:
         raise ValueError("unknown difficulty %r" % (difficulty,))
 
@@ -160,16 +227,67 @@ def new_game(human_side=BLUE, difficulty=DEFAULT_DIFFICULTY, entry_noise=0.5,
         import random
         entry_seed = (rng or random).randrange(1 << 30)
 
+    seat_token = S.mint()
+    invite_token = S.mint() if mode == "human" else None
+
     game = Game(
         id=uuid.uuid4().hex,
-        human_side=human_side,
-        ai_depth=DIFFICULTIES[difficulty],
+        mode=mode,
+        # A human game has no computer in it, so there is no depth to speak of. Leaving
+        # a number here would be a setting that silently does nothing.
+        ai_depth=DIFFICULTIES[difficulty] if mode == "ai" else None,
         entry_seed=int(entry_seed),
         entry_noise=entry_noise,
         board=Hasher.Entering_Board(),
+        invite_hash=S.hash_token(invite_token) if invite_token else None,
+        seats={
+            side: Seat(kind=HUMAN, token_hash=S.hash_token(seat_token), claimed=True),
+            1 - side: Seat(kind=HUMAN, claimed=False) if mode == "human"
+                      else Seat(kind=COMPUTER, claimed=True),
+        },
     )
-    _seek_entry_step(game)
-    return game
+
+    if mode == "human":
+        # Nothing may happen until somebody is sitting in the other seat -- not even the
+        # first placement, which would otherwise commit one player to a formation while
+        # the game is still, as far as anyone knows, an unanswered message.
+        game.phase = "waiting"
+    else:
+        _seek_entry_step(game)
+
+    return game, seat_token, invite_token
+
+
+class InviteError(Exception):
+    """The invite is spent, wrong, or there is no seat left to claim."""
+
+
+def claim_seat(game, invite_token):
+    """Take the empty seat. Returns (side, seat_token).
+
+    Single use: the invite hash is cleared here, so a link that has been used is a link
+    that no longer does anything. Whoever holds the resulting seat token is the player.
+    """
+    if game.invite_hash is None:
+        raise InviteError("that invitation has already been used")
+    if not S.verify(invite_token, game.invite_hash):
+        raise InviteError("that invitation is not valid for this game")
+
+    open_seats = [side for side, seat in game.seats.items() if not seat.claimed]
+    if not open_seats:
+        raise InviteError("both seats are taken")
+
+    side = open_seats[0]
+    seat_token = S.mint()
+    game.seats[side] = Seat(kind=HUMAN, token_hash=S.hash_token(seat_token), claimed=True)
+    game.invite_hash = None
+
+    if game.phase == "waiting":
+        game.phase = "entering"
+        _seek_entry_step(game)
+    game.touch()
+
+    return side, seat_token
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +332,7 @@ def place(game, square, side=None):
     game.last_move = [square]
     game.enter_index += 1
     _seek_entry_step(game)
+    game.touch()
     return game
 
 
@@ -254,6 +373,7 @@ def play_move(game, move, side=None):
         game.moves.append("--")
         game.last_move = []
         game.passes += 1
+        game.touch()
         if game.passes > 1:
             _finish(game, None, "double_pass")
             return game
@@ -273,6 +393,7 @@ def play_move(game, move, side=None):
     game.moves.append(N.encode_move(move))
     game.last_move = _highlight(move)
     game._record_ko(new_board)
+    game.touch()
 
     end, winner = Hasher.Check_For_Winner(new_board)
     if end:
@@ -304,6 +425,7 @@ def _finish(game, winner_side, termination):
     game.phase = "over"
     game.result = "draw" if winner_side is None else SIDE_NAMES[winner_side]
     game.termination = termination
+    game.touch()
 
 
 # ---------------------------------------------------------------------------
@@ -360,18 +482,33 @@ def movable_origins(game):
                    for m in legal_moves(game.board, contr, game.ko_set())})
 
 
-def to_json(game, include_legal=True):
+def to_json(game, viewer_side=None, include_legal=True):
+    """The game as one particular viewer sees it.
+
+    `viewer_side` is the seat the request proved it holds, or None for a spectator --
+    anybody with the link, since Royals is perfect-information and there is nothing in a
+    position to hide. What being a player changes is not what you can *see* but what the
+    page should offer you: `origins` and the entering options are the squares *you* may
+    click, so they are sent only to the side actually to move. A spectator's client then
+    has nothing to render as clickable without having to know it is a spectator.
+    """
+    yours = viewer_side if viewer_side in (BLUE, RED) else None
+    awaiting_you = game.awaits(yours)
+
     state = {
         "id": game.id,
+        "mode": game.mode,
         "phase": game.phase,
         "board": board_to_json(game.board),
-        "humanSide": game.human_side,
-        "aiSide": game.ai_side,
+        "yourSide": yours,
+        "seats": {str(side): {"kind": seat.kind, "claimed": seat.claimed}
+                  for side, seat in game.seats.items()},
         "aiDepth": game.ai_depth,
         "sideToMove": game.side_to_move,
-        "awaitingHuman": game.awaiting_human,
+        "awaitingYou": awaiting_you,
         "moves": list(game.moves),
         "ply": len(game.moves),
+        "version": game.version,
         "lastMove": [N.square_to_alg(s) for s in game.last_move],
         "result": game.result,
         "termination": game.termination,
@@ -385,14 +522,14 @@ def to_json(game, include_legal=True):
             "total": len(ENTER_STEPS),
             "options": [N.square_to_alg(s)
                         for s in entering_options(game.board, game.entry_side, game.entry_piece)]
-            if game.awaiting_human else [],
+            if awaiting_you else [],
         }
 
     if game.phase == "playing" and include_legal:
         contr = game.turn % 2
         legal = legal_moves(game.board, contr, game.ko_set())
         state["mustPass"] = not legal
-        if game.awaiting_human:
+        if awaiting_you:
             state["origins"] = [N.square_to_alg(s)
                                 for s in sorted({m[AI.MOVE_ORIGIN] for m in legal})]
 

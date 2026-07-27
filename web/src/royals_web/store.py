@@ -58,23 +58,32 @@ class GameStore:
         for gid in stale:
             del self._games[gid]
 
-    # -- creation rate limiting ---------------------------------------------
+    # -- rate limiting -------------------------------------------------------
 
-    def may_create(self, client_key, limit=CREATE_LIMIT, window=CREATE_WINDOW_SECONDS):
+    def may_act(self, key, limit, window):
+        """A sliding-window count of anything, keyed by a caller-chosen string.
+
+        Creating games is not the only thing worth bounding -- joining is a second --
+        and the two want different limits, so the key carries its own namespace
+        ("join:1.2.3.4") rather than there being a table per endpoint.
+        """
         now = time.monotonic()
-        stamps = [t for t in self._creates.get(client_key, ()) if now - t < window]
+        stamps = [t for t in self._creates.get(key, ()) if now - t < window]
         if len(stamps) >= limit:
-            self._creates[client_key] = stamps
+            self._creates[key] = stamps
             return False
         stamps.append(now)
-        self._creates[client_key] = stamps
+        self._creates[key] = stamps
 
         # keep the tracking table from becoming its own leak
         if len(self._creates) > 10_000:
-            for key in [k for k, v in self._creates.items()
-                        if not any(now - t < window for t in v)]:
-                del self._creates[key]
+            for k, v in list(self._creates.items()):
+                if not any(now - t < window for t in v):
+                    del self._creates[k]
         return True
+
+    def may_create(self, client_key, limit=CREATE_LIMIT, window=CREATE_WINDOW_SECONDS):
+        return self.may_act(client_key, limit, window)
 
 
 store = GameStore()

@@ -7,13 +7,22 @@ independently regenerates every legal move before accepting one. AI.listAllMoves
 same generator the computer plays by, so a person and the machine are held to literally
 the same rules, and "is this legal?" is a tuple membership test rather than a second,
 subtly different implementation of the rulebook.
+
+The second rule, new with two players: **every endpoint that changes a game asks who is
+asking.** Knowing a game id is not permission to move in it -- the id is in a URL people
+paste into messages, and a game anyone holding the link can move in is not a game between
+two people. `_require_player` turns a seat token into a side, and the side it returns is
+the side the move is played as. Nothing takes a side from the request body, so there is
+no way to phrase a request that moves for your opponent.
 """
 
 import asyncio
 import contextlib
+import os
 import pathlib
+from typing import Literal, Union
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -28,6 +37,14 @@ STATIC_DIR = pathlib.Path(__file__).resolve().parent / "static"
 
 # A move is four small fields. Anything bigger is not a move.
 MAX_BODY_BYTES = 2_048
+
+# A seat token is 22 characters. This bounds what we are willing to hash.
+MAX_TOKEN_CHARS = 128
+
+# Joining is cheap and legitimate a handful of times (a reload, a second device), so this
+# is loose. Its job is not to stop token guessing -- 128 bits does that -- but to stop
+# somebody using this endpoint as a free hashing service.
+JOIN_LIMIT, JOIN_WINDOW = 60, 600
 
 
 @contextlib.asynccontextmanager
@@ -70,8 +87,68 @@ async def security_headers(request: Request, call_next):
     return response
 
 
+# Behind a proxy, request.client.host is the *proxy*. Every visitor would then share one
+# rate-limit bucket -- thirty games per ten minutes for the entire internet, and 429 for
+# everybody after that. It works perfectly in development and fails the moment it is
+# deployed, which is the worst way for a bug to behave, so the forwarded address is read
+# here. It is read *only* when the deployment says it is behind a proxy: an unconditional
+# X-Forwarded-For is a header anyone can set, and trusting it turns a rate limit into a
+# suggestion.
+TRUSTED_PROXY = os.environ.get("ROYALS_TRUSTED_PROXY", "").strip().lower() in (
+    "1", "true", "yes", "on")
+
+
 def client_key(request: Request):
+    if TRUSTED_PROXY:
+        for header in ("fly-client-ip", "x-forwarded-for"):
+            value = request.headers.get(header)
+            if value:
+                # X-Forwarded-For is a chain; the client is the leftmost entry.
+                return value.split(",")[0].strip()[:64]
     return request.client.host if request.client else "unknown"
+
+
+# ---------------------------------------------------------------------------
+# One game at a time
+# ---------------------------------------------------------------------------
+
+class _LockRegistry:
+    """A lock per game, alive only while somebody wants it.
+
+    Two people sharing a game means two requests can genuinely arrive at once, and a move
+    is read-modify-write across several awaits: validate, apply, then run the computer.
+    Without this, two submissions can both pass their turn check before either commits.
+
+    The lock deliberately does not live on the Game object. A game can be evicted from the
+    store and rebuilt while a request is in flight, and two coroutines holding two
+    different lock objects for the same game is a lock that is not locking anything. Keyed
+    by id, refcounted, and dropped when the last waiter leaves so this cannot grow.
+    """
+
+    def __init__(self):
+        self._entries = {}          # game_id -> [lock, waiters]
+
+    @contextlib.asynccontextmanager
+    async def hold(self, game_id):
+        entry = self._entries.get(game_id)
+        if entry is None:
+            entry = self._entries[game_id] = [asyncio.Lock(), 0]
+        # Counted before the await, so the entry cannot be collected out from under a
+        # coroutine that is queued for it but not yet holding it.
+        entry[1] += 1
+        try:
+            async with entry[0]:
+                yield
+        finally:
+            entry[1] -= 1
+            if entry[1] == 0:
+                self._entries.pop(game_id, None)
+
+    def __len__(self):
+        return len(self._entries)
+
+
+locks = _LockRegistry()
 
 
 # ---------------------------------------------------------------------------
@@ -79,9 +156,14 @@ def client_key(request: Request):
 # ---------------------------------------------------------------------------
 
 class NewGame(BaseModel):
-    side: int = Field(default=G.BLUE, ge=0, le=1)
+    mode: Literal["ai", "human"] = "ai"
+    side: Union[int, Literal["random"]] = G.BLUE
     difficulty: str = Field(default=G.DEFAULT_DIFFICULTY, max_length=20)
     noise: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class JoinIn(BaseModel):
+    invite: str = Field(max_length=MAX_TOKEN_CHARS)
 
 
 class Placement(BaseModel):
@@ -94,6 +176,10 @@ class MoveIn(BaseModel):
     target: str = Field(default=None, max_length=2)
     dir: str = Field(default=None, max_length=1)
     pris: bool = False
+    # Optional, and only ever a safety net. A client that retries a move it already
+    # landed -- a flaky phone connection is enough -- would otherwise play twice if the
+    # position happens to make the same move legal again.
+    expectedVersion: int = None
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +195,38 @@ def _fetch(game_id):
     return game
 
 
+def _require_player(game_id, seat_token):
+    """(game, side) for the holder of this token, or 403.
+
+    This is the whole of authorization, and every endpoint that changes a game begins
+    with it. The side it returns is the side the action is taken as -- there is no code
+    path that takes a side from the request body, so "move for my opponent" is not a
+    request that can be phrased, rather than one that is checked for and refused.
+    """
+    game = _fetch(game_id)
+    side = game.seat_of(seat_token)
+    if side is None:
+        raise HTTPException(403, "you are not a player in this game")
+    return game, side
+
+
+def _viewer_side(game, seat_token):
+    """The asker's side, or None. Never raises: anyone with the link may watch."""
+    return game.seat_of(seat_token)
+
+
+def SeatHeader():
+    """The seat token header.
+
+    A header rather than a cookie, and that is a design decision rather than a taste one:
+    a browser attaches cookies to cross-site requests on its own, which is what makes
+    CSRF possible and CSRF tokens necessary. It will not attach this. A cross-origin page
+    cannot set a custom header without a preflight, and we grant no CORS, so a
+    state-changing request forged from another site cannot carry a seat token at all.
+    """
+    return Header(default=None, alias="X-Royals-Seat", max_length=MAX_TOKEN_CHARS)
+
+
 async def _advance(game):
     """Run the computer's turns until the game needs a person again, or ends.
 
@@ -117,7 +235,9 @@ async def _advance(game):
     whole category of "where did the computer's move go" bugs.
     """
     guard = 0
-    while not game.finished and not game.awaiting_human:
+    # `ai_to_move`, not "not the human's turn": in a game between two people this is
+    # false from the first placement onwards, and _advance correctly does nothing at all.
+    while not game.finished and game.ai_to_move:
         guard += 1
         if guard > 64:      # entering is 12 placements; play alternates. Never legitimate.
             raise HTTPException(500, "the game failed to make progress")
@@ -146,8 +266,8 @@ async def _advance(game):
     return game
 
 
-def _state(game):
-    return G.to_json(game)
+def _state(game, side):
+    return G.to_json(game, side)
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +287,11 @@ async def _over(request, exc):
 @app.exception_handler(N.NotationError)
 async def _notation(request, exc):
     return JSONResponse({"detail": str(exc)}, status_code=422)
+
+
+@app.exception_handler(G.InviteError)
+async def _invite(request, exc):
+    return JSONResponse({"detail": str(exc)}, status_code=409)
 
 
 @app.exception_handler(AIBusy)
@@ -192,40 +317,82 @@ async def difficulties():
 async def create_game(body: NewGame, request: Request):
     if body.difficulty not in G.DIFFICULTIES:
         raise HTTPException(422, "unknown difficulty")
+    if body.side not in (G.BLUE, G.RED, "random"):
+        raise HTTPException(422, "side must be 0, 1 or 'random'")
     if not store.may_create(client_key(request)):
         raise HTTPException(429, "too many games started -- slow down")
 
-    game = G.new_game(human_side=body.side, difficulty=body.difficulty,
-                      entry_noise=body.noise)
+    game, seat_token, invite_token = G.new_game(
+        mode=body.mode, side=body.side, difficulty=body.difficulty,
+        entry_noise=body.noise)
     store.put(game)
     await _advance(game)
-    return _state(game)
+
+    # The only time either token is ever sent. The game keeps their hashes; there is no
+    # endpoint that can hand them out again -- which is why the creating browser holds on
+    # to the invitation itself rather than expecting to ask for it later.
+    return {"state": _state(game, game.seat_of(seat_token)),
+            "seatToken": seat_token,
+            "inviteToken": invite_token}
+
+
+@app.post("/api/games/{game_id}/join")
+async def join_game(game_id: str, body: JoinIn, request: Request,
+                    x_royals_seat: str = SeatHeader()):
+    if not store.may_act("join:" + client_key(request), JOIN_LIMIT, JOIN_WINDOW):
+        raise HTTPException(429, "too many attempts -- slow down")
+
+    async with locks.hold(game_id):
+        game = _fetch(game_id)
+
+        # Idempotent for a browser that already sits here. The creator clicking their own
+        # invite link -- out of curiosity, from history, or to check it works -- is a
+        # thing that will happen, and it must give them their own seat back rather than
+        # spending the invite on them and locking their opponent out.
+        already = _viewer_side(game, x_royals_seat)
+        if already is not None:
+            return {"state": _state(game, already), "seatToken": None}
+
+        side, seat_token = G.claim_seat(game, body.invite)
+        store.put(game)
+        return {"state": _state(game, side), "seatToken": seat_token}
 
 
 @app.get("/api/games/{game_id}")
-async def read_game(game_id: str):
-    return _state(_fetch(game_id))
+async def read_game(game_id: str, since: int = None, x_royals_seat: str = SeatHeader()):
+    game = _fetch(game_id)
+
+    # This is the poll, and it runs every couple of seconds per open page, so what it
+    # costs when nothing has happened is the server's entire idle load. Answering before
+    # to_json matters: to_json regenerates every legal move in the position.
+    if since is not None and since == game.version:
+        return {"id": game.id, "version": game.version, "unchanged": True}
+
+    return _state(game, _viewer_side(game, x_royals_seat))
 
 
 @app.post("/api/games/{game_id}/enter")
-async def enter_piece(game_id: str, body: Placement):
-    game = _fetch(game_id)
-    if game.phase != "entering":
-        raise HTTPException(409, "the entering phase is over")
-    if not game.awaiting_human:
-        raise HTTPException(409, "it is not your turn")
+async def enter_piece(game_id: str, body: Placement, x_royals_seat: str = SeatHeader()):
+    async with locks.hold(game_id):
+        game, side = _require_player(game_id, x_royals_seat)
+        if game.phase != "entering":
+            raise HTTPException(409, "the entering phase is over")
+        if not game.awaits(side):
+            raise HTTPException(409, "it is not your turn")
 
-    G.place(game, N.alg_to_square(body.square), side=game.human_side)
-    await _advance(game)
-    return _state(game)
+        G.place(game, N.alg_to_square(body.square), side=side)
+        await _advance(game)
+        store.put(game)
+        return _state(game, side)
 
 
 @app.get("/api/games/{game_id}/moves")
-async def moves_from(game_id: str, origin: str, pris: bool = False):
+async def moves_from(game_id: str, origin: str, pris: bool = False,
+                     x_royals_seat: str = SeatHeader()):
     """What the player may do from one square. For highlighting only -- the server
     re-derives this on submission and does not trust that the client asked first."""
-    game = _fetch(game_id)
-    if not game.awaiting_human:
+    game, side = _require_player(game_id, x_royals_seat)
+    if not game.awaits(side):
         return {"origin": origin, "moves": []}
 
     square = N.alg_to_square(origin)
@@ -241,36 +408,45 @@ async def moves_from(game_id: str, origin: str, pris: bool = False):
 
 
 @app.post("/api/games/{game_id}/move")
-async def submit_move(game_id: str, body: MoveIn):
-    game = _fetch(game_id)
-    if game.phase != "playing":
-        raise HTTPException(409, "the game is not in play")
-    if not game.awaiting_human:
-        raise HTTPException(409, "it is not your turn")
+async def submit_move(game_id: str, body: MoveIn, x_royals_seat: str = SeatHeader()):
+    async with locks.hold(game_id):
+        game, side = _require_player(game_id, x_royals_seat)
+        if game.phase != "playing":
+            raise HTTPException(409, "the game is not in play")
+        if body.expectedVersion is not None and body.expectedVersion != game.version:
+            raise HTTPException(409, "the game has moved on -- reload before playing")
+        if not game.awaits(side):
+            raise HTTPException(409, "it is not your turn")
 
-    # move_from_json raises NotationError on anything malformed; play_move then decides
-    # whether a well-formed move is a legal one.
-    move = N.move_from_json(body.model_dump(exclude_none=True))
-    G.play_move(game, move, side=game.human_side)
-    await _advance(game)
-    return _state(game)
+        # move_from_json raises NotationError on anything malformed; play_move then
+        # decides whether a well-formed move is a legal one.
+        move = N.move_from_json(body.model_dump(exclude_none=True,
+                                                exclude={"expectedVersion"}))
+        G.play_move(game, move, side=side)
+        await _advance(game)
+        store.put(game)
+        return _state(game, side)
 
 
 @app.post("/api/games/{game_id}/pass")
-async def pass_turn(game_id: str):
-    game = _fetch(game_id)
-    if not game.awaiting_human:
-        raise HTTPException(409, "it is not your turn")
-    G.play_move(game, None, side=game.human_side)
-    await _advance(game)
-    return _state(game)
+async def pass_turn(game_id: str, x_royals_seat: str = SeatHeader()):
+    async with locks.hold(game_id):
+        game, side = _require_player(game_id, x_royals_seat)
+        if not game.awaits(side):
+            raise HTTPException(409, "it is not your turn")
+        G.play_move(game, None, side=side)
+        await _advance(game)
+        store.put(game)
+        return _state(game, side)
 
 
 @app.post("/api/games/{game_id}/resign")
-async def resign_game(game_id: str):
-    game = _fetch(game_id)
-    G.resign(game, game.human_side)
-    return _state(game)
+async def resign_game(game_id: str, x_royals_seat: str = SeatHeader()):
+    async with locks.hold(game_id):
+        game, side = _require_player(game_id, x_royals_seat)
+        G.resign(game, side)
+        store.put(game)
+        return _state(game, side)
 
 
 @app.get("/api/health")
@@ -282,9 +458,37 @@ async def health():
 # The page itself
 # ---------------------------------------------------------------------------
 
+def _page():
+    # no-store on the shell, because the shell is how a deploy reaches anybody. The
+    # bundle it loads is fingerprinted by nothing at all, so a browser that heuristically
+    # caches this page can pin a player to an old client indefinitely, and there is no
+    # mechanism to tell them otherwise.
+    return FileResponse(STATIC_DIR / "index.html",
+                        headers={"Cache-Control": "no-store"})
+
+
 @app.get("/")
 async def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    return _page()
+
+
+@app.get("/g/{game_id}")
+async def game_page(game_id: str):
+    return _page()
+
+
+@app.get("/join/{invite_token}")
+async def join_page(invite_token: str):
+    """Serving the page is all this does. **It must never claim the seat.**
+
+    iMessage, WhatsApp, Slack and every other messenger fetches a URL to build a link
+    preview before a human has seen it, let alone clicked it. A GET that claimed the seat
+    would hand the game to a preview bot and greet the person the link was sent to with
+    "that invitation has already been used" -- and it would do it over exactly the
+    channels this feature exists to be used on. The claim is the POST the page then
+    makes, which no previewer will issue.
+    """
+    return _page()
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

@@ -175,13 +175,14 @@ FastAPI, in `web/src/royals_web/`:
 
 | File | What it does |
 |---|---|
-| `main.py` | HTTP routing, request limits. Decides *who may ask*. |
+| `main.py` | HTTP routing, authorization, request limits. Decides *who may ask*. |
 | `game.py` | Game state and move validation. Decides *what is legal*. |
+| `seats.py` | Seat tokens: mint, hash, constant-time compare. |
 | `ai_pool.py` | Process pool, concurrency cap, wall-clock deadline per search. |
-| `store.py` | In-memory game store — bounded, TTL'd, per-client create limit. |
+| `store.py` | In-memory game store — bounded, TTL'd, per-client rate limits. |
 | `static/` | The browser client — `index.html`, `app.js`, `board.js`, `style.css`. |
 
-The design rests on one rule:
+The design rests on two rules. The first:
 
 > **The board never travels from the client to the server.**
 
@@ -192,15 +193,50 @@ plays by, so a person and the machine are held to literally the same rules, and 
 legal?" is a tuple membership test rather than a second, subtly different implementation of
 the rulebook.
 
+The second, which arrived with two players:
+
+> **Every endpoint that changes a game asks who is asking.**
+
+A game has two `Seat`s, either of which may be a person or the computer, and a seat is
+claimed by holding its token. `_require_player` turns that token into a side, and the side
+it returns is the side the action is taken as — no code path takes a side from a request
+body, so "move for my opponent" is not a request that can be phrased rather than one that
+is checked for. Knowing a game's id gets you a spectator's view and nothing else, which
+matters because the id travels in a URL people paste into messages.
+
+Playing a friend needs no account. Creating a game with `mode: "human"` mints a seat token
+for the creator and a single-use invite token for the empty seat; the game sits in a
+`waiting` phase until somebody claims it. Only hashes are stored, compared with
+`secrets.compare_digest` — a plain SHA-256, because key-stretching exists to make
+*guessable* secrets expensive and a 128-bit random token is not guessable.
+
+The token travels in an `X-Royals-Seat` header rather than a cookie, which is what keeps
+CSRF out of the design instead of defended against: a browser attaches cookies to
+cross-site requests on its own and will not attach this.
+
+Two things in here look like details and are not. `GET /join/{token}` serves the page and
+**never claims the seat** — messengers fetch URLs to build link previews, and a claim on
+GET would hand the game to a preview bot over exactly the channels invitations travel on.
+And `client_key` reads the forwarded address only when `ROYALS_TRUSTED_PROXY` is set:
+behind a proxy every request otherwise appears to come from one address and the whole site
+shares a single rate-limit bucket, while trusting the header unconditionally lets anyone
+spoof their way out of the limit.
+
+There is no push. The client polls `GET /api/games/{id}?since={version}`, which compares a
+counter and returns forty bytes when nothing has happened — before `to_json`, which would
+otherwise regenerate every legal move on every poll. The client pauses entirely while its
+tab is hidden.
+
 Two things the pool exists to prevent: a depth-6 search is seconds of pinned CPU that
 anybody can request by clicking a menu, and a game holds every position it has stood in, so
 an unattended endpoint that mints games is a memory attack that needs no cleverness at all.
 Hence the hard concurrency cap, the queue that refuses rather than grows, the deadline, the
 game ceiling and the TTL.
 
-Storage is in memory on purpose — there are no accounts yet, so there is nothing to persist
-a game against. The interface is deliberately the small one that survives the swap to
-Postgres.
+Storage is still in memory, and that is now the sharpest limitation in the web layer: a
+restart loses every game in progress, which matters much more for a correspondence game
+between two people than it did for a session against the computer. The interface is
+deliberately the small one that survives being backed by a database.
 
 ## Tests
 
@@ -212,11 +248,13 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for the workflow. In short:
 - **`tests/golden_search.txt`** — node counts per move. Expected to churn.
 - **`tests/test_engine_purity.py`** — enforces the no-dependencies, no-UI rule. (22)
 - **`tests/test_notation.py`** — round-trips for the text and JSON move forms. (51)
-- **`tests/test_web_api.py`** — the REST surface, against FastAPI's `TestClient`. (22)
+- **`tests/test_web_api.py`** — the REST surface, against FastAPI's `TestClient`. (37)
 
-95 in total. The web tests import `fastapi`, so the full suite needs the server installed
+110 in total. The web tests import `fastapi`, so the full suite needs the server installed
 (`pip install -e ./web`); the engine's own tests need nothing but the standard library,
-which is the point.
+which is the point. CI runs them in their own CPython-only job for that reason — the
+goldens matrix installs the engine alone, so `importorskip` would turn the entire server
+into a silent pass there.
 
 ## The Backup directory
 

@@ -63,3 +63,36 @@ jobs:
           assert len(b) == 49 and all(0 <= v < 8192 for v in b)
           print('engine OK on', __import__('sys').implementation.name)
           "
+
+  # The job above installs only the engine, so tests/test_web_api.py hits its
+  # `pytest.importorskip("fastapi")` and skips in silence -- a green run that checked
+  # none of the server. Everything about who may move in a game lives in those tests, so
+  # they get a job that installs the web package and refuses to skip.
+  #
+  # CPython only, deliberately. The goldens matrix runs PyPy because the rules contract
+  # is the thing that must agree across interpreters; FastAPI under PyPy is slow to
+  # install, occasionally broken, and proves nothing about the engine.
+  web:
+    name: web API
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the engine and the web package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ./engine -e ./web
+          python -m pip install pytest httpx
+
+      # importorskip turns a missing FastAPI into a silent pass, so the condition that
+      # would hollow out this job is checked directly and fails it instead.
+      - name: FastAPI is really installed
+        run: python -c "import fastapi, httpx; print('fastapi', fastapi.__version__)"
+
+      - name: Server tests
+        run: python -m pytest tests/test_web_api.py -q
