@@ -8,8 +8,16 @@ Royals: a two-player abstract strategy game (7×7 wrapping board, stacks, prison
 dependency-free engine, three front ends (tkinter, terminal, FastAPI+browser), and a golden
 regression suite.
 
-Read [docs/RULES.md](docs/RULES.md) before reasoning about game logic and
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing structure. Both are current.
+**The engine is implemented twice.** `engine/src/royals_engine/` (Python, stdlib only) is the
+reference implementation and the fallback; `engine-rs/` is a Rust port, about 36x faster, that
+ships as an optional wheel (`royals_accel`) and as a 50 KB wasm module the browser loads.
+Neither replaces the Python — `tests/golden_moves.txt` is a contract both answer to on every
+commit, which is the only reason two implementations are worth having.
+
+Read [docs/RULES.md](docs/RULES.md) before reasoning about game logic,
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing structure, and
+[docs/PORTING.md](docs/PORTING.md) before touching either engine's rules. All three are
+current.
 
 ## Commands
 
@@ -17,22 +25,39 @@ Read [docs/RULES.md](docs/RULES.md) before reasoning about game logic and
 
 ```bash
 cd tests && python3 regress.py check all      # the goldens
-python3 -m pytest tests/ -q                   # 165 unit tests
+python3 -m pytest tests/ -q                   # 185 unit tests
 python3 -m py_compile engine/src/royals_engine/*.py apps/*/*.py    # quick syntax check
 ```
 
-Expected green state: `golden_enter.txt` 445 lines, `golden_moves.txt` 13,051 lines, `golden_search.txt` 245 lines
-identical, 165 tests passing (22 engine-purity, 51 notation, 64 web API, 4 flights,
-24 break rules).
+**The engine exists twice, so those three commands are not the whole check.** The full sweep,
+which is what CI runs:
 
-All three goldens and all 165 tests also pass under PyPy, and that is worth keeping true — see
+```bash
+cd engine-rs && cargo test                                          # 33 tests
+cargo run --release --bin royals-golden | diff - ../tests/golden_moves.txt   # must be silent
+ROYALS_NO_ACCEL=1 python3 -m pytest tests/ -q     # the pure-Python path
+ROYALS_NO_ACCEL=1 python3 regress.py check all    # must match the compiled run exactly
+python3 engine-rs/tests/wasm_parity.py            # the browser's copy, ~24,000 questions
+```
+
+Expected green state: `golden_enter.txt` 445 lines, `golden_moves.txt` 13,051 lines,
+`golden_search.txt` 245 lines identical — **from both implementations** — and 185 tests passing
+(13 accel, 24 break rules, 25 engine-purity, 4 flights, 51 notation, 68 web API). With
+`ROYALS_NO_ACCEL=1` it is 182 passed and 3 skipped; the skips are the tests that need the
+wheel, and skipping is correct — not having it is a supported configuration.
+
+`cargo test` is 33 across six binaries, and `royals-golden` must emit `golden_moves.txt` byte
+for byte. A Python-only run proves almost nothing about what a browser or a wheel-equipped
+machine will do.
+
+All three goldens and all 185 tests also pass under PyPy, and that is worth keeping true — see
 "Running it under PyPy" in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The trap there is
 sqlite3: CPython finalises a cursor by refcount, PyPy does not, so an `execute` whose
 cursor is left open makes the next `commit` fail. Everything in `persist.py` goes through
 `_run`/`_query`, which close theirs. Don't add a bare `self._conn.execute`.
 
 The web API tests call `pytest.importorskip("fastapi")`, so without `pip install -e ./web`
-they skip silently and the run reports 101 passed, not 165. **Check the count, not just
+they skip silently and the run reports 117 passed, not 185. **Check the count, not just
 the colour.** CI runs them in a separate CPython-only job that installs the web package,
 because the goldens matrix installs the engine alone. Both packages are already installed
 editable in this environment.
@@ -47,6 +72,16 @@ board each produces, and its evaluation.
 
 If `golden_moves.txt` moves and you did not intend to change the rules, **you have a bug — do not
 re-record it.** `python3 regress.py write all` exists but is almost never the right answer.
+
+**It now binds three things, not one.** The Python engine, the compiled wheel and the browser's
+wasm must all produce it. So a rules change is a change to `engine/src/royals_engine/` *and* to
+`engine-rs/`, and the browser artifact has to be rebuilt — and only then is re-recording even a
+question. If the two engines disagree, exactly one of them is wrong and the goldens will not
+say which; `docs/PORTING.md` is the spec that settles it.
+
+Re-recording to make a red build green is the single most expensive mistake available here. It
+converts the one property that makes two implementations worth maintaining into a file that
+merely describes whatever the code currently does.
 
 `golden_search.txt` (node counts) is expected to churn; `python3 regress.py write search`
 re-records just that one, and that is routine.

@@ -152,7 +152,12 @@ fn check_for_winner(board: Vec<u16>) -> PyResult<(bool, (u8, u8))> {
 /// GIL it competes with tkinter for it -- the window stops repainting for the length of the
 /// search. Releasing it costs nothing here, because no Python object is touched inside, and it
 /// is the difference between a frozen window and a live one.
-fn with_game<T, F>(py: Python<'_>, ko_boards: Vec<Vec<u16>>, f: F) -> PyResult<T>
+fn with_game<T, F>(
+    py: Python<'_>,
+    ko_boards: Vec<Vec<u16>>,
+    table_limit: usize,
+    f: F,
+) -> PyResult<T>
 where
     F: FnOnce(&mut search::Search) -> T + Send,
     T: Send,
@@ -165,24 +170,32 @@ where
     Ok(py.allow_threads(move || {
         let mut game = search::game();
         game.set_ko_track(ko);
-        // Deliberately not cleared afterwards. The transposition table is meant to persist
-        // across the moves of one game -- that is most of its value -- and ai_pool.py is what
-        // decides when a worker stops being this game's worker, via AI.newGame().
+        // Pushed across on every call rather than set once through a separate function, so that
+        // `AI.TABLE_LIMIT = N` keeps meaning what it has always meant and nobody has to remember
+        // a setter. ai_pool.py drops it to 50,000 because a few hundred MB per generation is
+        // fatal on the box it runs on; before this it assigned to a Python global the compiled
+        // engine never read, and the cap silently stopped applying the moment a wheel was
+        // installed. One integer per search is not a cost worth optimising away.
+        game.set_table_limit(table_limit);
+        // The table itself is deliberately not cleared afterwards. It is meant to persist across
+        // the moves of one game -- that is most of its value -- and ai_pool.py is what decides
+        // when a worker stops being this game's worker, via AI.newGame().
         f(&mut game)
     }))
 }
 
 #[pyfunction]
-#[pyo3(signature = (board, contr, depth, ko_boards))]
+#[pyo3(signature = (board, contr, depth, ko_boards, table_limit))]
 fn choose_move(
     py: Python<'_>,
     board: Vec<u16>,
     contr: u8,
     depth: i32,
     ko_boards: Vec<Vec<u16>>,
+    table_limit: usize,
 ) -> PyResult<(Score, Option<PyMove>, u64)> {
     let board = to_board(board)?;
-    let (score, mv, nodes) = with_game(py, ko_boards, move |game| {
+    let (score, mv, nodes) = with_game(py, ko_boards, table_limit, move |game| {
         let (score, mv) = game.choose_move(&board, contr, depth);
         (score, mv, game.calc_count)
     })?;
@@ -190,16 +203,17 @@ fn choose_move(
 }
 
 #[pyfunction]
-#[pyo3(signature = (board, contr, depth, ko_boards))]
+#[pyo3(signature = (board, contr, depth, ko_boards, table_limit))]
 fn take_turn<'py>(
     py: Python<'py>,
     board: Vec<u16>,
     contr: u8,
     depth: i32,
     ko_boards: Vec<Vec<u16>>,
+    table_limit: usize,
 ) -> PyResult<(Bound<'py, PyTuple>, Option<PyMove>, Score, u64)> {
     let board = to_board(board)?;
-    let (next, mv, score, nodes) = with_game(py, ko_boards, move |game| {
+    let (next, mv, score, nodes) = with_game(py, ko_boards, table_limit, move |game| {
         let (next, mv, score) = game.take_turn(&board, contr, depth);
         (next, mv, score, game.calc_count)
     })?;

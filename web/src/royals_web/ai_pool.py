@@ -30,9 +30,32 @@ from royals_engine import ai as AI
 
 
 # A single game's transposition table is small -- a full depth-6 search fills about
-# 22,000 entries -- but the shipped ceiling of 300,000 costs roughly 175 MB per
-# generation, and tableOld means two are live at once. That is fatal on a 512 MB box
-# and buys nothing, because no single game ever approaches it.
+# 22,000 entries -- but the shipped ceiling of 300,000 buys nothing here, because no
+# single game ever approaches it, and it costs real memory on a small box.
+#
+# Measured, twelve turns at depth 6, peak RSS of one worker:
+#
+#     compiled engine, limit  50,000     54 MB
+#     compiled engine, limit 300,000     79 MB
+#
+# So 25 MB per worker, 50 MB across the default two. The pure-Python engine is far
+# hungrier again -- the figure this comment used to quote was 175 MB per generation,
+# with tableOld meaning two are live at once -- which is what makes the cap worth
+# having under either implementation.
+#
+# **Two things to know before raising the depth this server offers.**
+#
+# The limit is checked once per chooseMove, not per insertion, so it bounds the table
+# *between* moves and not *during* a search. A single deep search is unbounded: the same
+# twelve turns at depth 8 peak at roughly 500 MB whatever this is set to, because the
+# growth all happens inside one call that never consults it. Both engines behave this
+# way -- the Rust reproduces the Python faithfully, including here -- so it is a property
+# of the design rather than a port regression. It is harmless at depth 6 and is not at
+# depth 8.
+#
+# And the assignment below only reached the Python engine until the accelerator started
+# taking TABLE_LIMIT across the FFI on every call. If a future binding stops passing it,
+# this line goes back to being a comment with no effect.
 SERVER_TABLE_LIMIT = 50_000
 
 MAX_WORKERS = int(os.environ.get("ROYALS_AI_WORKERS", "2"))

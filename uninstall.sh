@@ -110,7 +110,22 @@ if [ -e "$APP" ]; then
     fi
 fi
 
-if [ "$REMOVE_HOME" -eq 0 ] && [ "$REMOVE_APP" -eq 0 ]; then
+# The optional compiled engine, if install-desktop.sh managed to get one.
+#
+# It is a pip package rather than a file under $ROYALS_HOME, so deleting the two paths above
+# would leave it behind in the user site -- and this script's whole promise is that removing
+# Royals removes Royals. Checked by asking pip rather than by importing, because a wheel built
+# for the wrong architecture installs fine and fails to import, and that copy still wants
+# removing.
+REMOVE_ACCEL=0
+PY="$(command -v python3 || true)"
+if [ -n "$PY" ] && "$PY" -m pip --version >/dev/null 2>&1; then
+    if "$PY" -m pip show royals-accel >/dev/null 2>&1; then
+        REMOVE_ACCEL=1
+    fi
+fi
+
+if [ "$REMOVE_HOME" -eq 0 ] && [ "$REMOVE_APP" -eq 0 ] && [ "$REMOVE_ACCEL" -eq 0 ]; then
     say ""
     say "Nothing to remove."
     say ""
@@ -126,6 +141,12 @@ if [ "$REMOVE_HOME" -eq 1 ]; then
 fi
 if [ "$REMOVE_APP" -eq 1 ]; then
     step "$APP"
+fi
+# Listed separately because it is not a path. Somebody reading --dry-run is deciding whether
+# to trust this script with their disk, and a package it silently uninstalls afterwards would
+# be exactly the surprise the dry run exists to prevent.
+if [ "$REMOVE_ACCEL" -eq 1 ]; then
+    step "the royals-accel package (pip uninstall; the optional compiled engine)"
 fi
 say ""
 if [ "$DIRTY" -eq 1 ]; then
@@ -169,6 +190,17 @@ fi
 if [ "$REMOVE_HOME" -eq 1 ]; then
     rm -rf "$ROYALS_HOME"
     step "removed $ROYALS_HOME"
+fi
+if [ "$REMOVE_ACCEL" -eq 1 ]; then
+    # Best-effort, matching the install: a pip that refuses to touch a managed environment,
+    # or a package installed somewhere this user cannot write, should not turn "uninstall
+    # the game" into a failure. The game is gone either way; what is left behind is an
+    # inert extension module nothing imports.
+    if "$PY" -m pip uninstall -y --quiet royals-accel >/dev/null 2>&1; then
+        step "removed the compiled engine (royals-accel)"
+    else
+        step "could not remove royals-accel -- remove it with: $PY -m pip uninstall royals-accel"
+    fi
 fi
 
 say ""

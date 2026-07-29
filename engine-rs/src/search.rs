@@ -37,10 +37,16 @@ use crate::exec::perform_one_step;
 use crate::movegen::{list_all_moves, parse_board, Spaces};
 use crate::{Move, MoveKind};
 
-/// How many positions one generation of the table holds before it is retired. 300k of these
-/// costs a few hundred MB, which is the point where keeping more stops paying for itself at
-/// the depths anyone actually plays at.
-pub const TABLE_LIMIT: usize = 300_000;
+/// How many positions one generation of the table holds before it is retired, unless a caller
+/// says otherwise. Mirrors the Python module's `AI.TABLE_LIMIT` default.
+///
+/// This is the ceiling for a machine playing one game with memory to spare. It is deliberately
+/// **not** the ceiling a server should use: `ai_pool.py` runs several workers on a small box and
+/// drops it to 50,000 for exactly that reason, so the limit is a field on [`Search`] rather than
+/// a constant. A hard-coded constant here would silently override that decision the moment the
+/// compiled engine was installed -- the knob would still be there, still be set, and no longer
+/// reach anything.
+pub const DEFAULT_TABLE_LIMIT: usize = 300_000;
 
 /// Whether any of the table survives from one move to the next. Turning this off restores
 /// what the search did before -- everything thrown away at the start of every move -- which
@@ -196,6 +202,11 @@ pub struct Search {
 
     /// How many boards the last search looked at.
     pub calc_count: u64,
+
+    /// How many entries one generation holds before it is retired. Owned per-`Search` so that a
+    /// server can cap it without every other caller inheriting the cap -- see
+    /// [`DEFAULT_TABLE_LIMIT`].
+    table_limit: usize,
 }
 
 impl Default for Search {
@@ -214,7 +225,22 @@ impl Search {
             ko_track: FxSet::default(),
             ko_generation: 0,
             calc_count: 0,
+            table_limit: DEFAULT_TABLE_LIMIT,
         }
+    }
+
+    /// Cap how much the transposition table may hold.
+    ///
+    /// Deliberately not clamped upwards to anything: a caller that wants one entry gets one
+    /// entry. The search still answers correctly with a tiny table -- it just re-searches
+    /// positions it would otherwise have remembered -- so the failure mode of setting this too
+    /// low is slowness, which is visible, rather than a wrong move, which is not.
+    pub fn set_table_limit(&mut self, limit: usize) {
+        self.table_limit = limit;
+    }
+
+    pub fn table_limit(&self) -> usize {
+        self.table_limit
     }
 
     /// Forgets everything learned about the game just played. The table stays true across
@@ -598,7 +624,7 @@ impl Search {
         // Retire a generation when the live one fills. Everything the retired one holds is
         // still reachable until the next changeover, and anything still being asked for gets
         // written forward into the live table as it is found.
-        if self.table.len() > TABLE_LIMIT {
+        if self.table.len() > self.table_limit {
             self.table_old = std::mem::take(&mut self.table);
         }
 

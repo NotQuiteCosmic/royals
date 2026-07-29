@@ -37,10 +37,22 @@ web/src/royals_web/         FastAPI server — REST API and a browser client
   ai_pool.py                process pool, concurrency cap, per-search deadline
   store.py                  in-memory game store, bounded and TTL'd
   static/                   the browser client — index.html, app.js, board.js, style.css
+    engine.js               loads royals.wasm and asks it what is legal
+    royals.wasm             the engine again, 50 KB, so highlighting is instant
+
+engine-rs/                  the same rules in Rust — the optional compiled engine
+  src/board.rs              the 13-bit square encoding and the ray geometry
+  src/movegen.rs            move generation
+  src/exec.rs               the executors
+  src/eval.rs               integer-only evaluation
+  src/search.rs             alpha-beta, the transposition table
+  src/py.rs                 the PyO3 bindings, built into the royals_accel wheel
+  src/wasm.rs               the browser build
+  tests/wasm_parity.py      asks the shipped .wasm what the Python engine is asked
 
 tests/regress.py            the regression harness
-tests/golden_moves.txt            the rules contract — see below
-docs/                       the rulebook and the architecture notes
+tests/golden_moves.txt      the rules contract — see below
+docs/                       the rulebook, the architecture notes, and the port spec
 Backup/                     frozen Python-2-era originals, kept as the historical record
 ```
 
@@ -156,11 +168,28 @@ a web worker serving many games at once, and eventually in a browser under Pyodi
 module that prints to stdout or blocks on stdin has decided which of those it is. It is
 also a security property: no third-party code sits in the path that validates a move.
 
-The engine targets **Python ≥ 3.10**, not 3.12, so it keeps running under PyPy — several
-times faster on this search, and the intended interpreter for the server's AI worker.
-Scores are computed in integers rather than floats for a related reason: CPython and PyPy
-once disagreed in the last decimal place on a square root, which flipped an alpha-beta
-cutoff and changed the move played. CI runs the goldens under both.
+The engine targets **Python ≥ 3.10**, not 3.12, so it keeps running under PyPy — faster on
+this search, and the intended interpreter for the server's AI worker. Scores are computed in
+integers rather than floats for a related reason: CPython and PyPy once disagreed in the last
+decimal place on a square root, which flipped an alpha-beta cutoff and changed the move
+played. CI runs the goldens under both.
+
+## It is faster if you have the compiled engine, and identical if you don't
+
+The same rules are also implemented in Rust, under `engine-rs/`. It plays exactly the same
+game about **36 times faster** — enough for the computer player to think three plies deeper in
+the same time — and it reaches you two ways:
+
+- **`royals-accel`**, an optional wheel. `install-desktop.sh` tries for one and shrugs if there
+  isn't a build for your machine. Nothing else changes; the game just thinks quicker.
+- **`static/royals.wasm`**, 50 KB, which the browser loads so that picking a piece up is
+  instant instead of a round trip to the server.
+
+**Not having either is a supported configuration, not a degraded one.** With no wheel and no
+wasm the Python engine answers, and it answers the same. That is checked rather than hoped for:
+`tests/golden_moves.txt` is a 13,051-line record of what every legal move does, and all three
+have to reproduce it byte for byte on every commit. `ROYALS_NO_ACCEL=1` forces the Python path
+if you want to see for yourself.
 
 ## The server never trusts the board
 

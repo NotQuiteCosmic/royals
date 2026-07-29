@@ -28,16 +28,31 @@ cd web && python3 -m uvicorn royals_web.main:app --reload   # the server, at :80
 
 ```bash
 cd tests
-python3 regress.py check all      # both goldens
+python3 regress.py check all      # all three goldens
 python3 -m pytest ../tests -q     # the unit tests
 ```
 
-Everything should be green before you commit. As of the last run: **95 unit tests pass,
+Everything should be green before you commit. As of the last run: **185 unit tests pass,
 `golden_enter.txt` 445, `golden_moves.txt` 13,051, `golden_search.txt` 245 lines identical.**
 
-The 95 break down as 22 engine-purity, 51 notation and 22 web API. The web API tests call
-`pytest.importorskip("fastapi")`, so without `pip install -e ./web` they **skip silently**
-and you'll see 73 passed rather than 95. That is by design — the engine's tests must never
+**That is only half the check, because the engine exists twice.** The rules are implemented in
+Python and again in Rust under `engine-rs/`, and both have to agree:
+
+```bash
+cd engine-rs && cargo test                        # 33 tests
+cargo run --release --bin royals-golden | diff - ../tests/golden_moves.txt   # silent
+ROYALS_NO_ACCEL=1 python3 -m pytest ../tests -q   # the pure-Python path
+python3 engine-rs/tests/wasm_parity.py            # the browser's copy
+```
+
+If you change a rule, you are changing **both engines**, and `static/royals.wasm` is a checked-in
+build artifact that must be rebuilt or the browser keeps playing the old rules while every test
+stays green. `wasm_parity.py` is what catches that. See [docs/PORTING.md](docs/PORTING.md).
+
+The 185 break down as 13 accel, 24 break rules, 25 engine-purity, 4 flights, 51 notation and
+68 web API. The web API tests call `pytest.importorskip("fastapi")`, so without
+`pip install -e ./web` they **skip silently** and you'll see 117 passed rather than 185. That is
+by design — the engine's tests must never
 need a third-party package — but it does mean a green run is not proof the server is green.
 Check the count.
 

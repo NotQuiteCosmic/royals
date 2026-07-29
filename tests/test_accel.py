@@ -162,6 +162,41 @@ def test_new_game_reaches_the_compiled_side():
         % (AI.calcCount, first))
 
 
+@needs_accel
+def test_table_limit_reaches_the_compiled_side():
+    """ai_pool.py caps the transposition table because a few hundred MB per generation is
+    fatal on the box it runs on. For a while that cap reached only the Python engine: the
+    compiled side used a hard-coded constant, so installing the wheel silently tripled a
+    worker's memory and the knob still looked set.
+
+    Nothing about that failure was visible -- same moves, same scores, more memory -- so it
+    gets a test rather than a comment. A tiny table means less reuse between moves, and less
+    reuse means more nodes; if the two runs agree exactly, the limit is being ignored.
+    """
+    board = entered_board()
+    original = AI.TABLE_LIMIT
+    try:
+        totals = {}
+        for limit in (1, 300_000):
+            AI.TABLE_LIMIT = limit
+            AI.newGame()
+            Engine.koReset()
+            played, total = board, 0
+            for turn in range(6):
+                played, move, _ = AI.takeTurn(played, turn % 2, 6)
+                total += AI.calcCount
+                Engine.koRecord(played)
+                if move is None:
+                    break
+            totals[limit] = total
+    finally:
+        AI.TABLE_LIMIT = original
+
+    assert totals[1] > totals[300_000], (
+        "a one-entry table searched %d nodes and a 300k table searched %d; equal counts mean "
+        "TABLE_LIMIT never reached the compiled engine" % (totals[1], totals[300_000]))
+
+
 # ---- the purity carve-out stays narrow ----------------------------------------------------
 
 def test_the_accelerator_import_is_guarded():

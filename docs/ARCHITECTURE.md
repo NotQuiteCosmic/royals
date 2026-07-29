@@ -24,6 +24,58 @@ How Royals is put together, and why. For the rules of the game itself see
 One engine, three front ends, and a hard wall between them. The engine does not know
 which of the three is calling it and is forbidden from finding out.
 
+## The engine exists twice
+
+The rules are implemented in Python and again in Rust, and **both are kept**.
+
+```
+   engine/src/royals_engine/          engine-rs/
+   Python, stdlib only                Rust
+   the reference implementation       the same rules, ~36x faster
+            │                               │
+            │                  ┌────────────┴────────────┐
+            │                  │                         │
+            │           royals_accel wheel        royals.wasm (50 KB)
+            │           optional; import          shipped in static/,
+            │           it and ai.py uses it      the browser's own copy
+            │                  │                         │
+            └──────────────────┴──── tests/golden_moves.txt ────┘
+                          all three must agree, byte for byte
+```
+
+Not a migration with a leftover. The Python is the **reference implementation** — it is what
+`golden_moves.txt` was recorded from, it is the fallback when no wheel is present, and it is
+the other half of a differential check that runs on every commit. Delete it and the Rust
+becomes unfalsifiable.
+
+Three consumers, one contract:
+
+| | how it arrives | if it is missing |
+|---|---|---|
+| **Python** | always there, stdlib only | n/a — it is the floor |
+| **`royals_accel`** | an optional wheel; `ai.py` shims to it when importable | the game runs in Python, identical and slower |
+| **`royals.wasm`** | checked in under `static/`, loaded by `engine.js` | the browser asks the server, as it always did |
+
+`ROYALS_NO_ACCEL=1` forces the Python path even where the wheel is installed. That switch is
+not a debugging aid — CI runs the whole suite twice on it and requires byte-identical goldens
+from both, which is what stops the two implementations drifting apart.
+
+**Why the accelerator is a separate package.** `engine/pyproject.toml` stays pure setuptools
+with no build requirements, so `pip install -e ./engine` needs no Rust toolchain and
+`install-desktop.sh` can keep promising that nothing has to be installed. It is a top-level
+`royals_accel` rather than `royals_engine._rust` because an editable install points
+`royals_engine.__path__` at the source tree while a wheel lands in site-packages — a submodule
+would be unimportable in exactly the layout this repo is developed in, and would fail by
+silently falling back.
+
+**`static/royals.wasm` is the one artifact that can go stale silently.** Edit `movegen.rs`,
+forget to rebuild, and the page highlights yesterday's rules while every test stays green.
+`engine-rs/tests/wasm_parity.py` is the guard: it asks the *shipped* module the same ~24,000
+questions the Python engine is asked, and CI checks a freshly built one too, so "the rules
+diverged" and "somebody forgot to rebuild" are distinguishable.
+
+For the spec a second implementation is written against, see [PORTING.md](PORTING.md).
+
 ## The engine's one rule
 
 `royals-engine` imports nothing but the standard library, and
@@ -318,13 +370,24 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for the workflow. In short:
   of positions, the board it produces, and what the evaluator thinks it is worth. Must stay
   byte-identical.
 - **`tests/golden_search.txt`** — node counts per move. Expected to churn.
-- **`tests/test_engine_purity.py`** — enforces the no-dependencies, no-UI rule. (22)
+- **`tests/test_engine_purity.py`** — enforces the no-dependencies, no-UI rule. (25)
 - **`tests/test_notation.py`** — round-trips for the text and JSON move forms. (51)
-- **`tests/test_web_api.py`** — the REST surface, against FastAPI's `TestClient`. (64)
+- **`tests/test_web_api.py`** — the REST surface, against FastAPI's `TestClient`. (68)
 - **`tests/test_break_rules.py`** — what a break may fall onto, and freeing. (24)
 - **`tests/test_flights.py`** — `moveFlights` against the executors. (4)
+- **`tests/test_accel.py`** — the optional accelerator: that boards come back hashable, that
+  `ROYALS_NO_ACCEL` is honoured, and that clearing game state and capping the transposition
+  table both reach the compiled side. (13)
 
-165 in total. The web tests import `fastapi`, so the full suite needs the server installed
+And outside pytest, because they check the other implementation:
+
+- **`cargo test`** in `engine-rs/` — 33 across six binaries, including the tables checked
+  against dumps taken from the Python.
+- **`engine-rs/src/bin/royals-golden.rs`** — emits `golden_moves.txt`; must match byte for byte.
+- **`engine-rs/tests/wasm_parity.py`** — asks the shipped `static/royals.wasm` ~24,000
+  questions and compares against the Python engine.
+
+185 in total under pytest. The web tests import `fastapi`, so the full suite needs the server installed
 (`pip install -e ./web`); the engine's own tests need nothing but the standard library,
 which is the point. CI runs them in their own CPython-only job for that reason — the
 goldens matrix installs the engine alone, so `importorskip` would turn the entire server

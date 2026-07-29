@@ -687,7 +687,13 @@ def chooseMove(cBoard, contr, depth = 3):
         # The ko history is handed over on every call rather than mirrored on the other side.
         # Engine.koTrack stays the single authority, which is what lets ai_pool.py keep its
         # load-one-game / run / drop discipline with no changes at all.
-        score, move, nodes = _accel.accel.choose_move(cBoard, contr, depth, list(Engine.koTrack))
+        # TABLE_LIMIT goes across on every call rather than being mirrored once. It is a plain
+        # module global that callers assign to -- ai_pool.py drops it to 50,000 because a few
+        # hundred MB per generation is fatal on the box it runs on -- and an assignment cannot
+        # trigger a setter, so a mirrored copy would go stale the first time anyone used the
+        # knob as documented.
+        score, move, nodes = _accel.accel.choose_move(
+            cBoard, contr, depth, list(Engine.koTrack), TABLE_LIMIT)
         calcCount = nodes
         return [score, move]
 
@@ -752,7 +758,7 @@ def takeTurn(cBoard, contr, depth = 3):
         # get there through it: doing both halves on the other side is one crossing instead of
         # two, and this is the call ai_pool.py actually makes.
         board, move, score, nodes = _accel.accel.take_turn(
-            cBoard, contr, depth, list(Engine.koTrack))
+            cBoard, contr, depth, list(Engine.koTrack), TABLE_LIMIT)
         calcCount = nodes
         return [board, move, score]
 
