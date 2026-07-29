@@ -33,7 +33,7 @@ python3 -m pytest ../tests -q     # the unit tests
 ```
 
 Everything should be green before you commit. As of the last run: **95 unit tests pass,
-`golden.txt` 13,496 lines identical, `golden_search.txt` 245 lines identical.**
+`golden_enter.txt` 445, `golden_moves.txt` 13,051, `golden_search.txt` 245 lines identical.**
 
 The 95 break down as 22 engine-purity, 51 notation and 22 web API. The web API tests call
 `pytest.importorskip("fastapi")`, so without `pip install -e ./web` they **skip silently**
@@ -46,23 +46,23 @@ covered by CI.** Run it locally before trusting a change to `web/`.
 
 ---
 
-## The one thing that matters: `golden.txt`
+## The one thing that matters: `golden_moves.txt`
 
-`tests/golden.txt` records, from a spread of reachable positions, **every legal move both
+`tests/golden_moves.txt` records, from a spread of reachable positions, **every legal move both
 sides have, the board each one produces, and what the evaluator thinks the result is
 worth.** It says nothing about *how* any of that is computed — only what the rules do.
 
 That is why it survived the rewrite from the original variable-length bit encoding to the
 packed integers used today, and it is the reason this codebase is safe to refactor.
 
-> **A change to the engine that leaves `golden.txt` byte-identical is provably
+> **A change to the engine that leaves `golden_moves.txt` byte-identical is provably
 > behaviour-preserving. A change that moves it needs a reason.**
 
 So:
 
 | File | Churns? | What to do when it moves |
 |---|---|---|
-| `golden.txt` | **No.** | Stop. Either you changed the rules on purpose — say so in the commit message — or you have a bug. |
+| `golden_moves.txt` | **No.** | Stop. Either you changed the rules on purpose — say so in the commit message — or you have a bug. |
 | `golden_search.txt` | Yes, routinely. | Re-record it. It counts nodes per move, so it moves whenever the tree is walked differently, often for a perfectly good reason. |
 
 ```bash
@@ -72,7 +72,7 @@ python3 regress.py write search   # re-record ONLY the search baseline
 python3 regress.py write all      # re-records the contract too — be sure
 ```
 
-Re-recording `golden_search.txt` is normal. Re-recording `golden.txt` is not, and should
+Re-recording `golden_search.txt` is normal. Re-recording `golden_moves.txt` is not, and should
 never be done just to get back to green.
 
 Both files are tracked in git deliberately, despite their size. Do not add them to
@@ -114,5 +114,5 @@ cd tests && pypy3 regress.py check all
 
 ## Commit style
 
-Say what moved and why. If `golden.txt` changed, the commit message is the place to say
+Say what moved and why. If `golden_moves.txt` changed, the commit message is the place to say
 which rule changed and that it was intended.

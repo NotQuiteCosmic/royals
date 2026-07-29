@@ -21,6 +21,13 @@ main.pyc
 /royals.db-wal
 /royals.db-shm
 
+# PIDs, logs and the current public address, written by tools/tunnel.sh
+/.run/
+
+# A 40MB binary from Cloudflare, not ours to vendor. tools/tunnel.sh prints the one-line
+# curl that fetches it.
+/tools/cloudflared
+
 # Editors / OS
 .idea/
 .vscode/
@@ -34,5 +41,26 @@ main.pyc
 # Claude Code local overrides (settings.json IS tracked, this one is per-machine)
 .claude/settings.local.json
 
-# NOTE: golden.txt and golden_search.txt ARE tracked deliberately, despite the size.
-# They are the rules contract — see tests/regress.py. Do not add them here.
+# Rust
+#
+# The compiled engine is an optional accelerator: royals_engine falls back to the pure
+# Python modules when no extension is present, which is what keeps install-desktop.sh's
+# "no pip required" promise true. That makes a committed binary actively harmful — it
+# would shadow the fallback on somebody else's platform and fail in a way that looks
+# like an engine bug rather than a packaging one.
+engine-rs/target/
+/target/
+
+# maturin drops the built extension straight into the Python package directory, so these
+# land next to the .py files they accelerate rather than anywhere obviously "build".
+*.so
+*.pyd
+*.dylib
+
+# wasm-pack output, built into the web package's static directory by the WASM job
+/web/src/royals_web/static/pkg/
+
+# NOTE: golden_enter.txt, golden_moves.txt and golden_search.txt ARE tracked deliberately,
+# despite the size. They are the rules contract — see tests/regress.py. golden_moves.txt in
+# particular is the cross-language conformance oracle a second implementation of the engine
+# is checked against. Do not add any of them here.

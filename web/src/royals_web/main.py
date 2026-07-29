@@ -18,12 +18,14 @@ no way to phrase a request that moves for your opponent.
 
 import asyncio
 import contextlib
+import html
+import logging
 import os
 import pathlib
 from typing import Literal, Union
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -32,6 +34,7 @@ from royals_engine import notation as N
 from royals_web import game as G
 from royals_web import persist
 from royals_web.ai_pool import pool, AIBusy, AITimeout
+from royals_web.limits import BodyLimit
 from royals_web.store import store
 
 STATIC_DIR = pathlib.Path(__file__).resolve().parent / "static"
@@ -46,6 +49,12 @@ MAX_TOKEN_CHARS = 128
 # is loose. Its job is not to stop token guessing -- 128 bits does that -- but to stop
 # somebody using this endpoint as a free hashing service.
 JOIN_LIMIT, JOIN_WINDOW = 60, 600
+
+# A blanket ceiling on API requests per client. A page polls every two seconds and makes a
+# handful of calls per move, so a player sits around 40 a minute and several tabs are still
+# nowhere near this. It exists to stop a stranger with a game id from calling move
+# generation as fast as the network allows.
+API_LIMIT, API_WINDOW = 600, 60
 
 # The deepest search this server will agree to run, or None for no ceiling.
 #
@@ -89,17 +98,37 @@ def allowed_difficulties():
     return kept
 
 
+async def _sweep_forever():
+    """Reclaim expired and over-ceiling games for as long as the server runs.
+
+    Doing this once at startup was the same as not doing it: nothing expires for a week
+    at the earliest, so only a server restarted more often than its own TTL ever collected
+    anything. A single indexed DELETE on an hourly tick costs nothing and means the disk
+    stops being a function of uptime.
+    """
+    while True:
+        await asyncio.sleep(persist.SWEEP_INTERVAL)
+        try:
+            gone = store.sweep()
+            if gone:
+                logging.getLogger("royals").info("swept %d finished games", gone)
+        except Exception:
+            # A failed sweep is a disk that fills slower than it would have; it is not a
+            # reason to take the games nobody asked about down with it.
+            logging.getLogger("royals").exception("sweep failed")
+
+
 @contextlib.asynccontextmanager
 async def lifespan(app):
     pool.start()
     db = persist.open_default()
     store.attach(db)
-    # Deleting long-dead games is not urgent enough to want a scheduler for. Once at
-    # startup is enough on a server that gets deployed more often than a month.
     store.sweep()
+    sweeper = asyncio.create_task(_sweep_forever())
     try:
         yield
     finally:
+        sweeper.cancel()
         pool.shutdown()
         # Detached before closing, so nothing can reach a closed connection through the
         # module-level store afterwards.
@@ -114,12 +143,26 @@ app = FastAPI(title="Royals", lifespan=lifespan, docs_url=None, redoc_url=None)
 # Middleware
 # ---------------------------------------------------------------------------
 
+# Body size is bounded below this, in ASGI middleware, and not here. An HTTP middleware
+# receives a Request whose body has already been read, so a check at this level can only
+# ever describe memory that is already spent -- and reading Content-Length, which is what
+# used to happen here, checks nothing at all when a request declines to send one. See
+# limits.BodyLimit.
+app.add_middleware(BodyLimit, max_bytes=MAX_BODY_BYTES)
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
-    # Reject oversized bodies before parsing rather than after.
-    length = request.headers.get("content-length")
-    if length and length.isdigit() and int(length) > MAX_BODY_BYTES:
-        return JSONResponse({"detail": "request body too large"}, status_code=413)
+    api = request.url.path.startswith("/api/")
+
+    # Everything else here is bounded per-endpoint -- games created, invitations claimed,
+    # searches in flight -- and reads were bounded by nothing at all. A read without
+    # `?since=` regenerates every legal move in the position, so it is the cheapest
+    # request to make and among the more expensive to answer. The limit is loose enough
+    # that a polling page (one request per two seconds) and several open tabs never
+    # approach it.
+    if api and not store.may_act("req:" + client_key(request), API_LIMIT, API_WINDOW):
+        return JSONResponse({"detail": "too many requests -- slow down"}, status_code=429)
 
     response = await call_next(request)
 
@@ -136,6 +179,15 @@ async def security_headers(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     if request.url.scheme == "https":
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
+    if api:
+        # `GET /api/games/{id}` answers *differently* depending on this header -- origins
+        # and awaitingYou are the asking player's, not the game's. Without Vary, any cache
+        # between here and a browser is entitled to hand one player the other's view of
+        # the position. Nothing caches it today; the header is what makes that still true
+        # the first time something is put in front of this.
+        response.headers["Vary"] = "X-Royals-Seat"
+        response.headers["Cache-Control"] = "no-store"
     return response
 
 
@@ -149,6 +201,20 @@ async def security_headers(request: Request, call_next):
 TRUSTED_PROXY = os.environ.get("ROYALS_TRUSTED_PROXY", "").strip().lower() in (
     "1", "true", "yes", "on")
 
+# *Who* may speak for a client, not just whether anybody may.
+#
+# Trusting a forwarded header from whoever happens to send it is trusting the internet:
+# with the server bound to a LAN address, any machine on the network could name itself
+# 8.8.8.8 and get a fresh rate-limit bucket per request. A tunnel and a sidecar proxy both
+# connect from loopback, which is the default here; a deployment where the proxy is a
+# separate host sets ROYALS_PROXY_PEERS to its address.
+#
+# This is a code-level check rather than a warning about a flag combination because it
+# cannot then be got wrong at the command line.
+PROXY_PEERS = frozenset(
+    p.strip() for p in os.environ.get("ROYALS_PROXY_PEERS", "127.0.0.1,::1").split(",")
+    if p.strip())
+
 
 # In order of how much the proxy in front of us is telling us. The first two are set by
 # one specific edge and contain one address; X-Forwarded-For is the generic chain and the
@@ -160,13 +226,14 @@ FORWARDED_HEADERS = ("fly-client-ip", "cf-connecting-ip", "x-forwarded-for")
 
 
 def client_key(request: Request):
-    if TRUSTED_PROXY:
+    peer = request.client.host if request.client else "unknown"
+    if TRUSTED_PROXY and peer in PROXY_PEERS:
         for header in FORWARDED_HEADERS:
             value = request.headers.get(header)
             if value:
                 # X-Forwarded-For is a chain; the client is the leftmost entry.
                 return value.split(",")[0].strip()[:64]
-    return request.client.host if request.client else "unknown"
+    return peer
 
 
 # ---------------------------------------------------------------------------
@@ -221,10 +288,14 @@ class NewGame(BaseModel):
     side: Union[int, Literal["random"]] = G.BLUE
     difficulty: str = Field(default=G.DEFAULT_DIFFICULTY, max_length=20)
     noise: float = Field(default=0.5, ge=0.0, le=1.0)
+    # Bounded here and filtered again by clean_name, which is the one that matters --
+    # a length is not a charset.
+    name: str = Field(default=None, max_length=200)
 
 
 class JoinIn(BaseModel):
     invite: str = Field(max_length=MAX_TOKEN_CHARS)
+    name: str = Field(default=None, max_length=200)
 
 
 class Placement(BaseModel):
@@ -389,7 +460,7 @@ async def create_game(body: NewGame, request: Request):
 
     game, seat_token, invite_token = G.new_game(
         mode=body.mode, side=body.side, difficulty=body.difficulty,
-        entry_noise=body.noise)
+        entry_noise=body.noise, name=body.name)
     store.put(game)
     await _advance(game)
     store.put(game)     # again after advancing: the store is write-through from M3.2 on
@@ -419,7 +490,7 @@ async def join_game(game_id: str, body: JoinIn, request: Request,
         if already is not None:
             return {"state": _state(game, already), "seatToken": None}
 
-        side, seat_token = G.claim_seat(game, body.invite)
+        side, seat_token = G.claim_seat(game, body.invite, name=body.name)
         store.put(game)
         return {"state": _state(game, side), "seatToken": seat_token}
 
@@ -524,37 +595,132 @@ async def health():
 # The page itself
 # ---------------------------------------------------------------------------
 
-def _page():
+# Where the preview tags go. A placeholder and a string replace rather than a template
+# engine: the whole substitution is one escaped block in one place, and web/pyproject.toml
+# makes a point of how short its dependency list is.
+SOCIAL_PLACEHOLDER = "<!--SOCIAL-->"
+SHELL = None
+
+
+def _shell():
+    """The page source, read once and kept.
+
+    Read at first use rather than at import so a `--reload` run picks up an edit, and kept
+    afterwards because the alternative is a disk read on every page view for a file that
+    changes when the server restarts.
+    """
+    global SHELL
+    if SHELL is None or os.environ.get("ROYALS_RELOAD_SHELL"):
+        SHELL = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    return SHELL
+
+
+# The origin this server is reached at, for the absolute URLs a preview card needs.
+# Open Graph requires them: a relative og:image is ignored by most scrapers.
+#
+# Falling back to the request's own host means trusting the Host header, which is normally
+# worth avoiding -- but the worst an attacker achieves by forging it is a wrong picture in
+# a preview of a link they sent themselves. Set PUBLIC_ORIGIN on a real deployment and the
+# question does not arise.
+PUBLIC_ORIGIN = os.environ.get("ROYALS_PUBLIC_ORIGIN", "").strip().rstrip("/")
+
+
+def _origin(request: Request):
+    return PUBLIC_ORIGIN or str(request.base_url).rstrip("/")
+
+
+def _social(request: Request, title, description, url):
+    """The preview card, as escaped meta tags.
+
+    `description` can contain a player's chosen name, which is the only text in this
+    application that someone else wrote. It is filtered on the way in by `clean_name` and
+    escaped again here, because the cost of doing both is nothing and the cost of
+    discovering that one of them was insufficient is an injected tag in a page served to
+    whoever opened an invitation.
+    """
+    origin = _origin(request)
+    image = origin + "/static/icon-512.png"
+    tags = [
+        ("og:type", "website"),
+        ("og:site_name", "Royals"),
+        ("og:title", title),
+        ("og:description", description),
+        ("og:url", url),
+        ("og:image", image),
+        ("twitter:card", "summary_large_image"),
+        ("twitter:title", title),
+        ("twitter:description", description),
+        ("twitter:image", image),
+    ]
+    out = ['<meta name="description" content="%s">' % html.escape(description, quote=True)]
+    for name, content in tags:
+        key = "property" if name.startswith("og:") else "name"
+        out.append('<meta %s="%s" content="%s">'
+                   % (key, name, html.escape(content, quote=True)))
+    return "\n".join(out)
+
+
+TAGLINE = ("Royals is a two-player strategy game on a board that wraps around. "
+           "Gather your spy, four pawns and royal onto one square to win.")
+
+
+def _page(request: Request, social=None):
     # no-store on the shell, because the shell is how a deploy reaches anybody. The
     # bundle it loads is fingerprinted by nothing at all, so a browser that heuristically
     # caches this page can pin a player to an old client indefinitely, and there is no
-    # mechanism to tell them otherwise.
-    return FileResponse(STATIC_DIR / "index.html",
-                        headers={"Cache-Control": "no-store"})
+    # mechanism to tell them otherwise. It also keeps one game's preview card from being
+    # served for another's.
+    body = _shell().replace(
+        SOCIAL_PLACEHOLDER,
+        social or _social(request, "Royals", TAGLINE, _origin(request) + "/"))
+    return HTMLResponse(body, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/")
-async def index():
-    return _page()
+async def index(request: Request):
+    return _page(request)
 
 
 @app.get("/g/{game_id}")
-async def game_page(game_id: str):
-    return _page()
+async def game_page(game_id: str, request: Request):
+    return _page(request)
 
 
 @app.get("/join/{invite_token}")
-async def join_page(invite_token: str):
-    """Serving the page is all this does. **It must never claim the seat.**
+async def join_page(invite_token: str, request: Request):
+    """Serve the invitation page, and describe the game for a preview card.
 
-    iMessage, WhatsApp, Slack and every other messenger fetches a URL to build a link
-    preview before a human has seen it, let alone clicked it. A GET that claimed the seat
-    would hand the game to a preview bot and greet the person the link was sent to with
-    "that invitation has already been used" -- and it would do it over exactly the
-    channels this feature exists to be used on. The claim is the POST the page then
-    makes, which no previewer will issue.
+    **This must never claim the seat.** iMessage, WhatsApp, Slack and every other
+    messenger fetches a URL to build a preview before a human has seen it, let alone
+    clicked it. A GET that claimed the seat would hand the game to a preview bot and greet
+    the person the link was sent to with "that invitation has already been used" -- over
+    exactly the channels this feature exists to be used on. The claim is a POST the page
+    makes when the reader presses a button, which no previewer will issue.
+
+    The path segment is a game id, optionally followed by ".<token>" in the older link
+    format. The id is enough to describe the game and is not a credential -- anyone with
+    one can already watch -- while the token, which is, now travels in the fragment and
+    never arrives here at all.
     """
-    return _page()
+    game_id = invite_token.split(".", 1)[0]
+    game = store.get(game_id) if _looks_like_id(game_id) else None
+
+    if game is None or game.mode != "human":
+        title, description = "Royals", TAGLINE
+    else:
+        inviter = game.seats[G.BLUE].name or game.seats[G.RED].name
+        title = ("%s has invited you to play Royals" % inviter if inviter
+                 else "You have been invited to play Royals")
+        description = (TAGLINE + " No account needed — open the link and play."
+                       if game.invite_hash
+                       else "This invitation has already been used.")
+
+    url = "%s/join/%s" % (_origin(request), game_id)
+    return _page(request, social=_social(request, title, description, url))
+
+
+def _looks_like_id(value):
+    return len(value) == 32 and all(c in "0123456789abcdef" for c in value)
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

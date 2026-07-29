@@ -785,11 +785,44 @@ def setEntryNoise(intensity, seed = None):
     return seed
 
 
+# Answers enteringAnchor has already worked out, keyed by the squares it was asked about.
+#
+# The walk below is 49 candidates against every piece, and enterSearch asks for it far more
+# often than it asks anything new: it is a minimax over placements, and every order of
+# reaching the same placements arrives at the same set of squares. Measured over three
+# games, 107,750 calls between them held 3,368 distinct sets -- 97% of that work was a
+# repeat of work already done.
+#
+# Cached across games rather than per game, which is worth being clear about because the
+# tables beside this one are not. An anchor depends on JUMPDIST and JUMPREACH and on
+# nothing else -- not on the board, not on whose turn it is, not on the noise fields, which
+# is why the first parameter below goes unread. Those tables are built at import and never
+# move, so an answer stays true for the life of the process and newGame has no business
+# dropping it.
+#
+# What that leaves is memory, so it is bounded. A game contributes on the order of 1,100
+# sets, so this holds roughly eighteen games' worth and then simply stops growing: past the
+# limit the walk still runs and still answers, it just isn't written down. Unbounded, a
+# server playing back to back would accumulate squares nobody will ask about again.
+ANCHOR_MEMO = {}
+ANCHOR_MEMO_LIMIT = 20_000
+
+
 # The square a side would gather on and what it costs to get everyone there, in lone-piece
 # jumps. Squares rather than pieces: a stack travels together, so it is one journey however
 # much is standing on it. Returns [square, cost], or [0, 0] with nothing on the board.
 def enteringAnchor(spaces, mine):
     if not mine: return [0, 0]
+
+    # entryScore builds `mine` by walking the board in order, so this is already canonical.
+    # Nothing breaks if a caller ever hands them over in some other order -- the sum below
+    # doesn't care, so the worst an unsorted list costs is a second entry saying the same
+    # thing.
+    key = tuple(mine)
+    hit = ANCHOR_MEMO.get(key)
+    # rebuilt rather than handed back, because the caller unpacks it and a shared list is
+    # one caller's mistake away from being everybody's
+    if hit is not None: return [hit[0], hit[1]]
 
     anchor = 0
     gather = None
@@ -801,6 +834,8 @@ def enteringAnchor(spaces, mine):
         if gather is None or total < gather or (total == gather and JUMPREACH[candidate] > JUMPREACH[anchor]):
             gather = total
             anchor = candidate
+
+    if len(ANCHOR_MEMO) < ANCHOR_MEMO_LIMIT: ANCHOR_MEMO[key] = (anchor, gather)
 
     return [anchor, gather]
 

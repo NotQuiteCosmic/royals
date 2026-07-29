@@ -110,28 +110,40 @@ TEXT_DIM = "#6f6a62"
 TEXT_KEY = "#0d0d0c"
 
 ####### the squares, each with its two bevel shades #######
+# The dark square is a grey and not a black, and the reason is the pieces. Black takes the
+# dark pieces, and on a near-black square a black piece was a pale lid floating over
+# nothing -- its wall, which is where a standing piece keeps most of its ink, had no ground
+# to be seen against. There is only so much room between the two square shades and the two
+# piece shades, and the squares are what has to give: a piece that is hard to see is worse
+# than a board that is less stark.
+# Where the grey landed, and why it is not a stop or two darker. It has two contrasts to
+# keep and they pull opposite ways: against a black piece it is 3.0 to 1, and against the
+# light square 4.8. The first is the floor at which a large solid shape is reliably seen
+# and is the whole reason this square stopped being black; the second is what keeps the
+# board a checkerboard. Every step darker buys the checkerboard about a fifth of a stop
+# and costs the piece the same, and the piece is the thing that has to be seen.
 LIGHT = "#e2ded5"
 LIGHT_HI = "#f8f6f2"
 LIGHT_LO = "#b4afa5"
-DARK = "#1e1e1c"
-DARK_HI = "#494844"
-DARK_LO = "#000000"
+DARK = "#615e56"
+DARK_HI = "#847f76"
+DARK_LO = "#3b3933"
 
 # The same two shifted for the states a square can be in. Canvas has no alpha, so a
 # highlight is a different fill rather than a wash over one -- and with no colour to
 # spend, the shift has to be in lightness: a played-from square lifts, a square open for
 # entering sinks.
 LIGHT_LAST = "#f6f3ec"
-DARK_LAST = "#403f3a"
+DARK_LAST = "#7e7a6e"
 LIGHT_ENTRY = "#c6c2b8"
-DARK_ENTRY = "#0a0a09"
+DARK_ENTRY = "#48453e"
 
-# The two sides. Blue takes the light pieces and red the dark ones, and each is outlined
-# in the other's shade so both read on both squares.
-BLUE = "#f6f4ef"
-BLUE_DK = "#0d0d0c"
-RED = "#0d0d0c"
-RED_DK = "#f6f4ef"
+# The two sides. White takes the light pieces and black the dark ones, and each is
+# outlined in the other's shade so both read on both squares.
+WHITE = "#f6f4ef"
+WHITE_DK = "#0d0d0c"
+BLACK = "#0d0d0c"
+BLACK_DK = "#f6f4ef"
 
 SELECT = "#0d0d0c"
 # Destinations can no longer differ by colour, so they differ by shape: a jump is a filled
@@ -180,19 +192,23 @@ def initFonts():
 
 # A chiselled edge on the rectangle x0,y0..x1,y1. `raised` puts the light along the top
 # and left so the shape stands up; false swaps them and it reads as cut into the surface.
-def bevel(c, x0, y0, x1, y1, depth, hi, lo, raised=True):
+# `tags` is here for the one plate that is drawn on the board rather than in the panel and
+# so has to be findable by a click -- the BREAK badge. Panel widgets pass nothing and are
+# unaffected.
+def bevel(c, x0, y0, x1, y1, depth, hi, lo, raised=True, tags=None):
     top, bottom = (hi, lo) if raised else (lo, hi)
+    tags = tags or ()
     for i in range(depth):
-        c.create_line(x0 + i, y0 + i, x1 - i, y0 + i, fill=top)
-        c.create_line(x0 + i, y0 + i, x0 + i, y1 - i, fill=top)
-        c.create_line(x0 + i, y1 - i, x1 - i + 1, y1 - i, fill=bottom)
-        c.create_line(x1 - i, y0 + i, x1 - i, y1 - i, fill=bottom)
+        c.create_line(x0 + i, y0 + i, x1 - i, y0 + i, fill=top, tags=tags)
+        c.create_line(x0 + i, y0 + i, x0 + i, y1 - i, fill=top, tags=tags)
+        c.create_line(x0 + i, y1 - i, x1 - i + 1, y1 - i, fill=bottom, tags=tags)
+        c.create_line(x1 - i, y0 + i, x1 - i, y1 - i, fill=bottom, tags=tags)
 
 
 # A filled panel with that edge on it.
-def plate(c, x0, y0, x1, y1, fill, hi, lo, depth=2, raised=True):
-    c.create_rectangle(x0, y0, x1, y1, fill=fill, outline="")
-    bevel(c, x0, y0, x1, y1, depth, hi, lo, raised)
+def plate(c, x0, y0, x1, y1, fill, hi, lo, depth=2, raised=True, tags=None):
+    c.create_rectangle(x0, y0, x1, y1, fill=fill, outline="", tags=tags or ())
+    bevel(c, x0, y0, x1, y1, depth, hi, lo, raised, tags)
 
 
 # Text with a hard shadow under it, which is what makes lettering look cut rather than
@@ -258,20 +274,68 @@ H_CHIP = 0.16
 H_MAX = 6 * H_CHIP + 0.04
 
 # The dragon can't stack and never shares a square, so it gets a solid a pile can never
-# make: a cone standing on a chip's own footprint, three chips high -- which is also what
-# a dragon is worth. Same foot, same height as the three-high stack next to it, and the
-# taper is the whole of the difference.
+# make: an obelisk. Five chips high, and its foot is a square nine tenths of a board
+# square across -- against a chip, which is eight tenths of one across its diameter, so
+# the dragon is the widest thing on the board as well as the tallest. Neither figure is
+# one the other pieces are measured in and neither can be.
 #
-# What that costs is worth knowing. A cone only shows a silhouette while its apex projects
-# clear of its base, and the pitch that stops at is atan(h/r) -- 0.48 over 0.40 is about
-# 50 degrees, and the board opens at 55. Tilted back the piece is a cone; from the default
-# angle up it is the disc a cone honestly projects to, and what tells it from a chip there
-# is that it has no pale lid and carries no icons.
-R_DRAGON = R_CHIP
-H_DRAGON = 3 * H_CHIP
+# `r` here is the corner-to-corner half-width, so nine tenths across the flats is
+# 0.90/sqrt(2). That the diagonal comes out past half a square is not the overhang it
+# looks like: the foot and the square are both aligned to the board, so what a foot's
+# corner has to clear is the square's corner and not its edge, and a 0.90 square sits
+# inside a 1.00 square with a twentieth to spare on every side.
+#
+# The width is a deliberate trade against slenderness and it is worth being plain about
+# what it costs. A piece's width is on screen whole at every angle while its height is
+# scaled by cos(pitch), so at the angle the board opens at this one is nine tenths of a
+# square wide and under half a square tall on the screen -- getting on for twice as wide
+# as it is high. It does not read as a slender thing and is not trying to. It reads as a
+# thing that has taken the square, which is the right story for the one piece nothing may
+# ever share a square with, and a story a narrow shaft could not tell: a slim obelisk is a
+# marker standing on a square, and this is a monument occupying one.
+#
+# What still says obelisk rather than pyramid, now that the proportions no longer do, is
+# the taper and the pyramidion: the shaft draws in only slightly and then stops, and the
+# cap is a separate, sharper slope sitting on the end of it. A pyramid is one slope from
+# foot to point. This is two, and the break between them is the whole of the reading.
+#
+# A square plan is worth more here than a round one. A cylinder and a cone are the same
+# outline from every side, so a chip and a cone differ only in how their edges taper, and
+# that is a thin difference at the angle the board opens at. An obelisk turns with the
+# board: it has an arris running down the front of it and two faces at different shades
+# meeting there, which is a thing no stack of discs ever shows. This wide, that arris is
+# the longest line on the board and the piece is unmistakable from across the room.
+R_DRAGON = 0.6364
+H_DRAGON = 5 * H_CHIP
+
+# Slightly, as obelisks go -- a real one draws in by about a quarter over its height, and
+# this one is thirty pixels tall. Much under 0.8 and the taper stops reading as a taper
+# and starts reading as a spire.
+DRAGON_TAPER = 0.85
+# The pyramidion, as a fraction of the height. A real one is nearer a tenth, which at this
+# size is two pixels and a rumour; this is the smallest cap that still says the top of the
+# piece comes to a point rather than being cut off flat.
+DRAGON_CAP = 0.15
 
 STUD_R = 0.09
 STUD_H = 0.05
+
+# The two weights an arrow is drawn at, in cells: shaft half-width, barb half-width, and how
+# much of the run the head takes. A break being offered is wide and grey and has to be read
+# from across the board; a move already made is a thin black record that must not shout over
+# the position it is describing. The numbers are the whole difference between them.
+BRK_SHAFT, BRK_BARB, BRK_HEAD = 0.15, 0.34, 0.55
+FLY_SHAFT, FLY_BARB, FLY_HEAD = 0.055, 0.135, 0.30
+
+# Both ends of a run are pulled in off the square's centre, but only just. Set wide enough
+# to keep an arrow clear of both squares, a one-square arrow is 0.42 cells long with a 0.30
+# head on it -- an arrowhead with a stub behind it, and it reads as a smudge. An arrow whose
+# job is to say a piece went from here to there has to reach both ends to say it.
+RUN_FOOT, RUN_TIP = 0.18, 0.16
+
+# A flight arrow rides just off the tile and no higher, so it stays visibly attached to the
+# two squares it joins.
+FLY_Z = 0.02
 
 # Pitch stops short of flat at both ends. Below about fifteen degrees the far half of the
 # board is behind the near half; at ninety exactly every stack is edge-on to the camera
@@ -301,8 +365,8 @@ ROOT2 = math.sqrt(2.0)
 ####### the pieces #######
 # One shape per kind of piece, and the count of pawns shown as that many of their shape
 # rather than as a numeral -- four is few enough to read at a glance, and it keeps the
-# square free of lettering. Which side a piece belongs to is its fill: blue is the light
-# one, red the dark. Each is drawn with the other's shade as its outline, so a dark piece
+# square free of lettering. Which side a piece belongs to is its fill: white is the light
+# one, black the dark. Each is drawn with the other's shade as its outline, so a dark piece
 # on a dark square and a light one on a light square both still have an edge.
 #
 #   royal    square      the one that has to arrive last, and the one worth most
@@ -310,15 +374,15 @@ ROOT2 = math.sqrt(2.0)
 #   pawn     disc        one per pawn, up to four
 #
 # There is no dragon here. It is the one piece that never shares a square with anything,
-# so it never has to be told apart from its neighbours on a lid -- it is drawn as a cone
-# instead, and the shape of the piece is the whole of the icon. See cone().
+# so it never has to be told apart from its neighbours on a lid -- it is drawn as an
+# obelisk instead, and the shape of the piece is the whole of the icon. See obelisk().
 
 # A pale halo is laid down under every piece before the piece itself. Without it the code
 # inverted with the square: a light piece read as a hollow ring on a white square and as a
 # solid disc on a black one, and its opponent did the same the other way round, so which
 # side a piece belonged to depended on what it happened to be standing on. With the halo
 # both sides sit on the same pale ground wherever they are, and the rule holds everywhere
-# -- blue has a light centre, red a dark one.
+# -- white has a light centre, black a dark one.
 PIECE_HALO = "#f4f1ea"
 
 # The shades a chip's wall is banded in, and the line drawn round its foot. Standing up,
@@ -329,16 +393,23 @@ PIECE_HALO = "#f4f1ea"
 # shades of near-white are a cylinder on a dark square and a smudge on a light one; the
 # rim line is the outline the flat pieces had, kept for the same reason they had it.
 #
+# The dark side's three shades used to be the dark square's own two bevel shades, which
+# held while the squares were nearly black and stopped the moment they were grey: a
+# highlight borrowed from the square is a highlight that disappears on that square, and
+# grey banding on a black piece makes it read as a grey piece. These are the piece's own
+# and they stay near black, which is now the whole of how it is told from what it stands on.
+#
 #          mid       highlight   shadow      rim
 CHIP_WALL = {
-    0: (BLUE, "#ffffff", "#b6b1a7", "#6f6a62"),
-    1: (RED, DARK_HI, DARK_LO, INK),
+    0: (WHITE, "#ffffff", "#b6b1a7", "#6f6a62"),
+    1: (BLACK, "#38352f", "#000000", INK),
 }
 
-# A shade part way between two of the above, memoised because a cone asks for a score of
-# them every time the board is redrawn and the board is redrawn all the way through a
-# drag. This is not a gradient sneaking back in: what comes out is one more flat colour,
-# for one more flat polygon, on a canvas that still has no alpha in it anywhere.
+# A shade part way between two of the above, for the faces of a piece that meets the light
+# at some angle other than the three the chip's wall knows about. Memoised: an obelisk
+# asks for eight of them every time the board is redrawn, and the board is redrawn all the
+# way through a drag. This is not a gradient sneaking back in -- what comes out is one more
+# flat colour, for one more flat polygon, on a canvas that still has no alpha in it.
 _MIXED = {}
 
 
@@ -355,7 +426,7 @@ def mixShade(a, b, t):
 
 
 def pieceFill(side):
-    return RED if side else BLUE
+    return BLACK if side else WHITE
 
 
 def drawPiece(c, draw, x, y, r, side, w=2):
@@ -555,6 +626,102 @@ def polyPlate(c, view, pts, z, fill, hi, lo, raised=True, tags=None):
                       fill=top if (nx + ny) < 0 else bottom, tags=tags)
 
 
+####### arrows lying in the board #######
+# Two things want to draw a run along the board: a break offering to scatter a stack a
+# certain distance, and a record of the distance a piece has just travelled. They are the
+# same figure at two weights, so they are one function -- a wide grey one and a thin black
+# one cannot drift apart in style if there is only one of them.
+
+# The board wraps, and a run along it can leave one edge and arrive at the other. Drawn
+# straight, that is a line across the middle of the board saying a piece went somewhere it
+# never went. So a run is cut where it leaves the playfield and continued from the far side:
+# this returns the pieces it falls into, each as
+#
+#     (ox, oy, u0, u1, final)
+#
+# where the leg's points are (ox + dx*u, oy + dy*u) and `u` keeps running across the cut, so
+# the caller measures distance along the whole run rather than per piece. Only the last leg
+# is the one that arrives, and only it gets a head.
+#
+# `u` counts steps of (dx, dy) and not cells: a diagonal step is longer than an orthogonal
+# one, which is why everything measured in cells is divided through by the step's length
+# before it gets here.
+def rayLegs(ax, ay, dx, dy, u0, u1):
+    edgeX = 3.5 if dx > 0 else -3.5
+    edgeY = 3.5 if dy > 0 else -3.5
+
+    legs = []
+    ox, oy, u = ax, ay, u0
+    # A run can be eleven squares long and lap the board more than once; the bound is a
+    # backstop against a zero direction slipping in, not a real limit.
+    for _ in range(24):
+        cutU = u1
+        for d, o, edge in ((dx, ox, edgeX), (dy, oy, edgeY)):
+            if not d: continue
+            at = (edge - o) / d
+            if u + 1e-6 < at < cutU: cutU = at
+
+        final = cutU >= u1 - 1e-6
+        legs.append((ox, oy, u, min(cutU, u1), final))
+        if final: break
+
+        # Step the leg's own origin a whole board back along whichever axis just left it,
+        # so the same `u` carries on from the opposite edge. Both, at a corner.
+        if dx and abs((edgeX - ox) / dx - cutU) < 1e-6: ox -= 7.0 * dx
+        if dy and abs((edgeY - oy) / dy - cutU) < 1e-6: oy -= 7.0 * dy
+        u = cutU
+
+    return legs
+
+
+# One leg as a flat polygon in board coordinates: a rectangle, or the whole arrow if this
+# is the leg that arrives. The width is taken perpendicular to the run and normalised, so a
+# diagonal arrow is as thick as an orthogonal one rather than half again as thick.
+def arrowLeg(ox, oy, dx, dy, u0, u1, s, b, head, final):
+    span = math.hypot(dx, dy)
+    px, py = -dy / span, dx / span
+
+    def at(u, w):
+        return (ox + dx * u + px * w, oy + dy * u + py * w)
+
+    if not final:
+        return [at(u0, s), at(u1, s), at(u1, -s), at(u0, -s)]
+
+    # A run cut just short of its end leaves too little of the last leg for a head; it takes
+    # what there is rather than growing backwards off the edge it just came through.
+    tip = max(u0, u1 - head)
+    return [at(u0, s), at(tip, s), at(tip, b), at(u1, 0.0),
+            at(tip, -b), at(tip, -s), at(u0, -s)]
+
+
+# The arrow itself. `halo` is the pale casing every piece on this board is drawn over: an
+# arrow crosses light squares and dark ones in the same breath, so no single fill can be
+# trusted to show up, and the casing is what makes one shade work on both.
+# `edgeW` is not a detail. An outline is drawn half in and half out of the shape, so two
+# pixels of it eat one off each side of the shaft -- which a wide arrow never notices and a
+# thin one is entirely made of. Drawn at 2 the narrow arrow came out white: the pale edge
+# had covered the black it was supposed to be outlining.
+def planeArrow(c, view, legs, dx, dy, z, s, b, head, fill, edge, halo, casing,
+               edgeW=2, tags=None):
+    tags = tags or ()
+    span = math.hypot(dx, dy)
+    px, py = -dy / span, dx / span
+
+    for ox, oy, u0, u1, final in legs:
+        if u1 - u0 < 1e-6: continue
+        flat = view.poly(arrowLeg(ox, oy, dx, dy, u0, u1, s, b, head, final), z)
+        if view.detail:
+            c.create_polygon(flat, fill=halo, outline=halo, width=casing, tags=tags)
+        c.create_polygon(flat, fill=fill, outline=edge, width=edgeW, tags=tags)
+
+        # A cut end gets a bar across it, so the reader sees the run leave the board rather
+        # than stop at the edge of it.
+        if not final:
+            bar = view.poly([(ox + dx * u1 + px * b, oy + dy * u1 + py * b),
+                             (ox + dx * u1 - px * b, oy + dy * u1 - py * b)], z)
+            c.create_line(bar, fill=edge, width=2, tags=tags)
+
+
 # A piece. The axis of a cylinder is always straight up the screen however the board is
 # turned, so this needs no polygons at all: the bottom rim, the wall, and the lid. The
 # wall is banded rather than shaded because there is no alpha here and never was -- the
@@ -591,91 +758,118 @@ def chip(c, view, x, y, z0, r, h, walls, topFill, topEdge, w=2, tags=None):
     return lid
 
 
-# The dragon. A cone is harder than a chip for one reason: a cylinder's silhouette is its
-# two vertical sides at every angle the board can be turned to, and a cone's is a pair of
-# tangents that walk round the base as it tilts, until at a steep enough pitch the apex
-# falls inside the base and there is no silhouette left at all.
+# The outline of a convex solid, from the corners it is made of. Every point of the solid
+# is a mix of its corners, so every point of its shadow is a mix of theirs, and the hull of
+# the shadows is exactly the shape a silhouette has to be -- no hidden-edge test needed and
+# none of the seams that come of stroking each face and hoping. Monotone chain, on nine
+# points, twice a frame; anything cleverer would be a way of spending thought to save
+# nothing.
+def screenHull(pts):
+    pts = sorted(set(pts))
+    if len(pts) < 3: return list(pts)
+
+    def side(seq):
+        out = []
+        for p in seq:
+            while len(out) >= 2:
+                (ax, ay), (bx, by) = out[-2], out[-1]
+                if (bx - ax) * (p[1] - ay) - (by - ay) * (p[0] - ax) > 0.0: break
+                out.pop()
+            out.append(p)
+        return out[:-1]
+
+    return side(pts) + side(pts[::-1])
+
+
+# The dragon: an obelisk, drawn face by face. Unlike the chip this one has to be built in
+# the world and projected rather than laid out on the screen -- a round piece looks the
+# same from every side and can be drawn straight in screen terms, but a square-plan one
+# turns with the board, and turning is most of what makes it read as a standing object.
 #
-# Rather than case-split on that, the surface is drawn as what it is -- a fan of triangles
-# from the apex out to the rim, laid down far ones first. That comes out right in both
-# regimes and needs no clipping to shade, since each triangle can simply take the shade its
-# own facing earns.
+# Eight faces: the four sides of the shaft, and the four of the pyramidion on top. They go
+# down in order of how near the camera their middles are, and for a convex solid that is
+# all the hidden-surface removal there is to do -- whatever is in front is drawn last and
+# covers what it should. The silhouette goes over the top afterwards, as the hull of the
+# corners, which is both the outline of the piece and every arris the eye should see.
 #
-# The chip's wall gets three hard stripes and that is right for a cylinder, whose whole
-# wall faces the same way at a given place across it. A cone's doesn't: its faces turn
-# through the vertical as well, and past the pitch where the apex falls inside the base
-# every one of them is in view at once. Three stripes there are three wedges meeting at
-# the point, and the piece reads as a pie chart. So the same three shades are used, but
-# ramped between rather than switched between -- the light is the top left the whole
-# cabinet is lit from, and a face's shade is how squarely it faces it.
-#
-# Nothing is painted on it. There is no lid to put an icon on and no marking round it
-# either: a cone is a shape nothing else on the board has, and a band round the middle
-# turned out to read as a piece wearing a hat rather than as a piece saying something.
-def cone(c, view, x, y, z0, r, h, walls, w=2, tags=None):
+# Each face is flat, so each takes one flat shade, which is the honest thing a facet does
+# and a nicer thing than a cylinder can manage: the shade is how squarely the face turns
+# to the light the whole cabinet is lit from, up at the top left. The two faces meeting at
+# the front arris always take different shades, and that difference is what says obelisk
+# from across the room, at every pitch, including the ones where a cone gave up and became
+# a disc. Nothing is painted on it -- there is no lid to put an icon on, and it needs none.
+def obelisk(c, view, x, y, z0, r, h, walls, w=2, tags=None):
     wallMid, wallHi, wallLo, wallEdge = walls
     tags = tags or ()
-    px, base = view.project(x, y, z0)
-    rx = r * view.scale
-    ry = r * view.scale * view.sinP
-    d = h * view.scale * view.cosP
-    ax, ay = px, base - d
-    apex = (ax, ay)
 
-    # The rim in screen terms. A circle lying flat projects to an ellipse square-on to the
-    # screen whatever the yaw -- the same fact View.disc leans on -- so it can be walked
-    # here directly, and how near the camera a rim point is is just how far down the screen
-    # it has fallen.
-    steps = 20 if view.detail else 10
-    rim = []
-    for i in range(steps):
-        t = 2.0 * math.pi * i / steps
-        rim.append((px + rx * math.cos(t), base + ry * math.sin(t)))
+    # `r` is the corner-to-corner half-width; `half` is the flat-to-flat one, which is what
+    # the plan is actually built from and the figure to compare against a square, since the
+    # foot and the square it stands on are aligned and a foot 2*half across fits a square
+    # 1.00 across whatever its diagonal does.
+    half = r / ROOT2
+    plan = ((1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0))
+    neckZ = z0 + h * (1.0 - DRAGON_CAP)
 
-    # How lit a face is, from where its own middle sits on the rim. That direction out from
-    # the axis is the face's normal seen on screen, which is all the light needs. The lamp
-    # leans mostly sideways and only a little down the screen: weight the two evenly and a
-    # cone seen from the side goes darkest across its front, where the eye expects it
-    # lightest, because from there "facing the camera" and "facing down" are the same
-    # projected direction and only the leaning tells them apart.
-    def shade(mx, my):
+    foot = [(x + half * u, y + half * v, z0) for u, v in plan]
+    neck = [(x + half * DRAGON_TAPER * u, y + half * DRAGON_TAPER * v, neckZ) for u, v in plan]
+    tip = (x, y, z0 + h)
+
+    footS = [view.project(*p) for p in foot]
+    neckS = [view.project(*p) for p in neck]
+    tipS = view.project(*tip)
+
+    # A face's outward direction in plan, turned and squashed the way the board is, is its
+    # normal as the screen sees it -- which is all the light needs to know. The lamp leans
+    # mostly across the screen and only a little down it: weighted evenly, a face pointing
+    # straight at the camera would come out as dark as one pointing away, since at a low
+    # pitch those two project to nearly the same direction and only the leaning separates
+    # them. `up` is the pyramidion, which tilts back into the light and is lifted for it.
+    def shade(du, dv, up):
         if not view.detail: return wallMid
-        nx, ny = mx - px, my - base
-        n = math.hypot(nx, ny)
-        if not n: return wallMid
-        lit = -(0.85 * nx + 0.35 * ny) / n
+        sx = du * view.cosY - dv * view.sinY
+        sy = (du * view.sinY + dv * view.cosY) * view.sinP
+        n = math.hypot(sx, sy)
+        lit = -(0.85 * sx + 0.35 * sy) / n if n else 0.0
+        if up: lit = 0.30 + 0.55 * lit
         if lit >= 0.0: return mixShade(wallMid, wallHi, min(1.0, lit))
         return mixShade(wallMid, wallLo, min(1.0, -lit))
 
-    faces = [(rim[i], rim[(i + 1) % steps]) for i in range(steps)]
-    faces.sort(key=lambda f: f[0][1] + f[1][1])
+    def depthOf(ws):
+        return sum(view.depth(*p) for p in ws) / float(len(ws))
 
-    # Each face outlined in its own fill: neighbours share an edge, and a hairline of board
-    # showing between two of them reads as a crack down the piece.
-    for p0, p1 in faces:
-        fill = shade(0.5 * (p0[0] + p1[0]), 0.5 * (p0[1] + p1[1]))
-        c.create_polygon(apex[0], apex[1], p0[0], p0[1], p1[0], p1[1],
-                         fill=fill, outline=fill, width=1, tags=tags)
+    faces = []
+    for i in range(4):
+        j = (i + 1) % 4
+        du = 0.5 * (plan[i][0] + plan[j][0])
+        dv = 0.5 * (plan[i][1] + plan[j][1])
+        faces.append((depthOf((foot[i], foot[j], neck[j], neck[i])),
+                      (footS[i], footS[j], neckS[j], neckS[i]), shade(du, dv, False)))
+        faces.append((depthOf((neck[i], neck[j], tip)),
+                      (neckS[i], neckS[j], tipS), shade(du, dv, True)))
+    faces.sort(key=lambda f: f[0])
 
-    # The silhouette, over the top of the fan: two tangents and the front of the rim while
-    # the apex stands clear, and the rim on its own once it doesn't. The tangents touch
-    # where the polar line of the apex cuts the base ellipse, which at a low pitch is a
-    # long way round from the widest point -- drawing them to the widest point instead is
-    # the wrong figure, and looks it.
-    if d > ry:
-        t0 = math.asin(ry / d)
-        pts = []
-        for i in range(steps + 1):
-            t = -t0 + (math.pi + 2.0 * t0) * i / float(steps)
-            pts.append(px + rx * math.cos(t))
-            pts.append(base + ry * math.sin(t))
-        c.create_line(pts, fill=wallEdge, width=w, tags=tags)
-        c.create_line(ax, ay, pts[0], pts[1], fill=wallEdge, width=w, tags=tags)
-        c.create_line(ax, ay, pts[-2], pts[-1], fill=wallEdge, width=w, tags=tags)
-    else:
-        c.create_oval(px - rx, base - ry, px + rx, base + ry,
-                      fill="", outline=wallEdge, width=w, tags=tags)
-    return ay
+    shell = screenHull(footS + neckS + [tipS])
+    flat = []
+    for sx, sy in shell:
+        flat.append(sx)
+        flat.append(sy)
+
+    # The hull laid down first as well as last. The faces meet along shared edges, and a
+    # hairline of board coming through one of those seams reads as a crack in the piece;
+    # filling the whole outline once underneath means there is nothing behind it to show.
+    if len(shell) >= 3:
+        c.create_polygon(flat, fill=wallMid, outline="", tags=tags)
+
+    for _, pts, fill in faces:
+        corners = []
+        for sx, sy in pts:
+            corners.append(sx)
+            corners.append(sy)
+        c.create_polygon(corners, fill=fill, outline=wallEdge, width=1, tags=tags)
+
+    if len(shell) >= 3:
+        c.create_polygon(flat, fill="", outline=wallEdge, width=w, tags=tags)
+    return tipS[1]
 
 
 ####### the icons, lying flat on whatever they are painted on #######
@@ -845,7 +1039,7 @@ class StoneSlider(tk.Canvas):
 
 
 def sideName(contr):
-    return "Red" if contr else "Blue"
+    return "Black" if contr else "White"
 
 
 class RoyalsWindow:
@@ -926,8 +1120,8 @@ class RoyalsWindow:
         # side
         self.sideBox = self.carvedBox(self.frame, "YOUR SIDE")
         self.sideButtons = []
-        for value, text, colour in ((0, "Blue  —  enters first", BLUE),
-                                    (1, "Red  —  moves first", RED)):
+        for value, text, colour in ((0, "White  —  enters first", WHITE),
+                                    (1, "Black  —  moves first", BLACK)):
             b = StoneChoice(self.sideBox, text, self.sideVar, value, fg=colour)
             b.pack(fill="x", pady=1)
             self.sideButtons.append(b)
@@ -1064,8 +1258,6 @@ class RoyalsWindow:
         self.freeCheck.setEnabled(False)
         self.freeCheck.pack(fill="x", pady=1)
 
-        self.breakFrame = tk.Frame(panel, bg=PANEL)
-        self.breakFrame.pack(fill="x", pady=(6, 10))
 
         self.buildLegend(panel)
 
@@ -1083,10 +1275,10 @@ class RoyalsWindow:
                                relief="flat", padx=8, pady=8,
                                highlightthickness=0, insertbackground=TEXT)
         self.logText.pack(fill="both", expand=True)
-        # Every line is already headed "Blue:" or "Red:", so in one colour the side is
+        # Every line is already headed "White:" or "Black:", so in one colour the side is
         # said rather than shown and both read in ink. Only the asides are dimmed.
-        self.logText.tag_configure("blue", foreground=TEXT)
-        self.logText.tag_configure("red", foreground=TEXT)
+        self.logText.tag_configure("white", foreground=TEXT)
+        self.logText.tag_configure("black", foreground=TEXT)
         self.logText.tag_configure("grey", foreground=TEXT_DIM)
         self.logText.configure(state="disabled")
 
@@ -1101,7 +1293,7 @@ class RoyalsWindow:
     # colour could just be seen. Drawn with the same icon functions the board uses, so the
     # key can never drift from what it is describing.
     def buildLegend(self, parent):
-        c = tk.Canvas(parent, width=296, height=206, bg=PANEL, highlightthickness=0)
+        c = tk.Canvas(parent, width=296, height=272, bg=PANEL, highlightthickness=0)
         c.pack(fill="x", pady=(0, 8))
 
         # A view of its own, fixed, so the chips below are drawn by the same code the
@@ -1132,25 +1324,29 @@ class RoyalsWindow:
 
         # The dragon has left this list, because the list is of things a lid can have on
         # it and the dragon has no lid. So the key shows the piece itself, drawn by the
-        # code the board draws it with -- standing on a baseline of its own rather than
-        # centred on the row, since a piece that stands up has a foot and not a centre.
+        # code the board draws it with and from the same fixed angle as the piles below --
+        # standing on a baseline of its own rather than centred on the row, since a piece
+        # that stands up has a foot and not a centre.
         #
-        # And drawn from lower down than everything else in this panel, which is the one
-        # place the key is allowed to disagree with the board. At the angle the board
-        # opens at, a cone this wide has its point inside its own base and is honestly a
-        # disc; a key that showed that would be telling the reader nothing at all. This is
-        # the same piece from a pitch the board reaches the moment it is tilted back.
-        low = View(YAW_DEF, math.radians(32.0), scale=40.0, ox=162.0, oy=64.0)
-        cone(c, low, 0.0, 0.0, 0.0, R_DRAGON, H_DRAGON, CHIP_WALL[0], 1)
-        c.create_text(182, 56, text="dragon", font=FONT["small"], fill=TEXT_DIM,
+        # Further from the eye than the piles rather than nearer, which is the reverse of
+        # what it was while the piece was narrow enough to need the help. A foot nine tenths
+        # of a square across is nine tenths of the drawing scale across on screen, and at
+        # the piles' scale this one runs into the SIDES heading under it and into its own
+        # label beside it. The key is a key: what it owes the reader is the shape, not the
+        # piece's size next to a pile, which the board itself says better than a panel can.
+        key.ox, key.oy = 162.0, 58.0
+        key.scale = 30.0
+        obelisk(c, key, 0.0, 0.0, 0.0, R_DRAGON, H_DRAGON, CHIP_WALL[0], 1)
+        key.scale = 40.0
+        c.create_text(186, 56, text="dragon", font=FONT["small"], fill=TEXT_DIM,
                       anchor="w")
 
         # The board stands its pieces up now, so the key has to as well. The shapes above
         # are what a lid can have on it; the piles below are what a square looks like from
         # the side, and which side of them it belongs to.
         heading(80, "SIDES")
-        pile(4, 128, 3, 0, "blue")
-        pile(150, 128, 3, 1, "red")
+        pile(4, 128, 3, 0, "white")
+        pile(150, 128, 3, 1, "black")
         c.create_text(0, 146, text="one chip a piece — the lid says which",
                       font=FONT["small"], fill=TEXT_DIM, anchor="w")
 
@@ -1162,6 +1358,23 @@ class RoyalsWindow:
         c.create_text(123, 194, text="push", font=FONT["small"], fill=TEXT_DIM, anchor="w")
         c.create_rectangle(195, 185, 213, 203, outline=INK, width=3, dash=(4, 3))
         c.create_text(219, 194, text="free", font=FONT["small"], fill=TEXT_DIM, anchor="w")
+
+        # The two arrows, drawn by the code that draws them on the board and through a view
+        # looking straight down at it, so the key shows the figure and not a foreshortened
+        # version of it. A wide one is where a break would scatter; a thin one is where a
+        # piece went last turn, and it is the only mark here that describes the past.
+        flat = View(0.0, math.radians(90.0), scale=42.0, ox=0.0, oy=0.0)
+        heading(210, "ARROWS")
+        flat.ox, flat.oy = 6.0, 236.0
+        planeArrow(c, flat, rayLegs(0.0, 0.0, 1.0, 0.0, 0.0, 1.5), 1.0, 0.0, 0.0,
+                   BRK_SHAFT, BRK_BARB, BRK_HEAD, PANEL_DK, INK, PIECE_HALO, 5, 2)
+        c.create_text(78, 236, text="break, and how far",
+                      font=FONT["small"], fill=TEXT_DIM, anchor="w")
+        flat.ox, flat.oy = 6.0, 258.0
+        planeArrow(c, flat, rayLegs(0.0, 0.0, 1.0, 0.0, 0.0, 1.5), 1.0, 0.0, 0.0,
+                   FLY_SHAFT, FLY_BARB, FLY_HEAD, INK, INK, PIECE_HALO, 4, 1)
+        c.create_text(78, 258, text="moved last turn",
+                      font=FONT["small"], fill=TEXT_DIM, anchor="w")
 
     ################################################################################
     ####### STARTING ###############################################################
@@ -1199,8 +1412,14 @@ class RoyalsWindow:
         self.moveArray = []
         self.legalOrigins = set()
         self.lastMove = []
+        # what the last move moved, as Engine.moveFlights reports it -- the arrows drawn
+        # over the board are the only account of a computer move that doesn't need reading
+        self.lastFlights = ()
         self.movingPris = False
         self.spyBreak = False
+        # whether the break arrows are showing. The badge over the stack toggles it, and
+        # anything that ends the selection or the turn puts it back down.
+        self.breakOpen = False
         self.hasPris = False
         self.aiBusy = False
 
@@ -1276,8 +1495,9 @@ class RoyalsWindow:
         else:
             self.board = Engine.dropPiece(self.board, square, contr, piece)
             self.lastMove = [square]
+            self.lastFlights = ()
             self.log(sideName(contr) + " " + PIECE_NAMES[piece] + " enters at "
-                     + Hasher.IndexToAlg(square - 1).upper(), "red" if contr else "blue")
+                     + Hasher.IndexToAlg(square - 1).upper(), "black" if contr else "white")
 
         self.enterIndex += 1
         self.advance()
@@ -1288,8 +1508,9 @@ class RoyalsWindow:
         if square in self.entryOptions:
             self.board = Engine.dropPiece(self.board, square, contr, self.entryPiece)
             self.lastMove = [square]
+            self.lastFlights = ()
             self.log(sideName(contr) + " " + PIECE_NAMES[self.entryPiece] + " enters at "
-                     + Hasher.IndexToAlg(square - 1).upper(), "red" if contr else "blue")
+                     + Hasher.IndexToAlg(square - 1).upper(), "black" if contr else "white")
             self.enterIndex += 1
             self.advance()
             return
@@ -1321,7 +1542,7 @@ class RoyalsWindow:
         self.contr = contr
         self.selected = None
         self.moveArray = []
-        self.clearBreaks()
+        self.breakOpen = False
         self.prisCheck.setEnabled(False)
         self.freeCheck.setEnabled(False)
         self.prisVar.set(0)
@@ -1376,7 +1597,7 @@ class RoyalsWindow:
             return
 
         self.log(sideName(contr) + ": " + artificialPlayer.describeMove(move),
-                 "red" if contr else "blue")
+                 "black" if contr else "white")
         self.log("   score " + artificialPlayer.scoreText(score) + ", "
                  + str(artificialPlayer.calcCount) + " boards considered", "grey")
 
@@ -1385,12 +1606,18 @@ class RoyalsWindow:
         # square there is to highlight
         if move[artificialPlayer.MOVE_KIND] == "break": target = origin
         else: target = move[artificialPlayer.MOVE_TARGET] + 1
-        self.commit(board, [origin, target])
+        self.commit(board, [origin, target], move)
 
     ####### A COMPLETED MOVE #######
     # Ko, the win check and the turn counter, in the order MainPlay does them. Returns
     # whether the move stood.
-    def commit(self, board, squares):
+    #
+    # `move` is what was played, and this is the one place that can ask what it moved:
+    # self.board is still the board the move was made on until a few lines down, and
+    # moveFlights measures against that one. It is also where a move that ko takes back
+    # returns early, which is exactly right -- a move that was taken back never happened,
+    # and the arrows still describe the last one that did.
+    def commit(self, board, squares, move=None):
         # A move that puts the game back into a position it has already stood in is taken
         # back and the side has another go. The computer is filtered at the root of its
         # search and never gets here; this is what stops a human doing it.
@@ -1399,10 +1626,11 @@ class RoyalsWindow:
             self.log("Ko — move taken back.", "grey")
             self.selected = None
             self.moveArray = []
-            self.clearBreaks()
+            self.breakOpen = False
             self.redraw()
             return False
 
+        self.lastFlights = Engine.moveFlights(self.board, move, self.contr) if move else ()
         self.board = board
         self.lastMove = squares
         Engine.koRecord(board)
@@ -1411,8 +1639,8 @@ class RoyalsWindow:
 
         gameEnd, winner = Hasher.Check_For_Winner(board)
         if gameEnd:
-            if winner == [1, 0]: self.finish("Blue wins!", 0)
-            elif winner == [0, 1]: self.finish("Red wins!", 1)
+            if winner == [1, 0]: self.finish("White wins!", 0)
+            elif winner == [0, 1]: self.finish("Black wins!", 1)
             else: self.finish("A tie.", None)
             return True
 
@@ -1423,13 +1651,13 @@ class RoyalsWindow:
         self.phase = "over"
         self.selected = None
         self.moveArray = []
-        self.clearBreaks()
+        self.breakOpen = False
         self.prisCheck.setEnabled(False)
         self.freeCheck.setEnabled(False)
         self.setStatus(text, contr)
         self.setHint("Game finished.")
         if contr is None: self.log("Game finished. " + text, "grey")
-        else: self.log("Game finished. " + text, "red" if contr else "blue")
+        else: self.log("Game finished. " + text, "black" if contr else "white")
         self.redraw()
 
     ################################################################################
@@ -1452,6 +1680,22 @@ class RoyalsWindow:
             for name in self.canvas.gettags(item):
                 if name.startswith("sq"): return int(name[2:])
         return self.view.square(sx, sy)
+
+    # The mark under the pointer: -1 for the BREAK badge, otherwise the direction index of
+    # a break arrow, or None for neither. Read before squareAt and not folded into it,
+    # because these float over squares that mean something else entirely when clicked -- the
+    # badge sits over the selected stack, whose square means "put it back down" -- and
+    # because squareAt falls through to the floor, which would answer for them regardless.
+    #
+    # The badge's tag deliberately does not start with "brk". A prefix collision here would
+    # not fail, it would misroute, and a click that plays the wrong move is worse than one
+    # that plays none.
+    def markAt(self, sx, sy):
+        for item in reversed(self.canvas.find_overlapping(sx, sy, sx, sy)):
+            for name in self.canvas.gettags(item):
+                if name == "breakbadge": return -1
+                if name.startswith("brk"): return int(name[3:])
+        return None
 
     ####### the view under the hand #######
     # A press that goes nowhere is a move; a press that travels is the board being turned.
@@ -1492,9 +1736,30 @@ class RoyalsWindow:
 
         if self.aiBusy or self.phase == "over": return
 
+        mark = self.markAt(event.x, event.y)
+        if mark is not None:
+            self.markClick(mark)
+            return
+
         square = self.squareAt(event.x, event.y)
         if square is None: return
         self.boardClick(square)
+
+    # The badge, or one of the arrows it opens.
+    def markClick(self, mark):
+        if self.breakOrigin() is None: return
+
+        if mark < 0:
+            self.breakOpen = not self.breakOpen
+            self.setHint("Click an arrow to scatter that way, or BREAK again to put it away."
+                         if self.breakOpen
+                         else "Click one of the outlined squares, or BREAK over the stack.")
+            self.redraw()
+            return
+
+        # A stale arrow can't be clicked -- the board is redrawn whenever moveArray changes
+        # -- but the move is checked against the list anyway rather than trusted from a tag.
+        if mark in self.moveArray[2]: self.playBreak(mark)
 
     def boardClick(self, square):
         if self.phase == "entering":
@@ -1513,6 +1778,9 @@ class RoyalsWindow:
     # legal destination plays the move and leaves the view alone; the button does the rest.
     def onDoubleClick(self, event):
         self.swallowRelease = True
+        # a second click on the badge is how the arrows are put away again, and straightening
+        # the board out from under them is not what that asked for
+        if self.markAt(event.x, event.y) is not None: return
         if not self.clickWasInert(self.squareAt(event.x, event.y)): return
         self.resetView()
 
@@ -1570,7 +1838,7 @@ class RoyalsWindow:
         if square == self.selected:
             self.selected = None
             self.moveArray = []
-            self.clearBreaks()
+            self.breakOpen = False
             self.prisCheck.setEnabled(False)
             self.freeCheck.setEnabled(False)
             self.prisVar.set(0)
@@ -1632,15 +1900,11 @@ class RoyalsWindow:
         self.moveArray = Engine.checkMoves(self.board, tOrigin, self.contr)
         self.movingPris = movingPris
 
-        self.clearBreaks()
+        self.breakOpen = False
         if self.moveArray:
             jumps = len(self.moveArray[0])
             pushes = len(self.moveArray[1])
             frees = len(self.moveArray[5])
-            for word, heading in zip(self.moveArray[4], self.moveArray[2]):
-                StoneButton(self.breakFrame, word.upper(),
-                            lambda h=heading: self.playBreak(h),
-                            font=FONT["small"]).pack(side="left", padx=(0, 5))
 
             # only worth offering the choice where a square is under both, which is the
             # only case the box decides anything
@@ -1651,11 +1915,15 @@ class RoyalsWindow:
             if jumps: bits.append(str(jumps) + " jump" + ("s" if jumps != 1 else ""))
             if pushes: bits.append(str(pushes) + " push" + ("es" if pushes != 1 else ""))
             if frees: bits.append(str(frees) + " freeing")
-            if self.moveArray[4]: bits.append(str(len(self.moveArray[4])) + " break")
+            if self.moveArray[2]: bits.append(str(len(self.moveArray[2])) + " break")
 
+            # Breaks used to be four buttons down here named after board directions, which
+            # was fine until the board could be turned: "LEFT" points wherever the drag left
+            # it pointing. They are on the board now, where every other move already is.
             self.setHint(Hasher.IndexToAlg(self.selected - 1).upper() + ": "
                          + (", ".join(bits) if bits else "nothing legal")
-                         + ".  Click it again to put it back down.")
+                         + (".  BREAK is over the stack." if self.moveArray[2] else ".")
+                         + "  Click it again to put it back down.")
         else:
             self.freeCheck.setEnabled(False)
             self.setHint("Nothing legal from there"
@@ -1679,8 +1947,8 @@ class RoyalsWindow:
         # followed by the note taking it back, and a move that ends the game doesn't
         # print after the result.
         self.log(sideName(self.contr) + ": " + artificialPlayer.describeMove(move),
-                 "red" if self.contr else "blue")
-        self.commit(board, [origin, square])
+                 "black" if self.contr else "white")
+        self.commit(board, [origin, square], move)
 
     def playBreak(self, heading):
         origin = self.selected
@@ -1688,11 +1956,8 @@ class RoyalsWindow:
 
         move = (origin, "break", Engine.pushIndex(heading), False)
         self.log(sideName(self.contr) + ": " + artificialPlayer.describeMove(move),
-                 "red" if self.contr else "blue")
-        self.commit(board, [origin])
-
-    def clearBreaks(self):
-        for child in self.breakFrame.winfo_children(): child.destroy()
+                 "black" if self.contr else "white")
+        self.commit(board, [origin], move)
 
     ################################################################################
     ####### THE COMPUTER'S THREAD ##################################################
@@ -1732,10 +1997,10 @@ class RoyalsWindow:
     ################################################################################
     ####### DRAWING ################################################################
     ################################################################################
-    # DisplayHashBoard prints every square twice, once on a blue row and once on a red
-    # one, because a square can hold one side's stack and the other side's prisoners at
-    # the same time. Here that is one square with the stack standing on it and the
-    # prisoners in a slot along its near edge, drawn in the shade of whoever lost them.
+    # DisplayHashBoard prints every square twice, one row per side, because a square can
+    # hold one side's stack and the other side's prisoners at the same time. Here that is
+    # one square with the stack standing on it and the prisoners in a slot along its near
+    # edge, drawn in the shade of whoever lost them.
 
     def redraw(self):
         # buildGame lays this canvas out before startGame has made a board, and the
@@ -1761,6 +2026,12 @@ class RoyalsWindow:
                        key=lambda n: v.depth((n - 1) % 7 - 3.0, (n - 1) // 7 - 3.0))
         for square in order:
             self.drawSquare(v, square, spaces[square - 1])
+
+        # The two marks that run along a line of squares rather than sitting on one, so
+        # neither has a turn in the pass above. What was played first, what is being offered
+        # over the top of it -- the offer is the thing being decided, so it wins.
+        self.drawFlights(v)
+        self.drawBreakUI(v, spaces)
 
         # the near two strips of lettering, held back so the pieces don't stand on them
         self.drawCoords(v, True)
@@ -1919,11 +2190,12 @@ class RoyalsWindow:
                 bx, by = wx + dx, wy + dy
 
             if s[Hasher.DRAGON]:
-                # A cone where everything else is a pile: a chip's own footprint and the
-                # height of three of them, tapering to a point. It carries no icon, and it
-                # is the one piece on the board with no pale lid -- there is nothing to
-                # tell apart on this square, because a dragon is all there ever is on it.
-                cone(c, v, bx, by, 0.0, R_DRAGON, H_DRAGON, walls, 2, tag)
+                # An obelisk where everything else is a pile: nine tenths of the square
+                # across its foot, five chips tall, drawing in slightly to a pyramidion.
+                # It carries no icon, and it is the one piece on the board with no pale lid
+                # -- there is nothing to tell apart on this square, because a dragon is all
+                # there ever is on it.
+                obelisk(c, v, bx, by, 0.0, R_DRAGON, H_DRAGON, walls, 2, tag)
             else:
                 # One chip per piece, all the same chip, piled up -- the same width the
                 # whole way up, so the pile is one column and not a stepped one. What
@@ -1985,7 +2257,10 @@ class RoyalsWindow:
                              fill="", outline=tone, width=2, tags=tag)
 
         ####### where it could go #######
-        if self.moveArray and self.phase == "play":
+        # While the break arrows are out they are the question being asked, and they cross
+        # these very squares on their way. Two families of mark over the same ground is
+        # unreadable, so the rings stand down until the break is put away.
+        if self.moveArray and self.phase == "play" and not self.breakOpen:
             target = square - 1
             if target in self.moveArray[0]:
                 self.drawTarget(v, wx, wy, zTop, "jump", tone, tag)
@@ -2050,11 +2325,103 @@ class RoyalsWindow:
                       dash=(7, 5) if (kind == "push" and v.detail) else (), tags=tag)
 
     ################################################################################
+    ####### THINGS DRAWN ALONG A RUN OF SQUARES ####################################
+    ################################################################################
+    # Both of these are drawn after the square pass rather than inside it, which is the one
+    # exception to the rule set out at the top of redraw. That rule is about a mark that
+    # belongs to a square: lifted out of the pass, it would be drawn over the cabinet wall
+    # standing in front of it. These belong to no square -- an arrow is one object lying
+    # across five of them, and there is no square in the pass whose turn it is. They are
+    # also the two marks that have to be read over whatever they cross, which is what being
+    # drawn last gives them for free.
+
+    # The square offering to break, or None. It is asked for in three places -- the badge,
+    # the arrows, and the click that lands on either -- and they must agree, or the board
+    # grows a button that does nothing.
+    def breakOrigin(self):
+        if self.phase != "play" or not self.humanSides[self.contr]: return None
+        if self.selected is None or not self.moveArray: return None
+        if not self.moveArray[2]: return None
+        return self.selected
+
+    def drawBreakUI(self, v, spaces):
+        square = self.breakOrigin()
+        if square is None: return
+
+        c = self.canvas
+        wx = (square - 1) % 7 - 3.0
+        wy = (square - 1) // 7 - 3.0
+
+        if self.breakOpen:
+            for d in self.moveArray[2]:
+                reach = Engine.checkBreak(self.board, square, self.board[square - 1],
+                                          d, self.contr)
+                if reach < 2: continue
+
+                # The arrow runs to the far edge of the last square that catches a piece, so
+                # its length is the reach -- which is the thing four identical buttons could
+                # never say, and it differs per direction.
+                dx, dy = Engine.pushDirs[d]
+                ray = Engine.BREAKRAY[square][d]
+                z = max(self.stackTop(spaces[ray[i]]) for i in range(0, reach)) + 0.03
+                legs = rayLegs(wx, wy, dx, dy, 0.45, (reach - 1) + 0.45)
+                planeArrow(c, v, legs, dx, dy, z, BRK_SHAFT, BRK_BARB, BRK_HEAD,
+                           PANEL_DK, INK, PIECE_HALO, 5, 2, "brk%d" % d)
+
+        # last, so the badge is never buried under an arrow leaving its own square
+        self.drawBreakBadge(v, wx, wy, self.stackTop(spaces[square - 1]))
+
+    def drawBreakBadge(self, v, wx, wy, top):
+        c = self.canvas
+        px, py = v.project(wx, wy, top + 0.34)
+        hx, hy = v.project(wx, wy, top)
+
+        # At the steepest pitch cos(pitch) is about a thirtieth, so a lift measured in board
+        # units is worth a pixel and the badge would come to rest on the lid it is supposed
+        # to be floating over. The gap has a floor in pixels for that reason alone.
+        py = min(py, hy - max(16.0, 0.30 * v.scale))
+        halfW = max(26.0, 0.52 * v.scale)
+        halfH = max(11.0, 0.19 * v.scale)
+
+        # A stalk down to the head of the stack. At a low pitch anything raised projects up
+        # the screen into the rank behind it, and without the stalk the badge reads as
+        # belonging to whichever square it happens to be floating in front of.
+        c.create_line(px, py + halfH, hx, hy, fill=INK, tags="breakbadge")
+        plate(c, px - halfW, py - halfH, px + halfW, py + halfH,
+              PANEL if self.breakOpen else PANEL_LT, EDGE_LT, EDGE_DK, 2,
+              not self.breakOpen, "breakbadge")
+        engrave(c, px, py, "BREAK", FONT["small"], TEXT, EDGE_LT, tags="breakbadge")
+
+    # What the last move moved. The log has said this all along, but a computer move at
+    # depth three is over in a tenth of a second and reading a line of notation to find out
+    # what just happened is not looking at the board.
+    def drawFlights(self, v):
+        c = self.canvas
+
+        # A break throws pieces out along one line, so its flights are nested arrows out of
+        # one square, and drawing them on top of each other is unreadable. The longest says
+        # everything the shorter ones do -- how far the scatter reached.
+        longest = {}
+        for flight in self.lastFlights:
+            key = (flight[0], flight[2], flight[3])
+            if key not in longest or flight[4] > longest[key][4]: longest[key] = flight
+
+        for fromSquare, toSquare, dx, dy, steps in longest.values():
+            span = math.hypot(dx, dy)
+            u0, u1 = RUN_FOOT / span, steps - RUN_TIP / span
+            if u1 <= u0: continue
+
+            legs = rayLegs((fromSquare - 1) % 7 - 3.0, (fromSquare - 1) // 7 - 3.0,
+                           dx, dy, u0, u1)
+            planeArrow(c, v, legs, dx, dy, FLY_Z, FLY_SHAFT, FLY_BARB, FLY_HEAD,
+                       INK, INK, PIECE_HALO, 4, 1, "flight")
+
+    ################################################################################
     ####### PANEL ##################################################################
     ################################################################################
 
     # Whose turn it is was the one thing the colour said on its own. It is marked instead
-    # with the shape the side's pieces wear: hollow for blue, filled for red.
+    # with the shape the side's pieces wear: hollow for white, filled for black.
     def setStatus(self, text, contr):
         if contr is not None: text = ("■  " if contr else "□  ") + text
         self.statusLabel.configure(text=text, fg=TEXT)

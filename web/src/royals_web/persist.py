@@ -31,8 +31,12 @@ into a game is a function that plays moves.
 
 sqlite3 is in the standard library, which keeps `web`'s dependency list as short as its
 comment in pyproject.toml promises, and a single-file database is the right shape for a
-server that must be one process anyway (see the Dockerfile: two workers would mean two
-in-memory caches disagreeing about the same row).
+server that must be one process anyway: two workers would mean two in-memory caches
+disagreeing about the same row, because `store.GameStore.get` answers from its cache
+without asking whether the row has moved under it. `serve.py` runs a single uvicorn
+process with no `workers=` for that reason. (This used to say "see the Dockerfile". There
+is no Dockerfile in this repo and there never was; the reasoning was right and the
+citation was not.)
 """
 
 import logging
@@ -50,6 +54,15 @@ log = logging.getLogger("royals.persist")
 TTL_HUMAN = 30 * 24 * 60 * 60
 TTL_AI = 7 * 24 * 60 * 60
 
+# A hard ceiling on rows, so the disk is a fixed cost rather than a function of how
+# patient somebody is. A game is a few kilobytes, so this is tens of megabytes -- far more
+# than this will ever hold in real use, and far less than a script can produce in a day.
+MAX_ROWS = int(os.environ.get("ROYALS_MAX_GAMES", "20000"))
+
+# How often the sweep runs. It was once, at startup, which on a server that stays up is
+# indistinguishable from never.
+SWEEP_INTERVAL = 60 * 60
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS games (
     id           TEXT PRIMARY KEY,
@@ -63,9 +76,11 @@ CREATE TABLE IF NOT EXISTS games (
     seat0_kind   TEXT    NOT NULL,
     seat0_hash   TEXT,
     seat0_claimed INTEGER NOT NULL,
+    seat0_name   TEXT,
     seat1_kind   TEXT    NOT NULL,
     seat1_hash   TEXT,
     seat1_claimed INTEGER NOT NULL,
+    seat1_name   TEXT,
     invite_hash  TEXT,
     result       TEXT,
     termination  TEXT,
@@ -77,8 +92,8 @@ CREATE INDEX IF NOT EXISTS games_updated ON games (updated_at);
 
 COLUMNS = (
     "id", "version", "mode", "ai_depth", "entry_seed", "entry_noise", "moves", "ply",
-    "seat0_kind", "seat0_hash", "seat0_claimed",
-    "seat1_kind", "seat1_hash", "seat1_claimed",
+    "seat0_kind", "seat0_hash", "seat0_claimed", "seat0_name",
+    "seat1_kind", "seat1_hash", "seat1_claimed", "seat1_name",
     "invite_hash", "result", "termination", "created_at", "updated_at",
 )
 
@@ -97,9 +112,9 @@ def to_row(game):
         # perfectly, so the length is the one thing the move list cannot check itself.
         "ply": len(game.moves),
         "seat0_kind": blue.kind, "seat0_hash": blue.token_hash,
-        "seat0_claimed": int(blue.claimed),
+        "seat0_claimed": int(blue.claimed), "seat0_name": blue.name,
         "seat1_kind": red.kind, "seat1_hash": red.token_hash,
-        "seat1_claimed": int(red.claimed),
+        "seat1_claimed": int(red.claimed), "seat1_name": red.name,
         "invite_hash": game.invite_hash,
         "result": game.result,
         "termination": game.termination,
@@ -116,9 +131,11 @@ def from_row(row):
         moves=row["moves"], ply=row["ply"],
         seats={
             G.BLUE: G.Seat(kind=row["seat0_kind"], token_hash=row["seat0_hash"],
-                           claimed=bool(row["seat0_claimed"])),
+                           claimed=bool(row["seat0_claimed"]),
+                           name=row["seat0_name"]),
             G.RED: G.Seat(kind=row["seat1_kind"], token_hash=row["seat1_hash"],
-                          claimed=bool(row["seat1_claimed"])),
+                          claimed=bool(row["seat1_claimed"]),
+                          name=row["seat1_name"]),
         },
         invite_hash=row["invite_hash"],
         result=row["result"], termination=row["termination"],
@@ -146,17 +163,69 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             # WAL is not available for :memory:, and asking for it there is harmless.
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA synchronous=NORMAL")
+            self._run("PRAGMA journal_mode=WAL")
+            self._run("PRAGMA synchronous=NORMAL")
             self._conn.executescript(SCHEMA)
+            self._migrate()
             self._conn.commit()
+
+    # Every statement in this class goes through one of the two below, and the reason is
+    # the .close(). CPython frees the cursor `execute` hands back the moment the last
+    # reference to it goes, and freeing it finalises the statement underneath -- so a
+    # commit on the next line sees a connection with nothing in flight. PyPy does not
+    # refcount; the statement is still open when the commit runs, and sqlite refuses:
+    #
+    #     sqlite3.OperationalError: cannot commit transaction - SQL statements in progress
+    #
+    # It is not a fussy difference. Every write here failed under PyPy, which is the
+    # interpreter the engine bends over backwards to stay compatible with because it runs
+    # the search several times faster. Keeping that door open in the engine is worth
+    # nothing if the server around it cannot open a database.
+    #
+    # fetchone() is not enough either: a SELECT that matched a row is only part-read, so
+    # the statement stays open exactly the same way.
+    def _run(self, sql, params = ()):
+        """Execute a statement, finish with it, and report how many rows it touched."""
+        cur = self._conn.execute(sql, params)
+        try:
+            return cur.rowcount
+        finally:
+            cur.close()
+
+    def _query(self, sql, params = (), one = False):
+        """Execute a query and read it out completely before letting go of it."""
+        cur = self._conn.execute(sql, params)
+        try:
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+        if not one: return rows
+        return rows[0] if rows else None
+
+    def _migrate(self):
+        """Bring an older database up to the current shape, in place.
+
+        `CREATE TABLE IF NOT EXISTS` does exactly nothing to a table that already exists,
+        so a column added to SCHEMA appears only in databases created after it -- and the
+        first person to notice is whoever is holding a half-finished game in the one that
+        already existed. Every column added from here on needs a line in this table.
+
+        Adding a nullable column is the only migration this needs so far, and SQLite does
+        it without rewriting the table. Anything that ever needs more than that should be
+        written as a numbered step rather than bolted on here.
+        """
+        have = {row["name"] for row in self._query("PRAGMA table_info(games)")}
+        for column, ddl in (("seat0_name", "TEXT"), ("seat1_name", "TEXT")):
+            if column not in have:
+                log.info("migrating %s: adding games.%s", self.path, column)
+                self._run(f"ALTER TABLE games ADD COLUMN {column} {ddl}")
 
     def save(self, game):
         row = to_row(game)
         columns = ", ".join(COLUMNS)
         placeholders = ", ".join(":" + c for c in COLUMNS)
         with self._lock:
-            self._conn.execute(
+            self._run(
                 f"INSERT INTO games ({columns}) VALUES ({placeholders}) "
                 f"ON CONFLICT(id) DO UPDATE SET " +
                 ", ".join(f"{c}=excluded.{c}" for c in COLUMNS if c != "id"),
@@ -165,8 +234,7 @@ class Database:
 
     def load(self, game_id):
         with self._lock:
-            row = self._conn.execute(
-                "SELECT * FROM games WHERE id = ?", (game_id,)).fetchone()
+            row = self._query("SELECT * FROM games WHERE id = ?", (game_id,), one=True)
         if row is None:
             return None
         try:
@@ -181,23 +249,38 @@ class Database:
 
     def delete(self, game_id):
         with self._lock:
-            self._conn.execute("DELETE FROM games WHERE id = ?", (game_id,))
+            self._run("DELETE FROM games WHERE id = ?", (game_id,))
             self._conn.commit()
 
     def sweep(self, now=None):
-        """Delete games nobody has touched in a long time. Returns how many went."""
+        """Delete what has aged out, then whatever is over the ceiling. Returns the count.
+
+        Two rules, because age alone does not bound anything. The per-client creation
+        limit permits a few thousand games a day from one address, so a server left
+        running accumulates for a month before the first of them is old enough to expire.
+        The ceiling is what makes the disk a fixed cost; the ages are what make a game
+        somebody might come back to outlive one nobody will.
+        """
         now = time.time() if now is None else now
         with self._lock:
-            cur = self._conn.execute(
+            gone = self._run(
                 "DELETE FROM games WHERE (mode = 'human' AND updated_at < ?) "
                 "                     OR (mode <> 'human' AND updated_at < ?)",
                 (now - TTL_HUMAN, now - TTL_AI))
+
+            # Oldest-by-last-touched first: a game being played is the last to go, and a
+            # game abandoned an hour after it was made is the first.
+            gone += self._run(
+                "DELETE FROM games WHERE id IN ("
+                "  SELECT id FROM games ORDER BY updated_at DESC LIMIT -1 OFFSET ?)",
+                (MAX_ROWS,))
+
             self._conn.commit()
-            return cur.rowcount
+            return gone
 
     def count(self):
         with self._lock:
-            return self._conn.execute("SELECT COUNT(*) FROM games").fetchone()[0]
+            return self._query("SELECT COUNT(*) FROM games", one=True)[0]
 
     def close(self):
         with self._lock:
@@ -210,8 +293,9 @@ def open_default():
     Defaulting to memory rather than to a file is deliberate. A path that appears by
     itself would put a royals.db wherever anyone happened to run the server from, and
     would make the test suite share state between runs. Persistence is a thing the
-    deployment asks for -- serve.py asks for it, the Dockerfile asks for it -- and when
-    nothing asks, the behaviour is exactly what it was before this file existed.
+    deployment asks for -- serve.py asks for it, and a public deployment sets ROYALS_DB to
+    a path on its persistent disk -- and when nothing asks, the behaviour is exactly what
+    it was before this file existed.
     """
     path = os.environ.get("ROYALS_DB", "").strip()
     if not path:

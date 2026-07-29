@@ -4,9 +4,9 @@ Two players, blue and red. No dice, no hidden information — both sides see eve
 and every position has a best move whether or not anyone finds it.
 
 This document is the human-readable rulebook. The machine-readable one is
-[tests/golden.txt](../tests/golden.txt), which records every legal move from a spread of
-reachable positions and the board each one produces. Where this page and `golden.txt`
-disagree, `golden.txt` is right and this page is a bug.
+[tests/golden_moves.txt](../tests/golden_moves.txt), which records every legal move from a spread of
+reachable positions and the board each one produces. Where this page and `golden_moves.txt`
+disagree, `golden_moves.txt` is right and this page is a bug.
 
 ---
 
@@ -145,8 +145,31 @@ released, so anything that cannot legally land on top of other pieces cannot fre
 ### Break
 
 A stack **scatters**, dropping one piece per square along a direction, starting on the
-square it is standing on. A break can never reach further than the number of pieces it
-has to drop.
+square it is standing on. It drops from the bottom up: prisoners first, then your spy, then
+your pawns, and your royal last. A break can never reach further than the number of pieces
+it has to drop, and like every other move it wraps around the edge of the board.
+
+**Only a stack holding a spy may break** — yours standing in it, or the enemy's held prisoner
+in it. That second case is how a captured spy gets out: the square is its captor's, but
+breaking it is *your* move.
+
+The scatter keeps going until it meets an obstacle. Four things are one:
+
+- a **royal**, either side's
+- a **dragon**, either side's
+- an **enemy** square holding prisoners
+- an **enemy** square with more than one piece on it
+
+Everything else it falls straight through. A square of your own is never an obstacle however
+much is standing on it — the falling piece simply joins the stack. A lone enemy is not an
+obstacle either: the piece lands on it and takes it prisoner.
+
+"Enemy" here means enemy to the piece that is falling, which is not always your side —
+prisoners drop first and stand back up as their own. And a break never sets anyone free but
+the prisoners in the stack doing the breaking; that is what keeps it off enemy jailers.
+
+**When the scatter is stopped, everything still falling lands together** on the last square
+it reached.
 
 A break is how a stack that has become too heavy, or too committed, takes itself apart.
 

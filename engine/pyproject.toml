@@ -6,7 +6,12 @@ build-backend = "setuptools.build_meta"
 name = "royals-engine"
 version = "0.1.0"
 description = "The Royals game engine: board representation, move generation, and alpha-beta search."
-readme = "../README.md"
+
+# No `readme` key. It said "../README.md", and setuptools refuses to reach outside the
+# package root -- so this built where an old setuptools happened to allow it and stopped
+# building everywhere else, including under PyPy, which is the one interpreter the comment
+# below asks you to keep this installable on. The root README is still the documentation;
+# it is just not this package's metadata, because it cannot be.
 
 # >=3.10, not >=3.12, on purpose. PyPy3 tracks 3.10/3.11 and runs this search several
 # times faster than CPython, which is worth keeping available for the server's AI worker.

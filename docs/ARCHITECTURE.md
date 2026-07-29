@@ -266,22 +266,65 @@ only thing that turns them back into a game is a function that plays moves.
 
 `store.py` in front of it is a cache, so eviction stopped being data loss and became a
 memory policy. `ROYALS_DB` names the file; unset means in-memory, which is what keeps the
-test suite isolated and is why `serve.py` and the Dockerfile set it explicitly rather than
-letting a database path appear wherever someone happened to run the server from.
+test suite isolated and is why `serve.py` sets it explicitly rather than letting a
+database path appear wherever someone happened to run the server from.
+
+## Running it under PyPy
+
+The engine's whole no-dependencies discipline exists to keep this available, and the
+server runs under PyPy too — the full suite passes on both interpreters and both goldens
+come out byte-identical. Installing it needs three lines rather than the usual two:
+
+```bash
+pypy3 -m pip install -e ./engine
+pypy3 -m pip install fastapi uvicorn          # plain, NOT uvicorn[standard]
+pypy3 -m pip install --no-deps -e ./web
+```
+
+`uvicorn[standard]` is what the `--no-deps` is dodging. It pulls `httptools` and `uvloop`,
+which are C accelerations with no PyPy wheels — and no use on PyPy anyway, since its JIT
+is what makes the pure-Python h11 path fast. Everything else, `pydantic-core` included,
+has a PyPy wheel.
+
+**What it is worth, measured, and the shape of it matters more than the headline.** A
+depth-5 search on one position:
+
+| | first search in a fresh worker | once the worker is warm |
+|---|---|---|
+| CPython 3.12 | 0.60 s | 0.58 s |
+| PyPy 3.11 | 0.94 s | 0.27 s |
+
+PyPy is **slower cold and about 2.1× faster warm**, because the JIT has to see the search
+run before it can compile it. End to end through the HTTP API, over a dozen consecutive
+`expert` moves, it came out at roughly **1.6×** — that mixture is the number a deployment
+actually gets, not the 3× an isolated warm benchmark reports.
+
+The operational consequence is that **the pool's workers have to be long-lived**, which
+they are: `ProcessPoolExecutor` reuses them and `ai_pool` sets no `maxtasksperchild`.
+Anything that recycles a worker per request would spend the warmup every time and land on
+the wrong side of that table.
+
+One thing to know before trusting it further: `ai.entryScore` computes in **floats**,
+through the Perlin noise field. The evaluator proper is integers-only precisely because
+CPython and PyPy once disagreed in the last place and changed the move played. The
+entering goldens do match across both interpreters today, so this is a latent hazard
+rather than a live bug — but it is a float path in the phase PyPy helps most.
 
 ## Tests
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for the workflow. In short:
 
-- **`tests/golden.txt`** — the rules contract. 13,496 lines. Every legal move from a spread
+- **`tests/golden_moves.txt`** — the rules contract. 13,051 lines. Every legal move from a spread
   of positions, the board it produces, and what the evaluator thinks it is worth. Must stay
   byte-identical.
 - **`tests/golden_search.txt`** — node counts per move. Expected to churn.
 - **`tests/test_engine_purity.py`** — enforces the no-dependencies, no-UI rule. (22)
 - **`tests/test_notation.py`** — round-trips for the text and JSON move forms. (51)
-- **`tests/test_web_api.py`** — the REST surface, against FastAPI's `TestClient`. (51)
+- **`tests/test_web_api.py`** — the REST surface, against FastAPI's `TestClient`. (64)
+- **`tests/test_break_rules.py`** — what a break may fall onto, and freeing. (24)
+- **`tests/test_flights.py`** — `moveFlights` against the executors. (4)
 
-128 in total. The web tests import `fastapi`, so the full suite needs the server installed
+165 in total. The web tests import `fastapi`, so the full suite needs the server installed
 (`pip install -e ./web`); the engine's own tests need nothing but the standard library,
 which is the point. CI runs them in their own CPython-only job for that reason — the
 goldens matrix installs the engine alone, so `importorskip` would turn the entire server

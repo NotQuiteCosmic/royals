@@ -17,32 +17,49 @@ Read [docs/RULES.md](docs/RULES.md) before reasoning about game logic and
 
 ```bash
 cd tests && python3 regress.py check all      # the goldens
-python3 -m pytest tests/ -q                   # 128 unit tests
+python3 -m pytest tests/ -q                   # 165 unit tests
 python3 -m py_compile engine/src/royals_engine/*.py apps/*/*.py    # quick syntax check
 ```
 
-Expected green state: `golden.txt` 13,496 lines identical, `golden_search.txt` 245 lines
-identical, 128 tests passing (22 engine-purity, 51 notation, 51 web API, 4 flights).
+Expected green state: `golden_enter.txt` 445 lines, `golden_moves.txt` 13,051 lines, `golden_search.txt` 245 lines
+identical, 165 tests passing (22 engine-purity, 51 notation, 64 web API, 4 flights,
+24 break rules).
+
+All three goldens and all 165 tests also pass under PyPy, and that is worth keeping true — see
+"Running it under PyPy" in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The trap there is
+sqlite3: CPython finalises a cursor by refcount, PyPy does not, so an `execute` whose
+cursor is left open makes the next `commit` fail. Everything in `persist.py` goes through
+`_run`/`_query`, which close theirs. Don't add a bare `self._conn.execute`.
 
 The web API tests call `pytest.importorskip("fastapi")`, so without `pip install -e ./web`
-they skip silently and the run reports 77 passed, not 128. **Check the count, not just
+they skip silently and the run reports 101 passed, not 165. **Check the count, not just
 the colour.** CI runs them in a separate CPython-only job that installs the web package,
 because the goldens matrix installs the engine alone. Both packages are already installed
 editable in this environment.
 
 ## The rule that governs everything
 
-`tests/golden.txt` is the rules contract — every legal move from a spread of positions, the
+`tests/golden_moves.txt` is the rules contract — every legal move from a spread of positions, the
 board each produces, and its evaluation.
 
-> **A change that leaves `golden.txt` byte-identical is provably behaviour-preserving. A
+> **A change that leaves `golden_moves.txt` byte-identical is provably behaviour-preserving. A
 > change that moves it needs a stated reason.**
 
-If `golden.txt` moves and you did not intend to change the rules, **you have a bug — do not
+If `golden_moves.txt` moves and you did not intend to change the rules, **you have a bug — do not
 re-record it.** `python3 regress.py write all` exists but is almost never the right answer.
 
 `golden_search.txt` (node counts) is expected to churn; `python3 regress.py write search`
 re-records just that one, and that is routine.
+
+`golden_enter.txt` is the third baseline and the odd one out. It records the entering phase,
+which runs on Perlin noise over floats seeded through `random.Random(seed).shuffle` — so it is
+a fingerprint of CPython's Mersenne Twister as much as of the entering heuristic. That is why
+it is a separate file from `golden_moves.txt`: the moves half is a portable statement about the
+rules that a second implementation of the engine must reproduce byte for byte, and the entering
+half is one interpreter's RNG, which no port should try to reproduce. They shared a file until
+the Rust port made the distinction matter. `regress.py check base` still means both.
+
+See [docs/PORTING.md](docs/PORTING.md) before writing any second implementation of the engine.
 
 ## Invariants that will fail the build
 

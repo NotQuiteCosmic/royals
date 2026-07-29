@@ -39,7 +39,7 @@ web/src/royals_web/         FastAPI server — REST API and a browser client
   static/                   the browser client — index.html, app.js, board.js, style.css
 
 tests/regress.py            the regression harness
-tests/golden.txt            the rules contract — see below
+tests/golden_moves.txt            the rules contract — see below
 docs/                       the rulebook and the architecture notes
 Backup/                     frozen Python-2-era originals, kept as the historical record
 ```
@@ -118,17 +118,17 @@ If a stale server is holding the port:
 lsof -nP -iTCP:8000 -sTCP:LISTEN     # find it
 ```
 
-## golden.txt is the contract
+## golden_moves.txt is the contract
 
-`tests/golden.txt` records, from a spread of reachable positions, **every legal move
+`tests/golden_moves.txt` records, from a spread of reachable positions, **every legal move
 both sides have, the board each one produces, and what the evaluator thinks the result
-is worth.** 13,496 lines of it. It says nothing about how any of that is computed — only
+is worth.** 13,051 lines of it. It says nothing about how any of that is computed — only
 what the rules do — which is why it survived the rewrite from the original
 variable-length bit encoding to the packed integers used today.
 
 So the rule is simple:
 
-> **A change to the engine that leaves `golden.txt` byte-identical is provably
+> **A change to the engine that leaves `golden_moves.txt` byte-identical is provably
 > behaviour-preserving. A change that moves it needs a reason.**
 
 That single property is what makes this codebase safe to refactor, and it is why the
@@ -137,7 +137,7 @@ thousand lines of move generation and hope.
 
 `golden_search.txt` is different and is *expected* to churn: it records node counts per
 move, so it moves whenever the tree is walked differently — often for a perfectly good
-reason. Re-recording it is normal. Re-recording `golden.txt` is not.
+reason. Re-recording it is normal. Re-recording `golden_moves.txt` is not.
 
 ```bash
 cd tests

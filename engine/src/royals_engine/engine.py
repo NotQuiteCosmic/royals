@@ -371,21 +371,40 @@ def checkBreak(cBoard, inputSpace, inputData, dirIndex, contr, spaces = None):
         # every 7th step lands back on the origin, which is being emptied anyway, so it
         # has nothing to block against.
         if i % 7 != 0:
-            # a royal or a dragon stops the scatter dead
+            # A royal or a dragon stops the scatter dead, either side's. The dragon is not
+            # only a rule: dropPiece rebuilds the square through Build_Space, which zeroes
+            # every field past a dragon, so a piece merged onto one would erase it.
             if targ[Hasher.ROYAL] or targ[Hasher.DRAGON]: break
 
-            # and so does a square already carrying more than one piece. The threshold
-            # grows by one each full lap, which is what (i // 7) + 1 is for -- integer
-            # division, as it was before the py2 port turned it into a float.
-            if targ[Hasher.WEIGHT] > (i // 7) + 1: break
-
-            # And a piece won't fall onto a square where its own side is already being
-            # held, which would sandwich it in with them. Prisoners drop first, so the
-            # early steps are dropping the other side's people and the rest our own.
+            # Everything left is asked of the piece that is falling and not of the player
+            # breaking, and those are not always the same side: prisoners drop first, so
+            # the early steps are dropping the other side's people and the rest our own.
+            # Getting this wrong the obvious way -- measuring against the breaker -- lets a
+            # freed captive land on a stack of its captor's and take the whole thing
+            # prisoner on its way past.
             if i < prisoners: dropping = int(not control)
             else: dropping = control
 
-            if targ[Hasher.PRISFLAG] and targ[Hasher.SIDE] != dropping: break
+            # A square the falling piece is at home on is no obstacle at all; it joins
+            # whatever is standing there. Only the other side's squares block, and only
+            # these two ways.
+            if targ[Hasher.SIDE] != dropping:
+                # More than one piece is too much to knock aside. The threshold grows by
+                # one each full lap, which is what (i // 7) + 1 is for -- integer division,
+                # as it was before the py2 port turned it into a float -- because by then
+                # this walk has already dropped a piece here that the board it is reading
+                # doesn't show. A lone enemy is not an obstacle: the piece lands on it and
+                # takes it captive.
+                if targ[Hasher.WEIGHT] > (i // 7) + 1: break
+
+                # And an enemy holding anyone is an obstacle whatever it weighs. This is
+                # not the test above said twice: a lone jailer weighs 2, so weight stops it
+                # on the first lap, but by the second the tolerance is 2 as well and it
+                # would slip straight through. What that would cost is the rule that a
+                # break never frees anybody -- dropPiece's capture branch releases whoever
+                # the square it lands on was holding, and this is the only thing keeping
+                # exeBreak out of it.
+                if targ[Hasher.PRISFLAG]: break
 
         breakRange += 1
 
@@ -648,7 +667,12 @@ def exeBreak(cBoard, inputSquare, direction, contr):
 #   origin, destination -- 1-based square numbers, destination adjacent to origin
 #   movingPris          -- whether the prisoners on the origin come along
 # Returns the new board.
-def exePush(cBoard, origin, destination, contr, movingPris, freePris = False):
+#   shatter             -- whether a lone spy's shove goes on to scatter what it displaced.
+#                          Always true in play; moveFlights turns it off to get at the board
+#                          in between the shuffle and that scatter, which is the only place
+#                          the scatter can be measured from. Defaulted, so every caller that
+#                          existed before it did behaves exactly as it did.
+def exePush(cBoard, origin, destination, contr, movingPris, freePris = False, shatter = True):
     direction = PUSHFROM[origin][destination]
     # not neighbours, so there is no push to make
     if direction is None: return cBoard
@@ -727,10 +751,107 @@ def exePush(cBoard, origin, destination, contr, movingPris, freePris = False):
     # spy a range of 1 -- it spends its single point of strength on the adjacent square and
     # has nothing left for a second -- so the stack it displaced is now sitting two squares
     # out, and it scatters onward from there.
-    if o[Hasher.SPY] and o[Hasher.CAPTORS] == 1:
+    if shatter and o[Hasher.SPY] and o[Hasher.CAPTORS] == 1:
         cBoard = exeBreak(cBoard, line[2] + 1, direction, contr)
 
     return cBoard
+
+
+####### What a move moves #######
+# Which pieces a move picks up and where it puts them down, for a front end that wants to
+# draw what just happened rather than print it. Nothing in here writes a board back, and
+# nothing in the search calls it.
+#
+# It lives beside the executors and not in notation.py because it is ray-table work --
+# PUSHRAY, BREAKRAY, JUMPRAY, checkBreak, getLegalPushLength -- and it is the same walk
+# exePush and exeBreak make. Kept next to them, the two can be read against each other;
+# kept anywhere else, they drift and the arrows quietly start lying.
+
+
+def moveFlights(cBoard, move, contr):
+    """The journeys a move makes, as a tuple of
+
+        (fromSquare, toSquare, dx, dy, steps)
+
+    with both squares 1-BASED, (dx, dy) the unit step of the trip and steps >= 1 how many of
+    them it took.
+
+    `cBoard` MUST be the board as it stood BEFORE the move. checkBreak and
+    getLegalPushLength both measure what is standing on the origin, and a move measured on
+    the board it produced answers a different question.
+
+    The step and the count are handed over rather than left to be worked out from the two
+    squares, because on a wrapping board the two do not determine each other: a1 to g1 is
+    one step left or six steps right, and only the walk that actually happened knows which.
+
+    A flight is a piece changing square, and nothing else is one. Captures, stacks merging,
+    prisoners freed and prisoners left standing where they were being held are all changes
+    of state on a square that had one already -- no journey is made, so none is reported.
+    """
+    origin, kind, target, movingPris = move
+
+    if kind == "jump":
+        # The move tuple says where the stack landed, not how it got there, and on a torus
+        # that is genuinely ambiguous: on the long diagonals a strand and the one opposite
+        # it both arrive, their step counts summing to 7. The short way round is the one a
+        # player watched, so it is the one drawn.
+        best = None
+        for d, strand in enumerate(JUMPRAY[origin]):
+            if target in strand:
+                steps = strand.index(target) + 1
+                if best is None or steps < best[0]: best = (steps, d)
+        if best is None: return ()
+        steps, d = best
+        return ((origin, target + 1, jumpDirs[d][0], jumpDirs[d][1], steps),)
+
+    if kind in ("push", "free"):
+        destination = target + 1
+        direction = PUSHFROM[origin][destination]
+        if direction is None: return ()
+
+        inputData = cBoard[origin - 1]
+        pRange = getLegalPushLength(cBoard, origin, inputData, direction, contr, movingPris,
+                                    False, None, kind == "free")
+        if pRange == 0: return ()
+
+        # The whole line steps up one, offset n to offset n+1, for every n from the origin
+        # out to the far end -- which is the half of a push that never showed on the board
+        # before, since only the origin and the square next to it were ever marked. The
+        # freeing branch travels the same distances; all it changes is which pieces are in
+        # which payload when they arrive.
+        line = (origin - 1,) + PUSHRAY[origin][direction]
+        dx, dy = pushDirs[direction]
+        flights = [(line[n] + 1, line[n + 1] + 1, dx, dy, 1) for n in range(0, pRange + 1)]
+
+        # A lone spy's shove shatters what it hits, and that scatter cannot be read off the
+        # board handed in: its ray wraps back over the squares the shuffle has just moved.
+        # So run the push without it and ask the board in between.
+        o = Hasher.UNPACK[inputData]
+        if o[Hasher.SPY] and o[Hasher.CAPTORS] == 1:
+            mid = exePush(cBoard, origin, destination, contr, movingPris,
+                          kind == "free", False)
+            flights.extend(moveFlights(mid, (line[2] + 1, "break", direction, False), contr))
+
+        return tuple(flights)
+
+    if kind == "break":
+        direction = pushIndex(target)
+        if direction is None: return ()
+        inputData = cBoard[origin - 1]
+        # exeBreak's own two refusals, so this answers () exactly where it would do nothing
+        if Hasher.UNPACK[inputData][Hasher.DRAGON]: return ()
+        reach = checkBreak(cBoard, origin, inputData, direction, contr)
+        if reach == 0: return ()
+
+        # The ray includes its own origin at offset 0, and the piece that falls back onto
+        # the square it started on has gone nowhere -- so the journeys start at offset 1.
+        # The last square catches everything still falling, which is a count and not a
+        # further trip, so it needs no flight of its own beyond the one that reaches it.
+        ray = BREAKRAY[origin][direction]
+        dx, dy = pushDirs[direction]
+        return tuple((origin, ray[i] + 1, dx, dy, i) for i in range(1, reach))
+
+    return ()
 
 
 

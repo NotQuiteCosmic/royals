@@ -61,6 +61,25 @@ DIFFICULTIES = {
 DEFAULT_DIFFICULTY = "strong"
 
 
+# An upper bound on how long one game may run.
+#
+# The ko rule forbids returning to a position the game has already stood in, which makes a
+# game finite but not short: the bound it implies is the number of reachable positions,
+# which is astronomical. So a game can be pushed to an arbitrary length by two players who
+# want to, and a game's whole move list is replayed on every load and stored in one row --
+# meaning one game's length is a cost the server carries, not just its players.
+#
+# A thousand is far beyond real play. The longest game I could produce was two sides moving
+# at random, which took about two thousand plies to gather six pieces; a game with anyone
+# thinking is over in a small fraction of that. Reaching this is a draw, on the same
+# reasoning as the double pass: neither side has demonstrated they can finish.
+#
+# This is a rule the desktop and terminal front ends do not have. It is a property of
+# serving a game to strangers rather than of Royals, which is why it lives here and not in
+# the engine -- golden_moves.txt is untouched by it.
+MAX_PLIES = 1_000
+
+
 class IllegalMove(Exception):
     """The move is well-formed but not legal in this position, or not this player's to make."""
 
@@ -99,6 +118,32 @@ def entering_options(board, contr, piece):
 # Game state
 # ---------------------------------------------------------------------------
 
+# The one piece of attacker-controlled text in the whole application.
+#
+# Everything else a player sends is a square, a kind, a bounded number or a token that is
+# either a known hash or nothing. A display name is free text that ends up on somebody
+# else's screen and, more dangerously, inside a <meta> tag in a page rendered for whoever
+# opens an invitation -- so it is filtered here, at the point it enters the system, rather
+# than trusted to be escaped correctly at each of the several places it leaves.
+#
+# The charset is an allowlist because a denylist of dangerous characters is a list you
+# discover you got wrong. Letters and digits of any script are welcome; the punctuation is
+# what people actually put in a name.
+NAME_MAX = 24
+NAME_EXTRA = set(" '-._")
+
+
+def clean_name(raw):
+    """A display name, or None. Never raises -- an unusable name is simply absent."""
+    if not isinstance(raw, str):
+        return None
+    # Unicode categories, so accents and non-Latin scripts survive while control
+    # characters, bidirectional overrides and zero-width joiners do not.
+    kept = [ch for ch in raw if ch.isalnum() or ch in NAME_EXTRA]
+    name = " ".join("".join(kept).split())[:NAME_MAX].strip()
+    return name or None
+
+
 @dataclass
 class Seat:
     """One side of a game, and the token that proves you are sitting in it.
@@ -111,6 +156,7 @@ class Seat:
     kind: str                   # "human" | "ai"
     token_hash: str = None
     claimed: bool = False
+    name: str = None            # display name, already through clean_name
 
 
 @dataclass
@@ -140,7 +186,8 @@ class Game:
     moves: list = field(default_factory=list)
 
     result: str = None          # "blue" | "red" | "draw"
-    termination: str = None     # "gather" | "resign" | "double_pass" | "no_moves"
+    # "gather" | "resign" | "double_pass" | "no_moves" | "ply_limit"
+    termination: str = None
     last_move: list = field(default_factory=list)   # squares to highlight, 1-based
 
     # set while the entering phase is waiting on a placement
@@ -206,7 +253,7 @@ class Game:
 
 
 def new_game(mode="ai", side=BLUE, difficulty=DEFAULT_DIFFICULTY, entry_noise=0.5,
-             entry_seed=None, rng=None):
+             entry_seed=None, rng=None, name=None):
     """Start a game and return (game, seat_token, invite_token).
 
     `side` is the side the *creator* takes, or "random". The tokens are returned here and
@@ -241,7 +288,8 @@ def new_game(mode="ai", side=BLUE, difficulty=DEFAULT_DIFFICULTY, entry_noise=0.
         board=Hasher.Entering_Board(),
         invite_hash=S.hash_token(invite_token) if invite_token else None,
         seats={
-            side: Seat(kind=HUMAN, token_hash=S.hash_token(seat_token), claimed=True),
+            side: Seat(kind=HUMAN, token_hash=S.hash_token(seat_token), claimed=True,
+                       name=clean_name(name)),
             1 - side: Seat(kind=HUMAN, claimed=False) if mode == "human"
                       else Seat(kind=COMPUTER, claimed=True),
         },
@@ -262,7 +310,7 @@ class InviteError(Exception):
     """The invite is spent, wrong, or there is no seat left to claim."""
 
 
-def claim_seat(game, invite_token):
+def claim_seat(game, invite_token, name=None):
     """Take the empty seat. Returns (side, seat_token).
 
     Single use: the invite hash is cleared here, so a link that has been used is a link
@@ -279,7 +327,8 @@ def claim_seat(game, invite_token):
 
     side = open_seats[0]
     seat_token = S.mint()
-    game.seats[side] = Seat(kind=HUMAN, token_hash=S.hash_token(seat_token), claimed=True)
+    game.seats[side] = Seat(kind=HUMAN, token_hash=S.hash_token(seat_token), claimed=True,
+                            name=clean_name(name))
     game.invite_hash = None
 
     if game.phase == "waiting":
@@ -377,6 +426,8 @@ def play_move(game, move, side=None):
         if game.passes > 1:
             _finish(game, None, "double_pass")
             return game
+        if _out_of_plies(game):
+            return game
         game.turn += 1
         return game
 
@@ -402,8 +453,24 @@ def play_move(game, move, side=None):
         _finish(game, side_won, "gather")
         return game
 
+    if _out_of_plies(game):
+        return game
+
     game.turn += 1
     return game
+
+
+def _out_of_plies(game):
+    """End the game as a draw if it has gone on long enough. True if it did.
+
+    Checked after a move rather than before, so the cap is the length a game may reach
+    and not the length past which a legal move is refused -- a player is never told their
+    move is illegal when the real answer is that the game is over.
+    """
+    if len(game.moves) < MAX_PLIES:
+        return False
+    _finish(game, None, "ply_limit")
+    return True
 
 
 def _highlight(move):
@@ -613,7 +680,8 @@ def to_json(game, viewer_side=None, include_legal=True):
         "phase": game.phase,
         "board": board_to_json(game.board),
         "yourSide": yours,
-        "seats": {str(side): {"kind": seat.kind, "claimed": seat.claimed}
+        "seats": {str(side): {"kind": seat.kind, "claimed": seat.claimed,
+                              "name": seat.name}
                   for side, seat in game.seats.items()},
         "aiDepth": game.ai_depth,
         "sideToMove": game.side_to_move,

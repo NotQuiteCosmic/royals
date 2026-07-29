@@ -10,7 +10,7 @@
 # survives at apps/terminal/royals_lib.py for the terminal driver, and in git history.
 #
 # Verbatim matters: countPieces feeds Encode_From_2D_Array, which builds the starting
-# position, so a "tidy-up" here would move golden.txt.
+# position, so a "tidy-up" here would move golden_moves.txt.
 
 
 def alphToNum(letter):

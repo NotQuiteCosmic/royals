@@ -100,6 +100,15 @@ input[type=text] {
   padding: 7px 9px;
 }
 
+.dim { color: var(--dim); }
+
+/* the invitation someone lands on */
+.invite-who { margin: 0 0 10px; font-size: 17px; color: var(--gold); }
+
+.invite-facts { margin: 14px 0; font-size: 12px; }
+.invite-facts dt { color: var(--dim); letter-spacing: 1px; }
+.invite-facts dd { margin: 2px 0 10px; color: var(--ink); }
+
 /* sharing */
 .share-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .share-row input[type=text] { flex: 1 1 220px; min-width: 0; }
@@ -146,8 +155,45 @@ input[type=text] {
 }
 canvas { width: 100%; height: auto; display: block; border-radius: var(--radius); touch-action: manipulation; }
 
+/* The mark layer. Everything in it is placed in board cells, and a cell is 100/7 % of the
+   board however big the board happens to be -- so this follows the canvas through a resize
+   or a rotation without measuring anything. The layer itself is transparent to the mouse;
+   only its buttons take clicks, so an ordinary square click still reaches the canvas. */
+.marks { position: absolute; inset: 0; pointer-events: none; }
+.marks > * { position: absolute; pointer-events: auto; }
+
+.mark-badge, .mark-arrow {
+  display: flex; align-items: center; justify-content: center;
+  width: 14.2857%; height: 14.2857%;
+  padding: 0; margin: 0;
+  background: var(--panel);
+  border: 2px solid var(--gold);
+  border-radius: var(--radius);
+  color: var(--gold);
+  cursor: pointer;
+}
+.mark-badge { font-size: clamp(8px, 1.7vmin, 13px); letter-spacing: .5px; }
+.mark-arrow { font-size: clamp(15px, 3.4vmin, 26px); line-height: 1; }
+.mark-badge.open { background: var(--gold); color: var(--panel); }
+
+/* Same gold ring a wrapped jump gets, and for the same reason: a heading whose first square
+   is on the far side of the board is the most confusing thing a new player meets here. */
+.mark-arrow.wrapped { border-style: dashed; }
+
+.chooser {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 5px;
+  background: var(--panel);
+  border: 1px solid var(--gold);
+  border-radius: var(--radius);
+  z-index: 2;
+  min-width: 84px;
+}
+.chooser button { width: 100%; padding: 7px 10px; font-size: 12px; }
+
 .overlay {
   position: absolute; inset: 0;
+  z-index: 3;
   display: flex; align-items: center; justify-content: center;
   background: rgba(0,0,0,.62);
   border-radius: var(--radius);

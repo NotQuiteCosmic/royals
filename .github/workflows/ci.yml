@@ -4,10 +4,10 @@ on:
   push:
   pull_request:
 
-# The point of this workflow is one thing above all others: golden.txt must not move.
+# The point of this workflow is one thing above all others: golden_moves.txt must not move.
 #
-# tests/golden.txt is a 13,496-line record of what every legal move does to the board and
-# what every resulting position is worth. It is the rules contract. Any change to the
+# tests/golden_moves.txt is a 13,051-line record of what every legal move does to the board
+# and what every resulting position is worth. It is the rules contract. Any change to the
 # engine that leaves it byte-identical is provably behaviour-preserving; any change that
 # moves it needs a human to say why. That check is worth more than every other test here.
 #
@@ -16,6 +16,12 @@ on:
 # on a square root, which flipped an alpha-beta cutoff and changed the move played -- the
 # suite passed under one interpreter and failed under the other. Running only one of them
 # would let that class of bug back in.
+#
+# The goldens are checked as three separate baselines because they are allowed to move for
+# three different reasons -- see the header of tests/regress.py. In particular
+# golden_enter.txt is bound to CPython's Mersenne Twister and golden_moves.txt is not,
+# which is what lets a second implementation of the rules be checked against the latter
+# without having to reimplement the former.
 
 jobs:
   goldens:
@@ -24,9 +30,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # PyPy is not decoration: it is several times faster on this search and is the
-        # intended interpreter for the server's AI worker, which is why the engine is
-        # pinned to requires-python >=3.10 and kept dependency-free.
+        # PyPy is not decoration: it is faster on this search and is the intended
+        # interpreter for the server's AI worker, which is why the engine is pinned to
+        # requires-python >=3.10 and kept dependency-free.
         python: ["3.12", "pypy3.10"]
 
     steps:
@@ -42,9 +48,17 @@ jobs:
           python -m pip install -e ./engine
           python -m pip install pytest
 
-      - name: Rules contract -- golden.txt must be byte-identical
+      # Split out so a failure names which contract broke. Entering can only move if the
+      # entering heuristic or the Perlin field changed; moves can only move if the rules
+      # changed. Reporting them together made a rules bug and an opening-book tweak look
+      # like the same event.
+      - name: Rules contract -- golden_moves.txt must be byte-identical
         working-directory: tests
-        run: python regress.py check base
+        run: python regress.py check moves
+
+      - name: Entering contract -- golden_enter.txt must be byte-identical
+        working-directory: tests
+        run: python regress.py check enter
 
       - name: Search internals -- golden_search.txt
         working-directory: tests
@@ -63,6 +77,51 @@ jobs:
           assert len(b) == 49 and all(0 <= v < 8192 for v in b)
           print('engine OK on', __import__('sys').implementation.name)
           "
+
+  # The differential check: the same suite, run twice, once with whatever compiled
+  # accelerator is installed and once with ROYALS_NO_ACCEL=1 forcing the pure-Python
+  # fallback. Both runs must produce identical goldens.
+  #
+  # This is what makes keeping two implementations of the engine worth the cost. A port
+  # validated once and then left alone rots; a port re-validated against a 13,051-line
+  # oracle on every commit cannot drift without saying so.
+  #
+  # Until the compiled extension exists, both runs are pure Python and this passes
+  # trivially. That is deliberate -- the harness is meant to be ready and green before the
+  # thing it tests arrives, so that the commit which introduces the accelerator is also
+  # the commit where this job starts doing real work. A job wired up at the same time as
+  # the code it checks has never once been observed failing, and is worth very little.
+  differential:
+    name: pure-Python fallback matches
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ./engine
+          python -m pip install pytest
+
+      - name: Goldens, accelerated path
+        working-directory: tests
+        run: python regress.py check all
+
+      - name: Goldens, pure-Python fallback
+        working-directory: tests
+        env:
+          ROYALS_NO_ACCEL: "1"
+        run: python regress.py check all
+
+      - name: Unit tests, pure-Python fallback
+        env:
+          ROYALS_NO_ACCEL: "1"
+        run: python -m pytest tests/ -q
 
   # The job above installs only the engine, so tests/test_web_api.py hits its
   # `pytest.importorskip("fastapi")` and skips in silence -- a green run that checked
@@ -96,3 +155,14 @@ jobs:
 
       - name: Server tests
         run: python -m pytest tests/test_web_api.py -q
+
+      # The engine has no dependencies at all, which is the whole point of that rule and
+      # leaves nothing here to audit. The server has three, and they run in the same
+      # process as the move validator -- so a known hole in any of them is a known hole in
+      # Royals. Advisory rather than blocking: a fresh CVE in a transitive dependency
+      # should tell you about itself, not stop you fixing something unrelated.
+      - name: Dependency advisories
+        continue-on-error: true
+        run: |
+          python -m pip install pip-audit
+          python -m pip_audit --skip-editable

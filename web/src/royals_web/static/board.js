@@ -152,7 +152,7 @@ export class BoardView {
       push: "rgba(91,141,214,.30)",
       free: "rgba(216,178,92,.30)",
       origin: "rgba(216,178,92,.13)",
-      break: "rgba(209,89,79,.26)",
+      choice: "rgba(216,178,92,.30)",
     };
 
     ctx.fillStyle = fills[mark] || fills.jump;
@@ -170,12 +170,15 @@ export class BoardView {
       ctx.stroke();
     }
 
-    if (mark === "break") {
-      ctx.strokeStyle = p.red;
+    // A square that is more than one move -- a push and a free go to the same place and
+    // are not the same move. Clicking it asks which rather than playing either, so it is
+    // marked as the question it is instead of being painted as one of its answers.
+    if (mark === "choice") {
+      ctx.strokeStyle = p.gold;
       ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(x + mid, y + mid, c * 0.22, 0, Math.PI * 2);
-      ctx.stroke();
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(x + 4, y + 4, c - 8, c - 8);
+      ctx.setLineDash([]);
     }
   }
 

@@ -13,6 +13,7 @@
 <meta name="theme-color" content="#f2efe7" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#14161a" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-title" content="Royals">
+<!--SOCIAL-->
 <link rel="manifest" href="/static/manifest.webmanifest">
 <link rel="icon" href="/static/icon-192.png" sizes="192x192">
 <link rel="apple-touch-icon" href="/static/icon-180.png">
@@ -38,6 +39,14 @@
         <button type="button" class="chip" data-mode="human">A friend</button>
       </div>
       <p class="hint" id="opponent-hint">Play against the engine on this machine.</p>
+    </div>
+
+    <div class="field hidden" id="name-field">
+      <span class="label">Your name <span class="dim">(optional)</span></span>
+      <input type="text" id="player-name" maxlength="24" autocomplete="nickname"
+             placeholder="so they know who invited them">
+      <p class="hint">Shown on the invitation and in the link preview. Nothing else uses
+        it, and leaving it blank works fine.</p>
     </div>
 
     <div class="field">
@@ -66,6 +75,31 @@
 
     <button type="button" id="start" class="primary">Start</button>
     <p class="hint" id="setup-error"></p>
+  </section>
+
+  <!-- What someone who was sent a link sees first.
+       It exists because the alternative -- claiming the seat on page load, which is what
+       this used to do -- gives the reader no chance to find out what they have opened,
+       and takes the seat from anyone who merely looks. Nothing here changes the game
+       until Accept is pressed. -->
+  <section id="invite" class="panel hidden">
+    <h2>You've been invited</h2>
+    <p id="invite-who" class="invite-who"></p>
+    <p class="hint">Royals is a two-player strategy game on a 7×7 board that wraps around
+      at the edges. You win by gathering your spy, four pawns and royal onto one square.
+      A game takes a few minutes, or a few days — it waits for you.</p>
+
+    <dl class="invite-facts">
+      <dt>You would play</dt><dd id="invite-side">—</dd>
+      <dt>Sign-up</dt><dd>None. No account, no email, no password.</dd>
+      <dt>Stored</dt><dd>Only the game itself, until neither of you comes back.</dd>
+    </dl>
+
+    <div class="controls">
+      <button type="button" id="invite-accept" class="primary">Accept and play</button>
+    </div>
+    <p class="hint" id="invite-note">Whoever accepts first takes the seat, so don't pass
+      this link on.</p>
   </section>
 
   <!-- the invite link, while the other seat is empty -->
@@ -103,8 +137,14 @@
       <div id="hint" class="hint-line">&nbsp;</div>
     </div>
 
+    <!-- #marks floats over the canvas because some moves cannot be asked for by clicking
+         a square. A break has a heading and no destination, and a push and a free can be
+         two different moves onto the same square -- neither fits a board where one square
+         means one move. These are real buttons rather than canvas drawing so that they
+         hit-test themselves and are the size of a fingertip. -->
     <div class="board-wrap">
       <canvas id="board" width="700" height="700"></canvas>
+      <div id="marks" class="marks"></div>
       <div id="overlay" class="overlay hidden"><div id="overlay-text"></div></div>
     </div>
 
@@ -132,7 +172,11 @@
       <li><b>R</b> royal &middot; <b>S</b> spy &middot; a number is that many pawns</li>
       <li><b>D</b> is the dragon: it flies over things, cannot be captured, and cannot win</li>
       <li>A dim strip under a stack is <b>prisoners</b> &mdash; pieces of the other colour held there</li>
-      <li>A gold ring marks a jump that <b>wraps</b> around the edge of the board</li>
+      <li>A gold ring marks a move that <b>wraps</b> around the edge of the board</li>
+      <li>A stack holding a spy can <b>break</b>: select it, press <b>BREAK</b>, then pick a
+        heading to scatter along</li>
+      <li>Shoving a square that holds your people can <b>push</b> them along or <b>free</b>
+        them &mdash; click it and the board asks which</li>
     </ul>
   </section>
 

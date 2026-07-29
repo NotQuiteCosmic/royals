@@ -23,6 +23,21 @@ from royals_web.main import app
 from royals_web.store import store
 
 
+@pytest.fixture(autouse=True)
+def fresh_limits():
+    """Give every test its own rate-limit budget.
+
+    Every request in this file arrives from the same client as far as the server is
+    concerned, and the limits are per client -- so without this the suite spends one
+    shared allowance and tests start failing in whatever order they happen to run in.
+    That is a fact about running a thousand requests a second from one address, not about
+    the limiter, which has its own tests.
+    """
+    store._creates.clear()
+    yield
+    store._creates.clear()
+
+
 @pytest.fixture
 def client():
     with TestClient(app) as c:
@@ -753,17 +768,27 @@ def test_forwarded_addresses_are_honoured_only_behind_a_trusted_proxy(monkeypatc
             self.headers = headers
             self.client = type("C", (), {"host": peer})()
 
-    request = FakeRequest({"fly-client-ip": "9.9.9.9",
-                           "x-forwarded-for": "8.8.8.8, 10.0.0.1"}, "10.0.0.7")
+    headers = {"fly-client-ip": "9.9.9.9", "x-forwarded-for": "8.8.8.8, 10.0.0.1"}
+    from_proxy = FakeRequest(headers, "127.0.0.1")
+    from_stranger = FakeRequest(headers, "10.0.0.7")
 
     monkeypatch.setattr(M, "TRUSTED_PROXY", False)
-    assert M.client_key(request) == "10.0.0.7", "an untrusted header is not an identity"
+    assert M.client_key(from_proxy) == "127.0.0.1", "an untrusted header is not an identity"
 
     monkeypatch.setattr(M, "TRUSTED_PROXY", True)
-    assert M.client_key(request) == "9.9.9.9"
+    assert M.client_key(from_proxy) == "9.9.9.9"
 
-    only_xff = FakeRequest({"x-forwarded-for": "8.8.8.8, 10.0.0.1"}, "10.0.0.7")
+    only_xff = FakeRequest({"x-forwarded-for": "8.8.8.8, 10.0.0.1"}, "127.0.0.1")
     assert M.client_key(only_xff) == "8.8.8.8", "the client is the leftmost entry"
+
+    # Trusting the header is not the same as trusting whoever sent it. The proxy connects
+    # from loopback; anything else claiming to speak for a client is some other machine on
+    # the network handing itself a fresh rate-limit bucket per request.
+    assert M.client_key(from_stranger) == "10.0.0.7", "a stranger may not name the client"
+
+    # ...unless the deployment says its proxy lives elsewhere.
+    monkeypatch.setattr(M, "PROXY_PEERS", frozenset({"10.0.0.7"}))
+    assert M.client_key(from_stranger) == "9.9.9.9"
 
 
 def test_join_is_rate_limited_separately_from_creation():
@@ -1144,3 +1169,242 @@ def test_the_page_can_be_installed(client):
     csp = client.get("/").headers["Content-Security-Policy"]
     assert "manifest-src 'self'" in csp, "the browser will refuse to fetch it otherwise"
     assert "unsafe-inline" not in csp
+
+
+# ---------------------------------------------------------------------------
+# Bounds on what a stranger can make this process do
+# ---------------------------------------------------------------------------
+
+def test_an_oversized_body_is_refused_even_without_a_content_length(client, game):
+    """The probe that found this, kept as the test that would have caught it.
+
+    The limit used to be enforced by reading Content-Length, which a chunked request
+    simply does not send -- so the check was skipped and the whole body was buffered.
+    Measured against the running server: 5 MB reached the JSON parser and came back 422
+    rather than 413. Unauthenticated, no game id needed, and no upper bound.
+    """
+    url = f"/api/games/{game['id']}/enter"
+    huge = b'{"square":"' + b"a" * 200_000 + b'"}'
+
+    declared = client.post(url, content=huge,
+                           headers={"Content-Type": "application/json"})
+    assert declared.status_code == 413, "an honest Content-Length must still be refused"
+
+    def chunks():
+        for i in range(0, len(huge), 8192):
+            yield huge[i:i + 8192]
+
+    streamed = client.post(url, content=chunks(),
+                           headers={"Content-Type": "application/json"})
+    assert streamed.status_code == 413, (
+        "a body that declines to declare its size is still a body", streamed.status_code)
+
+    # and a real request is untouched by any of it
+    assert client.get(f"/api/games/{game['id']}").status_code == 200
+
+
+def test_a_body_at_the_limit_still_works(client, game):
+    """The limit has to admit the requests it exists to permit."""
+    res = client.post(f"/api/games/{game['id']}/enter",
+                      json={"square": game["entering"]["options"][0]})
+    assert res.status_code == 200
+
+
+def test_api_responses_vary_on_the_seat_header(client, duel):
+    """`GET /api/games/{id}` answers differently per seat, so a cache must be told.
+
+    Nothing caches it today. The header is what keeps that harmless the first time
+    something is put in front of this.
+    """
+    state, blue, red = duel
+    res = client.get(f"/api/games/{state['id']}", headers=blue)
+    assert res.headers["Vary"] == "X-Royals-Seat"
+    assert res.headers["Cache-Control"] == "no-store"
+
+    # and it is not decorative: the two seats really do get different answers
+    state = enter_all(client, state, {0: blue, 1: red})
+    mover = blue if state["sideToMove"] == 0 else red
+    waiter = red if state["sideToMove"] == 0 else blue
+    assert "origins" in client.get(f"/api/games/{state['id']}", headers=mover).json()
+    assert "origins" not in client.get(f"/api/games/{state['id']}", headers=waiter).json()
+
+
+def test_the_api_is_rate_limited_as_a_whole(client, game, monkeypatch):
+    """Reads were bounded by nothing, and a read regenerates every legal move."""
+    from royals_web import main as M
+    monkeypatch.setattr(M, "API_LIMIT", 5)
+
+    codes = [client.get(f"/api/games/{game['id']}").status_code for _ in range(12)]
+    assert 429 in codes, "a client can hammer move generation forever"
+    assert codes[0] == 200, "and the limit is not so tight it refuses the first request"
+
+
+def test_the_sweep_bounds_the_database_by_count_as_well_as_age(db, monkeypatch):
+    """Age alone bounds nothing: the create limit allows thousands of games a day and
+    the youngest of them is a month from expiring."""
+    from royals_web import persist
+    monkeypatch.setattr(persist, "MAX_ROWS", 3)
+
+    made = []
+    for seed in range(6):
+        g = played_out(seed=seed + 40, plies=2)
+        g.updated_at = 1_000_000 + seed        # oldest first
+        db.save(g)
+        made.append(g.id)
+    assert db.count() == 6
+
+    db.sweep(now=1_000_010)
+    assert db.count() == 3, "the ceiling is what makes the disk a fixed cost"
+    assert db.load(made[0]) is None, "oldest-by-last-touched goes first"
+    assert db.load(made[-1]) is not None, "and the most recent survives"
+
+
+def test_a_game_cannot_run_forever(monkeypatch):
+    """The ko rule makes a game finite, but only in the sense that chess is."""
+    import random
+    monkeypatch.setattr(G, "MAX_PLIES", 20)
+
+    rng = random.Random(5)
+    game = pure_game(entry_seed=5)
+    while game.phase == "entering":
+        options = G.entering_options(game.board, game.entry_side, game.entry_piece)
+        G.place(game, rng.choice(options), side=game.entry_side)
+
+    for _ in range(200):
+        if game.phase != "playing":
+            break
+        contr = game.turn % 2
+        legal = G.legal_moves(game.board, contr, game.ko_set())
+        G.play_move(game, rng.choice(legal) if legal else None, side=contr)
+
+    assert game.phase == "over"
+    assert len(game.moves) == 20
+    assert (game.result, game.termination) == ("draw", "ply_limit")
+
+    # and it survives a round trip, since replay reaches the cap by itself
+    back = G.replay(id=game.id, mode=game.mode, ai_depth=game.ai_depth,
+                    entry_seed=game.entry_seed, entry_noise=game.entry_noise,
+                    moves=" ".join(game.moves), ply=len(game.moves), seats=game.seats,
+                    result=game.result, termination=game.termination)
+    assert (back.result, back.termination) == ("draw", "ply_limit")
+
+
+# ---------------------------------------------------------------------------
+# Invitations, and the one string a stranger writes
+# ---------------------------------------------------------------------------
+
+def test_a_name_is_filtered_at_the_door():
+    """The only attacker-controlled text in the application."""
+    assert G.clean_name("Emerson") == "Emerson"
+    assert G.clean_name("  Emerson   Jeffery  ") == "Emerson Jeffery"
+    assert G.clean_name("Zoë O'Neill-Smith") == "Zoë O'Neill-Smith"
+
+    # markup loses everything that makes it markup
+    cleaned = G.clean_name("<script>alert(1)</script>")
+    assert "<" not in cleaned and ">" not in cleaned and "/" not in cleaned
+
+    assert len(G.clean_name("a" * 500)) == G.NAME_MAX
+    assert G.clean_name("\u202Eevil") == "evil", "no bidirectional overrides"
+    assert G.clean_name("\x00\x07") is None
+    assert G.clean_name("") is None and G.clean_name(None) is None
+    assert G.clean_name(12345) is None, "not every client sends a string"
+
+
+def test_a_name_reaches_the_invitation_escaped(client):
+    made = client.post("/api/games", json={"mode": "human", "side": 0,
+                                           "name": '<b>Em"erson</b>'}).json()
+    gid = made["state"]["id"]
+
+    assert made["state"]["seats"]["0"]["name"] == "bEmersonb"
+
+    page = client.get(f"/join/{gid}").text
+    assert "bEmersonb has invited you to play Royals" in page
+    assert "<b>" not in page.split("<body")[0], "no attacker markup in the head"
+
+
+def test_the_invitation_page_describes_the_game_and_claims_nothing(client):
+    made = client.post("/api/games",
+                       json={"mode": "human", "side": 0, "name": "Emerson"}).json()
+    gid, invite = made["state"]["id"], made["inviteToken"]
+
+    page = client.get(f"/join/{gid}")
+    assert page.status_code == 200
+    assert 'property="og:title" content="Emerson has invited you to play Royals"' in page.text
+    assert 'property="og:image"' in page.text
+    assert "twitter:card" in page.text
+
+    # a previewer fetching it takes nothing
+    assert client.get(f"/api/games/{gid}").json()["phase"] == "waiting"
+    assert client.post(f"/api/games/{gid}/join",
+                       json={"invite": invite}).status_code == 200
+
+
+def test_a_used_invitation_says_so_in_its_preview(client):
+    made = client.post("/api/games", json={"mode": "human", "side": 0}).json()
+    gid = made["state"]["id"]
+    client.post(f"/api/games/{gid}/join", json={"invite": made["inviteToken"]})
+
+    page = client.get(f"/join/{gid}").text
+    assert "already been used" in page
+
+
+def test_the_ordinary_pages_still_carry_a_card(client):
+    for path in ("/", "/g/" + "0" * 32):
+        page = client.get(path)
+        assert page.status_code == 200
+        assert 'property="og:title" content="Royals"' in page.text
+        assert page.headers["Cache-Control"] == "no-store"
+
+
+def test_an_unknown_or_malformed_game_id_is_still_a_page(client):
+    """A preview must not be able to make the server answer with an error."""
+    for path in ("/join/not-a-game-id", "/join/" + "0" * 32, "/join/../../etc/passwd"):
+        res = client.get(path)
+        assert res.status_code in (200, 404), (path, res.status_code)
+        if res.status_code == 200:
+            assert "og:title" in res.text
+
+
+# ---------------------------------------------------------------------------
+# Portability: the sqlite cursor rule
+# ---------------------------------------------------------------------------
+
+def test_persist_never_executes_without_closing():
+    """No bare `self._conn.execute` in persist.py outside the two helpers.
+
+    A source check rather than a behavioural one, because the behaviour it guards only
+    misbehaves on an interpreter this suite may not be running under. CPython frees the
+    cursor `execute` returns as soon as the last reference to it goes, and that finalises
+    the statement, so a commit on the next line sees a quiet connection. PyPy does not
+    refcount. Every write in this file failed under it with
+
+        sqlite3.OperationalError: cannot commit transaction - SQL statements in progress
+
+    which is a whole server that will not start, discovered only by running it there. The
+    fix was to route everything through `_run` and `_query`, which close their cursors;
+    this is what stops the next `execute` from quietly undoing that under CPython, where
+    it would pass every test in this file.
+    """
+    import inspect
+    import re
+
+    from royals_web import persist
+
+    source = inspect.getsource(persist)
+    # The helpers are the two places allowed to touch the connection directly, and they
+    # are found by name so that renaming one fails here rather than silently exempting it.
+    helpers = re.findall(r"\n    def (_run|_query)\(.*?(?=\n    def |\Z)", source, re.S)
+    assert len(helpers) == 2, "persist._run/_query have been renamed or removed"
+
+    offenders = []
+    for number, line in enumerate(source.splitlines(), 1):
+        if "_conn.execute(" not in line: continue
+        # executescript is a different call with no cursor to leak, and the helpers'
+        # own two lines are the point of the exercise
+        stripped = line.strip()
+        if stripped.startswith("cur = self._conn.execute("): continue
+        offenders.append((number, stripped))
+
+    assert not offenders, (
+        "persist.py calls _conn.execute directly at %s -- use _run or _query, which "
+        "close the cursor. See the docstring above this test." % offenders)

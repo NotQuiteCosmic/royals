@@ -18,13 +18,13 @@
 // what used to be "is it the human's turn", and a page with no token is a spectator --
 // which is a real thing to be, since anyone can be sent the link.
 
-import { BoardView, looksWrapped } from "/static/board.js";
+import { BoardView, looksWrapped, algToIndex, FILES } from "/static/board.js";
 
 const $ = (id) => document.getElementById(id);
 
 const el = {
   setup: $("setup"), game: $("game"), legend: $("legend"), share: $("share"),
-  board: $("board"), overlay: $("overlay"), overlayText: $("overlay-text"),
+  board: $("board"), marks: $("marks"), overlay: $("overlay"), overlayText: $("overlay-text"),
   status: $("status"), hint: $("hint"), movelist: $("movelist"),
   pass: $("pass"), carry: $("carry"), cancel: $("cancel"),
   resign: $("resign"), newgame: $("newgame"), start: $("start"),
@@ -35,6 +35,9 @@ const el = {
   inviteUrl: $("invite-url"), copyInvite: $("copy-invite"), sendInvite: $("send-invite"),
   shareStatus: $("share-status"), resumeUrl: $("resume-url"),
   inviteAgain: $("invite-again"),
+  invite: $("invite"), inviteWho: $("invite-who"), inviteSide: $("invite-side"),
+  inviteAccept: $("invite-accept"), inviteNote: $("invite-note"),
+  nameField: $("name-field"), playerName: $("player-name"),
 };
 
 const view = new BoardView(el.board);
@@ -44,8 +47,16 @@ let selected = null;
 let moves = [];
 let carrying = false;
 let busy = false;
+// Whether the break arrows are showing, and which square is currently asking push-or-free.
+// Both are part of "which click comes next" and so live here with the rest of it; both are
+// dropped by clearSelection, which every path out of a turn already goes through.
+let breakOpen = false;
+let chooser = null;
 let seatToken = null;
 let inviteToken = null;
+// The invitation being considered, while the reader decides. Nothing is claimed until
+// they press Accept.
+let pending = null;
 let setup = { mode: "ai", side: 0, difficulty: "strong" };
 
 const SIDE_NAME = ["blue", "red"];
@@ -98,7 +109,7 @@ async function route() {
   const path = location.pathname;
 
   const joining = path.match(/^\/join\/([A-Za-z0-9_.-]+)\/?$/);
-  if (joining) return acceptInvite(joining[1]);
+  if (joining) return showInvitation(joining[1]);
 
   const playing = path.match(/^\/g\/([a-f0-9]{32})\/?$/);
   if (playing) return openGame(playing[1]);
@@ -134,41 +145,104 @@ async function openGame(gameId) {
   }
 }
 
-async function acceptInvite(linkToken) {
-  // The seat is claimed here, by this POST, and not by the GET that served this page --
-  // link previewers fetch URLs, and a preview must not be able to take the seat.
+// Showing an invitation, which is emphatically not the same as accepting one.
+//
+// This used to POST the moment the page loaded, and that was wrong twice over. Somebody
+// who opens a link they were sent has no idea yet what it is -- an invitation that takes
+// the seat before introducing itself is asking to be trusted without saying what for. And
+// because a seat is held by one browser, glancing at the link on a laptop took it from
+// the phone the reader meant to play on.
+//
+// So this fetches the game -- a public read, no token needed -- describes it, and waits.
+async function showInvitation(linkToken) {
   showSetup();
-  el.setupError.textContent = "Joining…";
+  el.setup.classList.add("hidden");
+  el.setupError.textContent = "";
 
   const [gameId, invite] = splitInvite(linkToken);
-  if (!invite) {
-    el.setupError.textContent = "That invitation link is incomplete.";
+  if (!gameId || !invite) {
+    el.setup.classList.remove("hidden");
+    el.setupError.textContent = "That invitation link is incomplete — ask for a new one.";
     return;
   }
 
-  // Sent before claiming: the browser may already hold this seat, in which case the
-  // server hands it straight back instead of spending the invitation on us.
-  seatToken = loadSeat(gameId);
+  let game;
   try {
+    game = await api(`/api/games/${gameId}`);
+  } catch (err) {
+    el.setup.classList.remove("hidden");
+    el.setupError.textContent = err.status === 404
+      ? "That game has expired or never existed."
+      : err.message;
+    return;
+  }
+
+  // Already sitting here: nothing to accept, just carry on playing.
+  if (loadSeat(gameId)) return openGame(gameId);
+
+  if (game.phase !== "waiting") {
+    el.setup.classList.remove("hidden");
+    el.setupError.textContent =
+      "Both seats in that game are taken. You can still watch it.";
+    setTimeout(() => openGame(gameId), 1200);
+    return;
+  }
+
+  pending = { gameId, invite };
+  const host = game.seats["0"].name || game.seats["1"].name;
+  const free = game.seats["0"].claimed ? 1 : 0;
+
+  // textContent, never innerHTML: this is a name somebody else typed.
+  el.inviteWho.textContent = host
+    ? `${host} has invited you to play Royals.`
+    : "Someone has invited you to play Royals.";
+  el.inviteSide.textContent = free === 0 ? "Blue, who enters first" : "Red, who moves first";
+  el.invite.classList.remove("hidden");
+}
+
+el.inviteAccept.addEventListener("click", async () => {
+  if (!pending) return;
+  const { gameId, invite } = pending;
+  el.inviteAccept.disabled = true;
+  el.inviteAccept.textContent = "Joining…";
+  try {
+    // Sent before claiming: the browser may already hold this seat, in which case the
+    // server hands it straight back instead of spending the invitation on us.
+    seatToken = loadSeat(gameId);
     const res = await api(`/api/games/${gameId}/join`, {
       method: "POST",
-      body: JSON.stringify({ invite }),
+      body: JSON.stringify({ invite, name: nameFromField() }),
     });
     // A null seatToken is exactly that case -- keep the one already stored.
     if (res.seatToken) saveSeat(gameId, res.seatToken);
     seatToken = loadSeat(gameId);
+    pending = null;
     history.replaceState(null, "", `/g/${gameId}`);
+    el.invite.classList.add("hidden");
     apply(res.state);
     showGame();
   } catch (err) {
-    el.setupError.textContent = err.message;
+    el.inviteNote.textContent = err.status === 409
+      ? "Somebody accepted this invitation first."
+      : err.message;
+  } finally {
+    el.inviteAccept.disabled = false;
+    el.inviteAccept.textContent = "Accept and play";
   }
-}
+});
 
-// A link has to say which game it is for as well as prove the right to join it, so it is
-// written /join/<gameId>.<invite> and split here. Only the second half is a secret, and
-// only the second half is ever sent as the invite.
+const nameFromField = () => (el.playerName.value || "").trim().slice(0, 24) || null;
+
+// A link says which game it is for and proves the right to join it, and those two things
+// are kept apart on purpose. The game id goes in the path, because the server has to know
+// which game to describe when a messenger asks it for a preview, and because an id is not
+// a credential -- anyone holding one can already watch. The token goes in the fragment,
+// which browsers never send, so the part that *is* a credential reaches no access log and
+// no CDN. Older links put both in the path; those still work.
 function splitInvite(linkToken) {
+  const fragment = location.hash.replace(/^#/, "");
+  if (fragment && !linkToken.includes(".")) return [linkToken, fragment];
+
   const dot = linkToken.indexOf(".");
   if (dot < 0) return [linkToken, null];
   return [linkToken.slice(0, dot), linkToken.slice(dot + 1)];
@@ -184,12 +258,14 @@ function showSetup() {
   el.game.classList.add("hidden");
   el.legend.classList.add("hidden");
   el.share.classList.add("hidden");
+  el.invite.classList.add("hidden");
   el.setup.classList.remove("hidden");
   el.overlay.classList.add("hidden");
 }
 
 function showGame() {
   el.setup.classList.add("hidden");
+  el.invite.classList.add("hidden");
   el.game.classList.remove("hidden");
   el.legend.classList.remove("hidden");
   requestAnimationFrame(() => { view.resize(); render(); });
@@ -233,6 +309,7 @@ el.opponentChoice.addEventListener("click", (e) => {
   // game between two people. Hidden rather than ignored, so nothing on screen is a
   // control that quietly does nothing.
   el.aiOptions.classList.toggle("hidden", human);
+  el.nameField.classList.toggle("hidden", !human);
   el.sideRandom.classList.toggle("hidden", !human);
   el.opponentHint.textContent = human
     ? "You'll get a link to send them. No accounts, no sign-up."
@@ -269,6 +346,7 @@ el.start.addEventListener("click", async () => {
         side: setup.side,
         difficulty: setup.difficulty,
         noise: Number(el.noise.value) / 100,
+        name: setup.mode === "human" ? nameFromField() : null,
       }),
     });
     seatToken = res.seatToken;
@@ -293,7 +371,7 @@ el.start.addEventListener("click", async () => {
 // The URL is built here rather than sent by the server, so no Host header decides what
 // link a person clicks.
 
-function inviteLink(gameId) { return `${location.origin}/join/${gameId}.${inviteToken}`; }
+function inviteLink(gameId) { return `${location.origin}/join/${gameId}#${inviteToken}`; }
 function resumeLink(gameId) { return `${location.origin}/g/${gameId}#s=${seatToken}`; }
 
 function showShare(gameId) {
@@ -386,6 +464,10 @@ function apply(fresh) {
   selected = null;
   moves = [];
   carrying = false;
+  // The selection is gone, so anything that was asking about it is stale. A badge left
+  // over a square that is no longer picked up is a button that does nothing.
+  breakOpen = false;
+  chooser = null;
   if (!before || before.version !== fresh.version) lastChange = Date.now();
 
   // Once the other seat is taken there is nothing left to invite anybody to, and the
@@ -425,11 +507,24 @@ async function onEnterClick(alg) {
 }
 
 async function onPlayClick(alg) {
+  // A click on the board answers whatever the board was last asking, so anything already
+  // open is dismissed first rather than left hanging behind the next question.
+  const wasAsking = chooser !== null;
+  chooser = null;
+
   // second click: a destination?
   if (selected) {
-    const chosen = moves.find((m) => m.target === alg || (m.kind === "break" && m.at === alg));
-    if (chosen) return submit(chosen);
+    // Every move landing here, not the first one found. A square is not a move: a push and
+    // a free go to the same square and are different moves at different prices, and taking
+    // the first match silently played the push every time -- which is what made freeing
+    // your own people impossible whenever shoving them was legal too. Breaks are not in
+    // here at all; they have a heading rather than a destination, and the arrows ask for
+    // them.
+    const here = moves.filter((m) => m.kind !== "break" && m.target === alg);
+    if (here.length === 1) return submit(here[0]);
+    if (here.length > 1) { chooser = { alg, options: here }; return render(); }
     if (alg === selected) return clearSelection();
+    if (wasAsking) return render();
   }
 
   // first click: pick up a square
@@ -449,7 +544,9 @@ async function selectOrigin(alg, pris) {
       `/api/games/${state.id}/moves?origin=${encodeURIComponent(alg)}&pris=${pris}`);
     selected = alg;
     carrying = pris;
-    moves = res.moves.map(decorate);
+    moves = res.moves;
+    breakOpen = false;
+    chooser = null;
     el.carry.classList.toggle("hidden", !res.hasPrisonerVariant);
     el.carry.textContent = pris ? "Leave prisoners" : "Bring prisoners";
     el.cancel.classList.remove("hidden");
@@ -462,29 +559,26 @@ async function selectOrigin(alg, pris) {
   }
 }
 
-// A break has no destination square: it scatters the stack along a heading. Give each
-// one the adjacent square in that direction so there is something to click.
-function decorate(m) {
-  if (m.kind !== "break") return m;
-  const DELTA = { d: [0, -1], u: [0, 1], l: [-1, 0], r: [1, 0] };
-  const FILES = "abcdefg";
-  const [df, dr] = DELTA[m.dir];
-  const f = FILES.indexOf(m.origin[0]) + df;
-  const r = parseInt(m.origin[1], 10) + dr;
-  return { ...m, at: (f >= 0 && f < 7 && r >= 1 && r <= 7) ? FILES[f] + r : null };
-}
-
 function describeOptions(list) {
   if (!list.length) return "Nothing legal from there.";
   const counts = list.reduce((acc, m) => (acc[m.kind] = (acc[m.kind] || 0) + 1, acc), {});
-  const parts = Object.entries(counts).map(([k, n]) => `${n} ${k}${n > 1 ? "s" : ""}`);
-  return "Click a highlighted square. " + parts.join(", ") + ".";
+  const parts = Object.entries(counts)
+    .filter(([k]) => k !== "break")
+    .map(([k, n]) => `${n} ${k}${n > 1 ? "s" : ""}`);
+
+  const text = parts.length ? "Click a highlighted square. " + parts.join(", ") + "." : "";
+  // The breaks are counted separately because they are not on any of those squares --
+  // saying "3 breaks" beside squares that offer none is how the old hint misled.
+  if (!counts.break) return text || "Nothing legal from there.";
+  return (text + " Press BREAK to scatter the stack instead.").trim();
 }
 
 function clearSelection() {
   selected = null;
   moves = [];
   carrying = false;
+  breakOpen = false;
+  chooser = null;
   el.carry.classList.add("hidden");
   el.cancel.classList.add("hidden");
   setHint("");
@@ -550,6 +644,15 @@ el.newgame.addEventListener("click", () => {
   showSetup();
 });
 
+// Escape backs out one question at a time -- the chooser, then the arrows, then the
+// selection -- rather than dropping the whole turn at the first press.
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || !selected) return;
+  if (chooser) { chooser = null; setHint(describeOptions(moves)); return render(); }
+  if (breakOpen) { breakOpen = false; setHint(describeOptions(moves)); return render(); }
+  clearSelection();
+});
+
 window.addEventListener("popstate", () => { route(); });
 
 // ---------------------------------------------------------------------------
@@ -575,8 +678,21 @@ function marksFor() {
   if (state.phase !== "playing" || !state.awaitingYou) return marks;
 
   if (selected) {
+    // While the arrows are out they are the question being asked, and they stand on these
+    // very squares. Two families of mark over the same ground is unreadable, so the
+    // destinations stand down until the break is put away again.
+    if (breakOpen) return marks;
+
     for (const m of moves) {
-      if (m.kind === "break") { if (m.at) marks.set(m.at, "break"); continue; }
+      // a break has a heading and no destination; it is drawn by the arrows, not here
+      if (m.kind === "break") continue;
+
+      // A square that is more than one move gets its own mark, because it is its own
+      // question -- clicking it opens the chooser rather than playing anything. Painting
+      // it as a push while it plays a free, or the other way about, is the bug this
+      // whole layer exists to remove.
+      const already = marks.get(m.target);
+      if (already) { marks.set(m.target, "choice"); continue; }
       marks.set(m.target, m.kind === "jump" && looksWrapped(m.origin, m.target)
         ? "wrap" : m.kind);
     }
@@ -584,6 +700,109 @@ function marksFor() {
     (state.origins || []).forEach((a) => marks.set(a, "origin"));
   }
   return marks;
+}
+
+// ---------------------------------------------------------------------------
+// The mark layer -- breaks, and push-or-free
+// ---------------------------------------------------------------------------
+
+// Screen steps, as [column, row]. These are not the engine's headings turned into files and
+// ranks, and the difference has bitten once already: rank 1 is drawn at the BOTTOM, so the
+// engine's "down" -- which is rank + 1 -- travels UP the screen. Working in rows and
+// columns says that once, here, instead of leaving every reader to rediscover it.
+const SCREEN_STEP = { d: [0, -1], u: [0, 1], l: [-1, 0], r: [1, 0] };
+const ARROW_GLYPH = { d: "↑", u: "↓", l: "←", r: "→" };
+
+function cellOf(alg) {
+  const index = algToIndex(alg);
+  return { col: index % 7, row: 6 - Math.floor(index / 7) };
+}
+
+// The square one step along a heading, wrapping like the board does. The old code returned
+// nothing here and the break simply vanished: on an edge square a break is often legal
+// where no push is, so those were exactly the breaks a player could never reach.
+function neighbour(alg, dir) {
+  const { col, row } = cellOf(alg);
+  const [dc, dr] = SCREEN_STEP[dir];
+  const wrapped = col + dc < 0 || col + dc > 6 || row + dr < 0 || row + dr > 6;
+  return { col: (col + dc + 7) % 7, row: (row + dr + 7) % 7, wrapped };
+}
+
+function place(node, col, row) {
+  node.style.left = `${(col * 100) / 7}%`;
+  node.style.top = `${(row * 100) / 7}%`;
+  return node;
+}
+
+function button(className, text) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = className;
+  b.textContent = text;
+  return b;
+}
+
+// The one answer to "can this selection break", asked by the badge, the arrows and the
+// hint alike. They have to agree, or the board grows a button that does nothing.
+function breakMoves() {
+  if (!selected || busy) return [];
+  if (!state || state.phase !== "playing" || !state.awaitingYou) return [];
+  return moves.filter((m) => m.kind === "break");
+}
+
+function renderMarks() {
+  const nodes = [];
+  const breaks = breakMoves();
+
+  if (breaks.length) {
+    const badge = button("mark-badge" + (breakOpen ? " open" : ""), "BREAK");
+    badge.title = "Scatter this stack along a heading";
+    badge.addEventListener("click", () => {
+      breakOpen = !breakOpen;
+      setHint(breakOpen
+        ? "Click an arrow to scatter that way, or BREAK again to put it away."
+        : describeOptions(moves));
+      render();
+    });
+    const at = cellOf(selected);
+    nodes.push(place(badge, at.col, at.row));
+
+    if (breakOpen) {
+      for (const m of breaks) {
+        const to = neighbour(selected, m.dir);
+        const arrow = button("mark-arrow" + (to.wrapped ? " wrapped" : ""),
+                             ARROW_GLYPH[m.dir]);
+        arrow.title = to.wrapped
+          ? "Scatter this way — it wraps around the edge"
+          : "Scatter this way";
+        // Checked against the live list rather than trusted from the button, the same way
+        // the desktop does: the list is what the server will be asked to play.
+        arrow.addEventListener("click", () => {
+          if (breakMoves().some((b) => b.dir === m.dir)) submit(m);
+        });
+        nodes.push(place(arrow, to.col, to.row));
+      }
+    }
+  }
+
+  if (chooser) {
+    const box = document.createElement("div");
+    box.className = "chooser";
+    for (const m of chooser.options) {
+      const b = button("", cap(m.kind));
+      b.title = m.kind === "free"
+        ? "Step onto the square and stand your people back up"
+        : "Shove the whole square along, prisoners and all";
+      b.addEventListener("click", () => submit(m));
+      box.appendChild(b);
+    }
+    const at = cellOf(chooser.alg);
+    // nudged left off the far files so a two-button box can't hang off the board edge
+    place(box, Math.min(at.col, 5), at.row);
+    nodes.push(box);
+  }
+
+  el.marks.replaceChildren(...nodes);
 }
 
 // Who the page is waiting for, said from the point of view of whoever is reading it.
@@ -598,6 +817,7 @@ function waitingOn() {
 
 function render() {
   view.draw(state, marksFor(), selected, state ? state.lastMove : []);
+  renderMarks();
   if (!state) return;
 
   renderMoveList();
@@ -639,6 +859,10 @@ function render() {
   setStatus(`${cap(SIDE_NAME[side])} to move`, side);
   if (!state.awaitingYou) { setHint(waitingOn()); return; }
   if (state.mustPass) { setHint("You have no legal move — every one would repeat an earlier position. You must pass."); return; }
+  if (chooser) {
+    setHint(`${chooser.alg} is more than one move. Pick which, or click elsewhere to think again.`);
+    return;
+  }
   if (!selected) setHint("Click one of your highlighted squares.");
 }
 
@@ -649,6 +873,7 @@ function describeEnd() {
     resign: "by resignation",
     double_pass: "— neither side could move",
     no_moves: "— no legal moves remained",
+    ply_limit: "— the game reached its move limit",
   }[state.termination] || "";
 
   if (r === "draw") return `Draw ${how}`.trim() + ".";
@@ -678,6 +903,11 @@ if (window.matchMedia) {
     .addEventListener("change", () => render());
 }
 
-buildSetup()
-  .then(route)
-  .catch((err) => { el.setupError.textContent = err.message; });
+// Route first, and fill the New Game form in the background.
+//
+// These used to be sequential, which meant somebody opening an invitation waited on a
+// list of difficulty settings they were never going to see before their invitation was
+// so much as looked at. Nothing in routing needs that list; the two are independent, and
+// the one the visitor is waiting for should go first.
+route().catch((err) => { el.setupError.textContent = err.message; });
+buildSetup().catch((err) => { el.diffHint.textContent = err.message; });
