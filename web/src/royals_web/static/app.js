@@ -92,11 +92,31 @@ async function api(path, options) {
   const res = await fetch(path, { headers, ...options });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const err = new Error(body.detail || `request failed (${res.status})`);
+    const err = new Error(describeError(body, res.status));
     err.status = res.status;
     throw err;
   }
   return body;
+}
+
+// The server's refusals are a sentence in `detail` -- except the schema's, which are a
+// list of objects describing which field was wrong. Handing that list to `new Error`
+// stringifies it to "[object Object]", which is what a player saw instead of being told
+// anything at all. Worth rendering properly rather than hiding: if this ever shows up
+// again it should name the field.
+function describeError(body, status) {
+  const detail = body && body.detail;
+  if (typeof detail === "string" && detail) return detail;
+  if (Array.isArray(detail) && detail.length) {
+    return detail
+      .map((d) => {
+        const where = Array.isArray(d.loc) ? d.loc.filter((p) => p !== "body").join(".") : "";
+        return where ? `${where}: ${d.msg}` : d.msg;
+      })
+      .filter(Boolean)
+      .join("; ") || `request failed (${status})`;
+  }
+  return `request failed (${status})`;
 }
 
 // ---------------------------------------------------------------------------
@@ -211,7 +231,7 @@ el.inviteAccept.addEventListener("click", async () => {
     seatToken = loadSeat(gameId);
     const res = await api(`/api/games/${gameId}/join`, {
       method: "POST",
-      body: JSON.stringify({ invite, name: nameFromField() }),
+      body: JSON.stringify(withName({ invite })),
     });
     // A null seatToken is exactly that case -- keep the one already stored.
     if (res.seatToken) saveSeat(gameId, res.seatToken);
@@ -231,7 +251,14 @@ el.inviteAccept.addEventListener("click", async () => {
   }
 });
 
-const nameFromField = () => (el.playerName.value || "").trim().slice(0, 24) || null;
+const nameFromField = () => (el.playerName.value || "").trim().slice(0, 24);
+
+// An absent name is an absent field, not a null one. Sending `name: null` is a different
+// statement from not mentioning it, and the server is entitled to treat it as one.
+function withName(body) {
+  const name = nameFromField();
+  return name ? { ...body, name } : body;
+}
 
 // A link says which game it is for and proves the right to join it, and those two things
 // are kept apart on purpose. The game id goes in the path, because the server has to know
@@ -346,7 +373,7 @@ el.start.addEventListener("click", async () => {
         side: setup.side,
         difficulty: setup.difficulty,
         noise: Number(el.noise.value) / 100,
-        name: setup.mode === "human" ? nameFromField() : null,
+        ...(setup.mode === "human" ? withName({}) : {}),
       }),
     });
     seatToken = res.seatToken;

@@ -22,7 +22,7 @@ import html
 import logging
 import os
 import pathlib
-from typing import Literal, Union
+from typing import Literal, Optional, Union
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -288,14 +288,16 @@ class NewGame(BaseModel):
     side: Union[int, Literal["random"]] = G.BLUE
     difficulty: str = Field(default=G.DEFAULT_DIFFICULTY, max_length=20)
     noise: float = Field(default=0.5, ge=0.0, le=1.0)
-    # Bounded here and filtered again by clean_name, which is the one that matters --
-    # a length is not a charset.
-    name: str = Field(default=None, max_length=200)
+    # Optional[str], not `str = None`. Pydantic treats the latter as a required string
+    # that happens to have a default: leaving the field out is fine, but *sending* null
+    # is a validation error. A browser form with an empty box sends null, so the shape
+    # that looks optional was rejecting every request the client actually made.
+    name: Optional[str] = Field(default=None, max_length=200)
 
 
 class JoinIn(BaseModel):
     invite: str = Field(max_length=MAX_TOKEN_CHARS)
-    name: str = Field(default=None, max_length=200)
+    name: Optional[str] = Field(default=None, max_length=200)
 
 
 class Placement(BaseModel):
@@ -304,14 +306,16 @@ class Placement(BaseModel):
 
 class MoveIn(BaseModel):
     kind: str = Field(max_length=8)
-    origin: str = Field(default=None, max_length=2)
-    target: str = Field(default=None, max_length=2)
-    dir: str = Field(default=None, max_length=1)
+    # Optional for the same reason as above: a move carries a target or a direction, not
+    # both, and a client that spells the absent one out as null is not making an error.
+    origin: Optional[str] = Field(default=None, max_length=2)
+    target: Optional[str] = Field(default=None, max_length=2)
+    dir: Optional[str] = Field(default=None, max_length=1)
     pris: bool = False
     # Optional, and only ever a safety net. A client that retries a move it already
     # landed -- a flaky phone connection is enough -- would otherwise play twice if the
     # position happens to make the same move legal again.
-    expectedVersion: int = None
+    expectedVersion: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------

@@ -667,3 +667,75 @@ pub fn entering_sequence() -> Vec<(u8, Piece)> {
     }
     steps
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::board::{build_space, Board, EMPTY_BOARD};
+
+    fn at(board: &mut Board, square: u8, code: u16) {
+        board[square as usize - 1] = code;
+    }
+
+    fn moves(board: &Board, contr: u8) -> Vec<(u8, MoveKind, u8, bool)> {
+        list_all_moves(board, contr, &parse_board(board))
+            .iter()
+            .map(|m| (m.origin, m.kind, m.target, m.moving_pris))
+            .collect()
+    }
+
+    /// A red stack on d4 holding blue's spy prisoner, on an otherwise empty board.
+    fn spy_in_the_cells() -> Board {
+        let mut board = EMPTY_BOARD;
+        at(&mut board, 25, build_space(1, 0, 1, 1, 0, 1, 0, 1).unwrap());
+        board
+    }
+
+    #[test]
+    fn a_held_spy_can_only_break_out() {
+        // The square belongs to red, so blue has no business on it -- except that blue's spy
+        // is inside, and breaking is how it gets out. Four directions, no jumps, no pushes.
+        assert_eq!(
+            moves(&spy_in_the_cells(), 0),
+            (0..4).map(|d| (25, MoveKind::Break, d, false)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn generation_order_is_the_contract() {
+        // Red holds the same square, so it gets the full treatment, and the ORDER is what is
+        // being asserted here: not carrying prisoners first (its jumps, then its breaks),
+        // then the carrying pass (jumps only -- a break scatters the whole square, so it has
+        // no carrying variant). The port fixtures pick moves by index into this list.
+        let got = moves(&spy_in_the_cells(), 1);
+
+        let jumps: Vec<_> = got.iter().filter(|m| m.1 == MoveKind::Jump && !m.3).collect();
+        let breaks: Vec<_> = got.iter().filter(|m| m.1 == MoveKind::Break).collect();
+        let carried: Vec<_> = got.iter().filter(|m| m.3).collect();
+
+        assert_eq!(jumps.len(), 8, "weight 2 walks two squares of each strand");
+        assert_eq!(breaks.len(), 4);
+        // strength is 1 with the prisoner in tow, so the carrying pass reaches one square
+        assert_eq!(carried.len(), 4);
+        assert!(carried.iter().all(|m| m.1 == MoveKind::Jump));
+
+        // and they arrive in that order, which is the part that matters
+        assert!(got[..8].iter().all(|m| m.1 == MoveKind::Jump && !m.3));
+        assert!(got[8..12].iter().all(|m| m.1 == MoveKind::Break));
+        assert!(got[12..].iter().all(|m| m.3));
+    }
+
+    #[test]
+    fn a_push_into_prisoners_is_offered_twice() {
+        // Blue pawn and royal on d4, shoving a red pawn on e4 that is holding a blue pawn.
+        // Two different moves onto one square: shove the lot along, or free the pawn and
+        // stand where it stood. Both are legal, so both are listed -- push before free.
+        let mut board = EMPTY_BOARD;
+        at(&mut board, 25, build_space(0, 0, 0, 1, 1, 0, 0, 0).unwrap());
+        at(&mut board, 26, build_space(1, 0, 0, 1, 0, 0, 1, 1).unwrap());
+
+        let got = moves(&board, 0);
+        let tail: Vec<_> = got[got.len() - 2..].to_vec();
+        assert_eq!(tail, vec![(25, MoveKind::Push, 25, false), (25, MoveKind::Free, 25, false)]);
+    }
+}

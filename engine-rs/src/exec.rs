@@ -351,3 +351,88 @@ pub fn perform_one_step(board: &Board, contr: u8, mv: Move) -> Board {
         MoveKind::Break => exe_break(board, mv.origin, mv.target as usize, contr),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::board::{build_space, unpack_code, EMPTY_BOARD};
+
+    /// Occupied squares as (0-based index, the eight semantic fields) -- the same view
+    /// `boardText` records in the golden, and the only one worth asserting on.
+    fn occupied(board: &Board) -> Vec<(usize, [u8; 8])> {
+        board
+            .iter()
+            .enumerate()
+            .filter(|(_, &c)| c != 0)
+            .map(|(i, &c)| {
+                let s = unpack_code(c);
+                (i, [s.side, s.dragon, s.spy, s.pawns, s.royal, s.cap_spy, s.cap_pawns, s.pris_flag])
+            })
+            .collect()
+    }
+
+    /// Blue pawn and royal on d4 (square 25), red pawn on e4 holding a blue pawn.
+    fn jailer() -> Board {
+        let mut board = EMPTY_BOARD;
+        board[24] = build_space(0, 0, 0, 1, 1, 0, 0, 0).unwrap();
+        board[25] = build_space(1, 0, 0, 1, 0, 0, 1, 1).unwrap();
+        board
+    }
+
+    #[test]
+    fn shoving_the_jailer_carries_the_prisoner_along() {
+        // The plain push: everything moves up one and the captured pawn stays captured.
+        let after = exe_push(&jailer(), 25, 26, 0, false, false, true);
+        assert_eq!(
+            occupied(&after),
+            vec![
+                (25, [0, 0, 0, 1, 1, 0, 0, 0]),
+                (26, [1, 0, 0, 1, 0, 0, 1, 1]),
+            ]
+        );
+    }
+
+    #[test]
+    fn freeing_leaves_the_jailer_empty_handed() {
+        // The other branch onto the same square: the pawn stands back up and joins the stack
+        // that walked in, and the jailer is shoved on alone.
+        let after = exe_push(&jailer(), 25, 26, 0, false, true, true);
+        assert_eq!(
+            occupied(&after),
+            vec![
+                (25, [0, 0, 0, 2, 1, 0, 0, 0]),
+                (26, [1, 0, 0, 1, 0, 0, 0, 0]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_lone_spy_shatters_what_it_shoves() {
+        // get_legal_push_length only ever grants a lone spy a range of 1, so the stack it
+        // displaced is sitting two squares out when the scatter starts -- and a two-pawn
+        // stack comes apart into two single pawns.
+        let mut board = EMPTY_BOARD;
+        board[24] = build_space(0, 0, 1, 0, 0, 0, 0, 0).unwrap();
+        board[25] = build_space(1, 0, 0, 2, 0, 0, 0, 0).unwrap();
+
+        let after = exe_push(&board, 25, 26, 0, false, false, true);
+        assert_eq!(
+            occupied(&after),
+            vec![
+                (25, [0, 0, 1, 0, 0, 0, 0, 0]),
+                (26, [1, 0, 0, 1, 0, 0, 0, 0]),
+                (27, [1, 0, 0, 1, 0, 0, 0, 0]),
+            ]
+        );
+
+        // and with the scatter turned off, the displaced stack is still whole two out
+        let held = exe_push(&board, 25, 26, 0, false, false, false);
+        assert_eq!(
+            occupied(&held),
+            vec![
+                (25, [0, 0, 1, 0, 0, 0, 0, 0]),
+                (26, [1, 0, 0, 2, 0, 0, 0, 0]),
+            ]
+        );
+    }
+}

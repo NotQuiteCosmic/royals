@@ -1408,3 +1408,64 @@ def test_persist_never_executes_without_closing():
     assert not offenders, (
         "persist.py calls _conn.execute directly at %s -- use _run or _query, which "
         "close the cursor. See the docstring above this test." % offenders)
+
+
+# ---------------------------------------------------------------------------
+# The payloads the browser really sends
+# ---------------------------------------------------------------------------
+# Every test above builds its request by hand, and hand-built requests omit the fields a
+# form leaves empty. A browser does not: an empty name box sends `name: null`, which is a
+# different statement from not mentioning it, and `name: str = Field(default=None)` --
+# which reads as optional -- rejects it. Both creating a game and accepting an invitation
+# failed for every real visitor while all of the above passed.
+
+def test_an_empty_optional_field_may_be_sent_as_null(client):
+    """A form with nothing typed in it sends null, and that is not an error."""
+    made = client.post("/api/games", json={"mode": "human", "side": 0, "name": None})
+    assert made.status_code == 200, made.text
+    body = made.json()
+    assert body["state"]["seats"]["0"]["name"] is None
+
+    joined = client.post(f"/api/games/{body['state']['id']}/join",
+                         json={"invite": body["inviteToken"], "name": None})
+    assert joined.status_code == 200, joined.text
+    assert joined.json()["state"]["phase"] == "entering"
+
+
+def test_a_game_against_the_computer_starts_with_a_null_name(client):
+    res = client.post("/api/games", json={"mode": "ai", "side": 0,
+                                          "difficulty": "novice", "noise": 0.5,
+                                          "name": None})
+    assert res.status_code == 200, res.text
+
+
+def test_a_move_may_spell_out_the_field_it_is_not_using(client, game):
+    """A move carries a target or a direction. Naming the other one as null is not an
+    error, and a client that serialises its whole shape should not be refused."""
+    state = play_to_move_phase(client, game)
+    origin = state["origins"][0]
+    m = client.get(f"/api/games/{state['id']}/moves",
+                   params={"origin": origin}).json()["moves"][0]
+
+    body = {"kind": m["kind"], "origin": m["origin"], "pris": m.get("pris", False),
+            "target": None, "dir": None, "expectedVersion": None}
+    body["dir" if m["kind"] == "break" else "target"] = \
+        m["dir"] if m["kind"] == "break" else m["target"]
+
+    res = client.post(f"/api/games/{state['id']}/move", json=body)
+    assert res.status_code == 200, res.text
+
+
+def test_a_schema_refusal_is_a_sentence_and_not_a_shrug(client, game):
+    """What the client renders when the server refuses on shape.
+
+    FastAPI puts a list of objects in `detail`, and handing that to `new Error` prints
+    "[object Object]" -- which is what a player was shown instead of anything useful.
+    The client formats it now, so the least this must do is name the field.
+    """
+    res = client.post(f"/api/games/{game['id']}/enter", json={"square": 12345})
+    assert res.status_code == 422
+    detail = res.json()["detail"]
+    assert isinstance(detail, list)
+    assert any("square" in (d.get("loc") or []) for d in detail), (
+        "the refusal must say which field, or the client cannot say anything useful")
