@@ -1,0 +1,46 @@
+# The compiled accelerator for royals_engine. The Python package stays the reference
+# implementation and the fallback -- see docs/PORTING.md -- so this crate is optional at
+# every level: an optional dependency of the wheel, an optional wheel for the app.
+#
+# Every feature and optional dependency the port will ever need is declared here on day one,
+# even though only `board` and `tables` exist yet. That is deliberate: this file and
+# src/lib.rs are the only two files more than one workstream would otherwise want to touch,
+# so they land complete and then nobody edits them again.
+
+[package]
+name = "royals-engine"
+version = "0.1.0"
+edition = "2021"
+# PyPy compatibility is load-bearing on the Python side; here the equivalent constraint is
+# just "an old-stable Rust builds it". LazyLock (1.80) is the newest thing used.
+rust-version = "1.80"
+license = "MIT"
+publish = false
+
+[lib]
+# maturin renames the cdylib to whatever pyproject.toml's module-name says (W5 wires that up
+# as royals_engine._rust), so this stays the Rust-side crate name and nothing more.
+name = "royals_engine"
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+# W5: PyO3 bindings, built by maturin into the royals_engine package.
+python = ["dep:pyo3"]
+# W6: wasm-bindgen build for the browser client. Single-threaded, no SharedArrayBuffer.
+wasm = ["dep:wasm-bindgen"]
+
+[dependencies]
+# Versions pinned to what the toolchain in this repo builds today rather than to the newest
+# release; bump them in the workstream that first turns the feature on.
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"], optional = true }
+wasm-bindgen = { version = "0.2.92", optional = true }
+
+# No dev-dependencies, and none are wanted. The table-conformance tests parse the Python
+# fixtures with the standard library alone, so `cargo test` works offline and stays fast.
+
+[profile.release]
+# The whole point of the exercise. panic = "abort" is deliberately NOT set: PyO3 converts a
+# panic into a Python exception, which needs unwinding.
+lto = true
+codegen-units = 1
