@@ -107,9 +107,44 @@ def test_only_stdlib_and_self_imports(path):
     allowed_stdlib = {
         "math", "random", "operator", "copy", "struct", "itertools",
         "functools", "collections", "typing", "dataclasses", "enum",
+        # _accel.py reads ROYALS_NO_ACCEL. Reading an environment variable is not a
+        # dependency and not I/O the caller should have to own -- it is how a deployment
+        # says which of the two implementations it wants.
+        "os",
     }
 
+    # The one module the engine is allowed to reach outside itself for, and only when the
+    # reach is guarded. royals_accel is the optional compiled wheel; the whole design rests
+    # on it being absent being a supported configuration rather than a broken one, which is
+    # exactly what a try/except ImportError expresses and an unguarded import does not.
+    OPTIONAL_ACCELERATOR = "royals_accel"
+
     tree = ast.parse(path.read_text(), filename=str(path))
+
+    # Import nodes sitting inside a `try` whose handlers catch ImportError. Collected up
+    # front so the check below can tell a guarded optional import from a hard dependency --
+    # the distinction the rule actually cares about.
+    guarded = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        catches_import_error = any(
+            h.type is not None
+            and (
+                (isinstance(h.type, ast.Name) and h.type.id in ("ImportError", "ModuleNotFoundError"))
+                or (isinstance(h.type, ast.Tuple) and any(
+                    isinstance(e, ast.Name) and e.id in ("ImportError", "ModuleNotFoundError")
+                    for e in h.type.elts))
+            )
+            for h in node.handlers
+        )
+        if not catches_import_error:
+            continue
+        for stmt in node.body:
+            for inner in ast.walk(stmt):
+                if isinstance(inner, (ast.Import, ast.ImportFrom)):
+                    guarded.add(id(inner))
+
     foreign = []
     for node in ast.walk(tree):
         roots = []
@@ -121,8 +156,11 @@ def test_only_stdlib_and_self_imports(path):
             roots = [(node.module or "").split(".")[0]]
 
         for root in roots:
-            if root and root not in allowed_stdlib and root != "royals_engine":
-                foreign.append((node.lineno, root))
+            if not root or root in allowed_stdlib or root == "royals_engine":
+                continue
+            if root == OPTIONAL_ACCELERATOR and id(node) in guarded:
+                continue
+            foreign.append((node.lineno, root))
 
     assert not foreign, (
         f"{path.name} imports a non-stdlib, non-engine module: "

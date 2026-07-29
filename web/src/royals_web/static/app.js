@@ -7,7 +7,8 @@
 //
 //   state     the last game state the server sent
 //   selected  the origin the player has clicked, or null while choosing one
-//   moves     the legal moves out of that origin, as the server listed them
+//   moves     the legal moves out of that origin -- answered in the page by engine.js
+//             and then confirmed by the server, which has the last word
 //   carrying  whether the chosen move should drag prisoners along
 //
 // Nothing here decides legality. The server regenerates every legal move on submission
@@ -19,6 +20,7 @@
 // which is a real thing to be, since anyone can be sent the link.
 
 import { BoardView, looksWrapped, algToIndex, FILES } from "/static/board.js";
+import * as engine from "/static/engine.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -52,6 +54,10 @@ let busy = false;
 // dropped by clearSelection, which every path out of a turn already goes through.
 let breakOpen = false;
 let chooser = null;
+// Which pick the page is showing. The local engine answers in microseconds and the server in
+// tens of milliseconds, so answers can now arrive after the question stopped being the one
+// being asked; this is what lets a stale one be dropped. Bumped wherever a selection ends.
+let pickId = 0;
 let seatToken = null;
 let inviteToken = null;
 // The invitation being considered, while the reader decides. Nothing is claimed until
@@ -488,6 +494,7 @@ window.addEventListener("focus", () => { if (shouldPoll() && !pollTimer) poll();
 function apply(fresh) {
   const before = state;
   state = fresh;
+  pickId++;
   selected = null;
   moves = [];
   carrying = false;
@@ -564,26 +571,56 @@ async function onPlayClick(alg) {
   await selectOrigin(alg, false);
 }
 
+// Picking a square up used to be a request, and the player waited through it -- 100ms or
+// more on mobile data, every time, for an answer about a position the page was already
+// holding. The engine is in the page now (engine.js), so the squares light up on the click
+// and the server's answer arrives afterwards to have the last word.
+//
+// It really is the last word, and it has to be: the local engine cannot know the game's
+// history, so it offers ko-breaking moves the server strikes off. Its answer is a superset
+// of the truth, so reconciling only ever takes squares away -- never adds one that was
+// missing, and never changes what a square means.
 async function selectOrigin(alg, pris) {
+  const mine = ++pickId;
+
+  const local = engine.available()
+    ? engine.movesFrom(state.board, state.sideToMove, alg, pris)
+    : null;
+  if (local) showOptions(alg, pris, local, true);
+
   try {
-    busy = true;
+    // Only block the page while there is nothing on screen to click yet.
+    busy = !local;
     const res = await api(
       `/api/games/${state.id}/moves?origin=${encodeURIComponent(alg)}&pris=${pris}`);
-    selected = alg;
-    carrying = pris;
-    moves = res.moves;
-    breakOpen = false;
-    chooser = null;
-    el.carry.classList.toggle("hidden", !res.hasPrisonerVariant);
-    el.carry.textContent = pris ? "Leave prisoners" : "Bring prisoners";
-    el.cancel.classList.remove("hidden");
-    setHint(describeOptions(moves));
+    // A pick the player has already moved on from -- or a move since played -- must not be
+    // put back up by an answer that was in flight while they did it.
+    if (mine === pickId) showOptions(alg, pris, res, !local);
   } catch (err) {
-    setHint(err.message);
+    if (mine === pickId) setHint(err.message);
   } finally {
     busy = false;
     render();
   }
+}
+
+// `fresh` says this is the first answer about this pick rather than the server confirming
+// one already on screen. Only a first answer puts the arrows and the push-or-free question
+// away: the player may have opened either of them in the moments since, and closing it under
+// them would be the reconciliation reaching somewhere it has no business.
+function showOptions(alg, pris, res, fresh) {
+  selected = alg;
+  carrying = pris;
+  moves = res.moves;
+  if (fresh) {
+    breakOpen = false;
+    chooser = null;
+  }
+  el.carry.classList.toggle("hidden", !res.hasPrisonerVariant);
+  el.carry.textContent = pris ? "Leave prisoners" : "Bring prisoners";
+  el.cancel.classList.remove("hidden");
+  setHint(describeOptions(moves));
+  render();
 }
 
 function describeOptions(list) {
@@ -601,6 +638,7 @@ function describeOptions(list) {
 }
 
 function clearSelection() {
+  pickId++;
   selected = null;
   moves = [];
   carrying = false;

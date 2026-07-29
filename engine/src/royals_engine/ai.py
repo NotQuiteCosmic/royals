@@ -5,6 +5,19 @@ import random
 from royals_engine import hasher as Hasher
 from royals_engine import engine as Engine
 from royals_engine import perlin as Perlin
+from royals_engine import _accel
+
+# Every accelerated function below keeps its pure-Python body untouched underneath a two-line
+# shim. That is the whole design: the Python is still the reference implementation and still
+# what golden_moves.txt was recorded from, so the compiled engine is checked against it rather
+# than replacing it. `ROYALS_NO_ACCEL=1` takes the Python path even where the wheel is
+# installed, which is what the differential CI job runs on. See _accel.py.
+#
+# What is NOT delegated, and won't be: everything from "Entering" downwards. It runs on Perlin
+# noise over floats seeded through random.Random, so it is bound to CPython's Mersenne Twister
+# -- reproducing that in another language is exacting work for a path called a dozen times a
+# game that contributes nothing to search speed. golden_enter.txt exists to keep that
+# distinction visible.
 
 # the ordering sort's key, made once rather than as a fresh lambda per node
 FIRST = operator.itemgetter(0)
@@ -140,6 +153,11 @@ def listMoves(moveArray, origin, movingPris, into):
 
 # Applies one move and returns the resulting board, leaving cBoard alone.
 def performOneStep(cBoard, contr, move):
+    if _accel.accel is not None:
+        # Comes back a tuple, not a list. A board is its own key in the ko set and the
+        # transposition table, so a list here would silently stop matching.
+        return _accel.accel.perform_one_step(cBoard, contr, move)
+
     kind = move[MOVE_KIND]
     if kind == "jump":
         return Engine.exeMove(cBoard, move[MOVE_ORIGIN], move[MOVE_TARGET] + 1, contr, move[MOVE_PRIS])
@@ -157,6 +175,11 @@ def performOneStep(cBoard, contr, move):
 # comes out of checkMoves rather than from the loop here, and only ever while not carrying
 # prisoners, since a stack bringing its own can't free anybody.
 def listAllMoves(cBoard, contr, spaces = None):
+    if _accel.accel is not None:
+        # `spaces` is only ever a parse of cBoard the caller already had, so ignoring it
+        # changes nothing but who does the walk.
+        return _accel.accel.list_all_moves(cBoard, contr)
+
     if spaces is None: spaces = Hasher.Parse_Board(cBoard)
 
     everything = []
@@ -282,6 +305,12 @@ def scoreText(score):
 # each side in turn walked the board twice and asked 49 empty squares to say nothing, twice.
 # Empty squares are skipped outright here, and on a real board most of them are empty.
 def evaluateSides(cBoard):
+    if _accel.accel is not None:
+        # A list, matching what the walk below returns -- callers index it and fullCheck
+        # subtracts across it, but nothing should discover a tuple where it expected to be
+        # able to mutate.
+        return list(_accel.accel.evaluate_sides(cBoard))
+
     unpack = Hasher.UNPACK
 
     adv = [0, 0]
@@ -370,6 +399,9 @@ def checkPosition(cBoard, contr, spaces = None):
 
 
 def fullCheck(cBoard, contr):
+    if _accel.accel is not None:
+        return _accel.accel.full_check(cBoard, contr)
+
     adv = evaluateSides(cBoard)
     return adv[contr] - adv[1 - contr]
 
@@ -650,6 +682,15 @@ def minimax(cBoard, contr, rootContr, alpha, beta, depthTrack, pvMove = None, at
 # real scores. INFINITY rather than math.inf so the search stays entirely in whole numbers.
 def chooseMove(cBoard, contr, depth = 3):
     global calcCount, killers, history, table, tableOld
+
+    if _accel.accel is not None:
+        # The ko history is handed over on every call rather than mirrored on the other side.
+        # Engine.koTrack stays the single authority, which is what lets ai_pool.py keep its
+        # load-one-game / run / drop discipline with no changes at all.
+        score, move, nodes = _accel.accel.choose_move(cBoard, contr, depth, list(Engine.koTrack))
+        calcCount = nodes
+        return [score, move]
+
     calcCount = 0
 
     if not PERSIST: newGame()
@@ -687,6 +728,14 @@ def chooseMove(cBoard, contr, depth = 3):
 # on positions the new one is unlikely to reach. Call it wherever Engine.koReset is called.
 def newGame():
     global killers, history, table, tableOld
+
+    # Both sides, always -- not either/or. ai_pool.py calls this between jobs so that game B's
+    # positions never land in game A's tables, and a worker that cleared only the Python half
+    # would carry the compiled transposition table straight into the next game. Not a crash:
+    # a search answering confidently about a tree belonging to a different game.
+    if _accel.accel is not None:
+        _accel.accel.new_game()
+
     killers = {}
     history = {}
     table = {}
@@ -696,6 +745,17 @@ def newGame():
 # Picks a move and plays it. Returns [board, move, score] -- board unchanged if there was
 # no legal move.
 def takeTurn(cBoard, contr, depth = 3):
+    global calcCount
+
+    if _accel.accel is not None:
+        # Shimmed separately from chooseMove even though the Python body below would already
+        # get there through it: doing both halves on the other side is one crossing instead of
+        # two, and this is the call ai_pool.py actually makes.
+        board, move, score, nodes = _accel.accel.take_turn(
+            cBoard, contr, depth, list(Engine.koTrack))
+        calcCount = nodes
+        return [board, move, score]
+
     score, move = chooseMove(cBoard, contr, depth)
     if move is None: return [cBoard, None, score]
 

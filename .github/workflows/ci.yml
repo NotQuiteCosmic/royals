@@ -86,13 +86,12 @@ jobs:
   # validated once and then left alone rots; a port re-validated against a 13,051-line
   # oracle on every commit cannot drift without saying so.
   #
-  # Until the compiled extension exists, both runs are pure Python and this passes
-  # trivially. That is deliberate -- the harness is meant to be ready and green before the
-  # thing it tests arrives, so that the commit which introduces the accelerator is also
-  # the commit where this job starts doing real work. A job wired up at the same time as
-  # the code it checks has never once been observed failing, and is worth very little.
+  # The compiled engine is built here rather than assumed, so this job fails if the Rust and
+  # the Python ever stop agreeing -- which is the entire reason two implementations are worth
+  # keeping. golden_search.txt is included on purpose: it records node counts, so matching it
+  # means the two searches walked the same tree, not merely that they picked the same move.
   differential:
-    name: pure-Python fallback matches
+    name: compiled and Python agree
     runs-on: ubuntu-latest
 
     steps:
@@ -102,13 +101,28 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install the engine
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install the engine and build the accelerator
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ./engine
-          python -m pip install pytest
+          python -m pip install pytest maturin
+          maturin build --release --manifest-path engine-rs/Cargo.toml --out dist
+          python -m pip install --no-index --find-links dist royals-accel
 
-      - name: Goldens, accelerated path
+      # A wheel that installs but does not import would otherwise show up as "the fallback
+      # matches itself", which is green and meaningless. Assert the accelerator is really
+      # the thing answering before comparing anything.
+      - name: The accelerator is actually in use
+        run: |
+          python -c "
+          from royals_engine import _accel
+          assert _accel.active(), _accel.describe()
+          print(_accel.describe())
+          "
+
+      - name: Goldens, compiled
         working-directory: tests
         run: python regress.py check all
 
@@ -118,10 +132,115 @@ jobs:
           ROYALS_NO_ACCEL: "1"
         run: python regress.py check all
 
+      - name: Unit tests, compiled
+        run: python -m pytest tests/ -q
+
       - name: Unit tests, pure-Python fallback
         env:
           ROYALS_NO_ACCEL: "1"
         run: python -m pytest tests/ -q
+
+  # The browser gets its own copy of the engine -- web/src/royals_web/static/royals.wasm, which
+  # is what makes picking a piece up instant instead of a request. It is a build artifact that
+  # is CHECKED IN, and that makes it the one piece of this engine that can go stale without
+  # saying so: edit movegen.rs, forget to rebuild, and the page keeps highlighting yesterday's
+  # rules while every other job here stays green. Nothing else has that failure mode -- the
+  # Python engine is the source, and the accelerator is rebuilt from source above.
+  #
+  # So the shipped module is asked what the Python engine is asked -- every position along the
+  # port fixtures' walks, every square, both sides, carrying prisoners and not, about 24,000
+  # questions -- and has to answer the same. A freshly built module is checked the same way,
+  # which is what separates "the Rust and Python rules have diverged" from "somebody forgot to
+  # rebuild the artifact". Those want different fixes and the script says which it found.
+  #
+  # Behaviour rather than bytes, deliberately. Diffing the artifact against a fresh build would
+  # be simpler and would fail the day the runner's rustc moves, for a module that plays exactly
+  # the same game -- a check nobody can act on, which is a check that gets switched off.
+  browser:
+    name: browser engine
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install the engine and a wasm runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ./engine
+          python -m pip install wasmtime
+
+      # No wasm-bindgen, no npm, no generated glue: the module exports plain C functions and
+      # static/engine.js is the fifty hand-written lines that call them. See engine-rs/src/wasm.rs
+      # for why -- briefly, the matching wasm-bindgen CLI needs a newer rustc than this crate
+      # builds on, and the whole interface is two byte buffers.
+      - name: Build the browser engine
+        run: cargo build --release --features wasm --target wasm32-unknown-unknown
+        working-directory: engine-rs
+
+      - name: The shipped module plays by the same rules
+        run: |
+          python engine-rs/tests/wasm_parity.py \
+            engine-rs/target/wasm32-unknown-unknown/release/royals_engine.wasm
+
+  # Wheels for the platforms the game is actually played on. abi3-py310 means one wheel per
+  # platform covers every CPython from 3.10 up, so this matrix is four builds rather than
+  # four times however many minor versions are current.
+  #
+  # Not a release job: it proves the wheel builds everywhere on every commit. Publishing is a
+  # separate, deliberate act -- an accelerator that silently ships itself is one nobody
+  # decided to ship.
+  wheels:
+    name: wheel (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  target: linux-x86_64 }
+          - { os: macos-14,       target: macos-arm64 }
+          - { os: macos-13,       target: macos-x86_64 }
+          - { os: windows-latest, target: windows-x86_64 }
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: |
+          python -m pip install --upgrade pip maturin
+          maturin build --release --manifest-path engine-rs/Cargo.toml --out dist
+
+      # Building is not the same as loading. A wheel with the wrong architecture or a missing
+      # symbol installs perfectly happily and fails at import, which is exactly the failure
+      # install-desktop.sh is written to survive -- but it should never get the chance.
+      - name: Install it and check it answers
+        run: |
+          python -m pip install --no-index --find-links dist royals-accel
+          python -m pip install -e ./engine
+          python -c "
+          import royals_accel
+          from royals_engine import hasher as Hasher, ai as AI, _accel
+          assert _accel.active(), _accel.describe()
+          board = Hasher.Entering_Board()
+          assert AI.evaluateSides(board) == [0, 0]
+          print(_accel.describe())
+          "
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target }}
+          path: dist/*.whl
 
   # The job above installs only the engine, so tests/test_web_api.py hits its
   # `pytest.importorskip("fastapi")` and skips in silence -- a green run that checked

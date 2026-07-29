@@ -1,0 +1,43 @@
+# The optional compiled accelerator, packaged on its own.
+#
+# This is a SECOND distribution, deliberately. `engine/pyproject.toml` stays pure setuptools
+# with no dependencies and no build requirements beyond setuptools itself, so
+# `pip install -e ./engine` still needs no Rust toolchain, the goldens CI job is unchanged,
+# and install-desktop.sh can keep promising that nothing has to be installed. Folding maturin
+# into that file would have made a Rust compiler a hard requirement for running the game,
+# which is the one thing this design exists to avoid.
+#
+# Installing this wheel is what turns the accelerator on. Not installing it is a supported
+# configuration, not a degraded one -- `royals_engine` falls back to its own Python and
+# answers identically, just slower. See docs/PORTING.md.
+
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "royals-accel"
+version = "0.1.0"
+description = "Optional compiled accelerator for royals-engine. The game runs without it."
+requires-python = ">=3.10"
+# Nothing. It does not import royals-engine and royals-engine does not require it; the two
+# find each other at runtime through a try/except and nowhere else. Declaring a dependency
+# either way round would make one of them impossible to install alone, which is exactly the
+# coupling being avoided.
+dependencies = []
+
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
+
+[tool.maturin]
+# A top-level module, not royals_engine._rust. An editable install of the engine points
+# royals_engine.__path__ at the source tree while this wheel lands in site-packages, so a
+# submodule would be unimportable in exactly the layout this repo develops in -- and would
+# fail by silently falling back. See the module docs in src/py.rs.
+module-name = "royals_accel"
+features = ["pyo3/extension-module", "python"]
+# abi3-py310 in Cargo.toml means one wheel covers every CPython from 3.10 up, which keeps the
+# release matrix to one build per platform rather than one per platform per minor version.
+strip = true

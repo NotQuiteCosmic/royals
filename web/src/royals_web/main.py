@@ -169,8 +169,17 @@ async def security_headers(request: Request, call_next):
     # This app serves no third-party JavaScript and never will, which makes a genuinely
     # strict policy possible -- no 'unsafe-inline', no CDN origins. That single header
     # neutralises most of what an XSS bug could otherwise do.
+    #
+    # 'wasm-unsafe-eval' is what lets the page compile static/royals.wasm, which is the
+    # engine's own move generator and is what makes picking a piece up instant instead of a
+    # request (see static/engine.js). Despite the name it is the NARROW token: it permits
+    # WebAssembly compilation and nothing else. 'unsafe-eval' -- eval(), new Function(),
+    # setTimeout on a string -- stays refused, which is the part that matters. Without it
+    # Chrome blocks the module outright; the page then falls back to asking the server, so
+    # this is what the feature needs rather than what it needs to not break.
     response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+        "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; "
+        "style-src 'self'; img-src 'self' data:; "
         "connect-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; "
         "frame-ancestors 'none'"
     )

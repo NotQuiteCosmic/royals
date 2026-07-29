@@ -1,9 +1,15 @@
 // Drawing the board, and turning a click back into a square.
 //
 // This file knows how a square LOOKS. It does not know a single rule: which squares can
-// be clicked, which moves are legal and what a move does are all answered by the server,
-// which runs the same engine the computer plays by. Everything here is presentation, so
-// a bug in it can make the board ugly or confusing but cannot make an illegal move legal.
+// be clicked, which moves are legal and what a move does are all answered elsewhere.
+// Everything here is presentation, so a bug in it can make the board ugly or confusing but
+// cannot make an illegal move legal.
+//
+// "Elsewhere" is now two places, and the distinction is worth keeping straight. The page
+// carries a copy of the engine (engine.js) so that highlighting can answer immediately, but
+// the SERVER decides: it regenerates every legal move on submission whether or not the page
+// asked first, and it knows the one thing the page cannot -- the game's history, and so the
+// ko rule. The local copy exists to make the page quick, never to make it right.
 //
 // Geometry: index = (rank - 1) * 7 + file, so index 0 is a1. Rank 1 is drawn at the
 // BOTTOM, chess-fashion, which means row 0 on screen is rank 7.

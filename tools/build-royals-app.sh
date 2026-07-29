@@ -33,9 +33,45 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/game"
 # the game itself, engine and window, with nothing else along for the ride
 /usr/bin/rsync -a --exclude '__pycache__' --exclude '.*' \
     "$REPO/apps/desktop/" "$APP/Contents/Resources/game/desktop/"
-/usr/bin/rsync -a --exclude '__pycache__' --exclude '.*' \
+# *.egg-info is left behind in the source tree by `pip install -e ./engine`, which is how
+# this repo is developed. It is metadata about an install that does not exist inside the
+# bundle, so copying it in only invites something to believe it.
+/usr/bin/rsync -a --exclude '__pycache__' --exclude '.*' --exclude '*.egg-info' \
     "$REPO/engine/src/" "$APP/Contents/Resources/game/engine/"
 date -u +"%Y-%m-%dT%H:%M:%SZ" > "$APP/Contents/Resources/game/BUILT"
+
+# The optional compiled engine, if this machine has one.
+#
+# The bundle cannot go looking for it later. It reads only itself -- that is the whole reason
+# it carries a copy of the game rather than pointing at the checkout -- so an accelerator that
+# is not copied in now is one the app will never see, whatever is installed elsewhere.
+#
+# Copied rather than installed: dropping the extension module beside the engine on the
+# bundle's PYTHONPATH is enough for `import royals_accel` to find it, and it keeps the app
+# self-contained with no pip, no user site, and nothing to go stale underneath it.
+#
+# Silence when there is nothing to copy is correct. The app runs the Python engine and plays
+# exactly the same game, only slower.
+# What to copy depends on how the wheel was laid out, and both layouts are normal: maturin
+# emits a package directory (__init__.py re-exporting a .so beside it) for a mixed project and
+# a single .so for a pure one. Asking importlib which it is beats guessing -- a build that
+# switched layouts would otherwise bundle half of it and fail on import inside the app, where
+# there is no console to say so.
+ACCEL=$("$PY" - <<'FIND' 2>/dev/null
+import importlib.util
+spec = importlib.util.find_spec("royals_accel")
+if spec:
+    # A package has search locations; a bare extension module has only an origin.
+    locs = list(spec.submodule_search_locations or [])
+    print(locs[0] if locs else (spec.origin or ""))
+FIND
+)
+if [ -n "$ACCEL" ] && [ -e "$ACCEL" ]; then
+    /usr/bin/rsync -a --exclude '__pycache__' "$ACCEL" "$APP/Contents/Resources/game/engine/"
+    echo "  bundled the compiled engine ($(basename "$ACCEL"))"
+else
+    echo "  no compiled engine on this machine; the app will use Python (same game, slower)"
+fi
 
 [ -f "$REPO/tools/royals-icon.icns" ] && cp "$REPO/tools/royals-icon.icns" "$APP/Contents/Resources/Royals.icns"
 

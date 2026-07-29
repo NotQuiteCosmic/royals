@@ -35,6 +35,10 @@ MIN_PY_MINOR=10
 
 DRY_RUN=0
 LAUNCH=1
+# The compiled engine is a best-effort extra, not part of the install -- see the block that
+# tries for it further down. This turns even the attempt off, for anyone who would rather no
+# pip ran at all.
+SKIP_ACCEL=0
 
 say()  { printf '%s\n' "$*"; }
 step() { printf '  %s\n' "$*"; }
@@ -45,15 +49,24 @@ usage() {
     cat <<'USAGE'
 Installs the Royals desktop game into ~/Royals (and ~/Applications/Royals.app on macOS).
 
-    sh install-desktop.sh [--dry-run] [--no-launch]
+    sh install-desktop.sh [--dry-run] [--no-launch] [--no-accel]
 
     --dry-run     print what would be done and exit without changing anything
     --no-launch   install, but don't start the game afterwards
+    --no-accel    don't even look for the optional compiled engine
     --help        this
 
     ROYALS_HOME=/some/path sh install-desktop.sh    install somewhere other than ~/Royals
 
-Installs no Python packages and needs no sudo. To remove it: sh uninstall.sh
+Needs no sudo, and the game itself installs no Python packages -- it runs from the
+checkout, because the engine imports the standard library and nothing else.
+
+The one exception is optional and best-effort: if pip is available, this tries for
+royals-accel, a compiled build of the same engine that is about thirty times faster. It
+plays identically; it just thinks quicker. Every way that can fail is treated as "carry
+on without it", and --no-accel skips the attempt entirely.
+
+To remove it: sh uninstall.sh
 USAGE
 }
 
@@ -64,6 +77,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run)   DRY_RUN=1 ;;
         --no-launch) LAUNCH=0 ;;
+        --no-accel)  SKIP_ACCEL=1 ;;
         -h|--help)   usage; exit 0 ;;
         # An unrecognised flag is an error rather than something to ignore. Silently
         # skipping "--no-lanuch" and then launching the game is the kind of surprise this
@@ -219,12 +233,25 @@ fi
 if [ -n "$APP_NOTE" ]; then
     step "skip the app bundle: $APP_NOTE"
 fi
+if [ "$SKIP_ACCEL" -ne 1 ]; then
+    step "try for royals-accel (optional, --user; the game runs fine without it)"
+fi
 if [ "$LAUNCH" -eq 1 ]; then
     step "start the game"
 fi
 say ""
 step "using $PY (Python $PY_VERSION)"
-step "installing no Python packages, and touching nothing outside your home directory"
+# Worth stating precisely rather than reassuringly. The game itself still needs nothing
+# installed -- that has not changed and is the whole point of the stdlib-only rule. What
+# changed is that there is now one optional package this will *try* for, into --user, and
+# saying "installing no Python packages" while doing that would be a lie of exactly the kind
+# an install script should never tell.
+if [ "$SKIP_ACCEL" -eq 1 ]; then
+    step "installing no Python packages, and touching nothing outside your home directory"
+else
+    step "the game needs no Python packages; the one optional extra goes to your user site"
+    step "touching nothing outside your home directory"
+fi
 say ""
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -283,6 +310,44 @@ exec env PYTHONPATH="$ROYALS_HOME/engine/src" "$PY" "$ROYALS_HOME/apps/desktop/r
 LAUNCHER_EOF
 chmod 755 "$LAUNCHER"
 step "wrote $LAUNCHER"
+
+# ---------------------------------------------------------------- the optional accelerator
+#
+# royals-accel is a compiled build of the same engine, about thirty times faster, and the
+# game is entirely playable without it. Everything above this point is the install; this is
+# a bonus that is *tried* and then forgotten about.
+#
+# So it is best-effort on purpose, and every branch below ends in "carry on":
+#
+#   - no pip on the machine                     -> skip
+#   - no wheel built for this platform          -> skip
+#   - offline, or PyPI unreachable              -> skip
+#   - pip refuses to touch a managed environment -> skip
+#
+# The promise at the top of this file is that nothing gets installed and nothing outside
+# your home directory is touched. Turning a failure here into an error would break that
+# promise retroactively: someone whose machine has no wheel would be told the install
+# failed, when what actually happened is that the game will run in Python and be slower.
+#
+# --user keeps it out of any system location, and --only-binary :all: means pip will never
+# quietly decide to build it from source, which would need a Rust toolchain and take
+# minutes. If there is no wheel, there is no install, which is the intended answer.
+ACCEL=0
+if [ "$SKIP_ACCEL" -ne 1 ]; then
+    if "$PY" -m pip --version >/dev/null 2>&1; then
+        step "looking for the optional compiled engine (the game works without it)"
+        if "$PY" -m pip install --user --quiet --only-binary :all: \
+                --disable-pip-version-check royals-accel >/dev/null 2>&1; then
+            # Installing it is not the same as it working: a wheel built for the wrong
+            # architecture installs happily and fails on import. Ask the engine itself.
+            if "$PY" -c 'import royals_accel' >/dev/null 2>&1; then
+                ACCEL=1
+                step "compiled engine installed -- the computer player will think faster"
+            fi
+        fi
+        [ "$ACCEL" -eq 1 ] || step "no compiled engine for this machine; using Python (slower, identical play)"
+    fi
+fi
 
 # The macOS app bundle. tools/build-royals-app.sh already does this properly -- it carries
 # its own copy of the game because an app launched from the Dock cannot read ~/Documents,
