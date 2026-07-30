@@ -9,8 +9,8 @@ dependency-free engine, three front ends (tkinter, terminal, FastAPI+browser), a
 regression suite.
 
 **The engine is implemented twice.** `engine/src/royals_engine/` (Python, stdlib only) is the
-reference implementation and the fallback; `engine-rs/` is a Rust port, about 36x faster, that
-ships as an optional wheel (`royals_accel`) and as a 50 KB wasm module the browser loads.
+reference implementation and the fallback; `engine-rs/` is a Rust port, about thirty-six times
+faster, that ships as an optional wheel (`royals_accel`) and as a wasm module the browser loads.
 Neither replaces the Python — `tests/golden_moves.txt` is a contract both answer to on every
 commit, which is the only reason two implementations are worth having.
 
@@ -23,9 +23,13 @@ current.
 
 `python3`, not `python` — there is no `python` on this machine.
 
+**Every block in this file starts at the repo root.** Where a command has to run somewhere else
+it is wrapped in a subshell, so the next line still begins where the last one did — a bare `cd`
+at the top of a block silently breaks every line under it.
+
 ```bash
-cd tests && python3 regress.py check all      # the goldens
-python3 -m pytest tests/ -q                   # 185 unit tests
+(cd tests && python3 regress.py check all)    # the goldens
+python3 -m pytest tests/ -q                   # the unit tests
 python3 -m py_compile engine/src/royals_engine/*.py apps/*/*.py    # quick syntax check
 ```
 
@@ -33,31 +37,39 @@ python3 -m py_compile engine/src/royals_engine/*.py apps/*/*.py    # quick synta
 which is what CI runs:
 
 ```bash
-cd engine-rs && cargo test                                          # 33 tests
-cargo run --release --bin royals-golden | diff - ../tests/golden_moves.txt   # must be silent
+cargo test --manifest-path engine-rs/Cargo.toml
+cargo run --release --manifest-path engine-rs/Cargo.toml --bin royals-golden \
+  | diff - tests/golden_moves.txt                 # must be silent
 ROYALS_NO_ACCEL=1 python3 -m pytest tests/ -q     # the pure-Python path
-ROYALS_NO_ACCEL=1 python3 regress.py check all    # must match the compiled run exactly
-python3 engine-rs/tests/wasm_parity.py            # the browser's copy, ~24,000 questions
+(cd tests && ROYALS_NO_ACCEL=1 python3 regress.py check all)   # must match the compiled run
+python3 engine-rs/tests/wasm_parity.py            # the browser's copy
 ```
 
 Expected green state: `golden_enter.txt` 445 lines, `golden_moves.txt` 13,051 lines,
-`golden_search.txt` 245 lines identical — **from both implementations** — and 185 tests passing
-(13 accel, 24 break rules, 25 engine-purity, 4 flights, 51 notation, 68 web API). With
-`ROYALS_NO_ACCEL=1` it is 182 passed and 3 skipped; the skips are the tests that need the
+`golden_search.txt` 245 lines identical — **from both implementations** — and 195 tests passing
+(23 accel, 24 break rules, 25 engine-purity, 4 flights, 51 notation, 68 web API). With
+`ROYALS_NO_ACCEL=1` it is 192 passed and 3 skipped; the skips are the tests that need the
 wheel, and skipping is correct — not having it is a supported configuration.
 
-`cargo test` is 33 across six binaries, and `royals-golden` must emit `golden_moves.txt` byte
-for byte. A Python-only run proves almost nothing about what a browser or a wheel-equipped
-machine will do.
+`cargo test` is 33, and `royals-golden` must emit `golden_moves.txt` byte for byte. A
+Python-only run proves almost nothing about what a browser or a wheel-equipped machine will do.
+Note what that 33 leaves out: the seven tests in `engine-rs/src/wasm.rs` are behind
+`--features wasm` and a bare `cargo test` never compiles them, including the one asserting the
+move-kind order `static/engine.js` decodes with. `wasm_parity.py` is what actually guards the
+browser.
 
-All three goldens and all 185 tests also pass under PyPy, and that is worth keeping true — see
+This file is the one place those figures are written down. Everything else points here, because
+a count quoted in five files is a count that will be right in one of them — see the end of this
+file for how to re-measure them.
+
+All three goldens and every test also pass under PyPy, and that is worth keeping true — see
 "Running it under PyPy" in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The trap there is
 sqlite3: CPython finalises a cursor by refcount, PyPy does not, so an `execute` whose
 cursor is left open makes the next `commit` fail. Everything in `persist.py` goes through
 `_run`/`_query`, which close theirs. Don't add a bare `self._conn.execute`.
 
 The web API tests call `pytest.importorskip("fastapi")`, so without `pip install -e ./web`
-they skip silently and the run reports 117 passed, not 185. **Check the count, not just
+they skip silently and the run reports 127 passed, not 195. **Check the count, not just
 the colour.** CI runs them in a separate CPython-only job that installs the web package,
 because the goldens matrix installs the engine alone. Both packages are already installed
 editable in this environment.
@@ -73,11 +85,18 @@ board each produces, and its evaluation.
 If `golden_moves.txt` moves and you did not intend to change the rules, **you have a bug — do not
 re-record it.** `python3 regress.py write all` exists but is almost never the right answer.
 
-**It now binds three things, not one.** The Python engine, the compiled wheel and the browser's
-wasm must all produce it. So a rules change is a change to `engine/src/royals_engine/` *and* to
-`engine-rs/`, and the browser artifact has to be rebuilt — and only then is re-recording even a
-question. If the two engines disagree, exactly one of them is wrong and the goldens will not
-say which; `docs/PORTING.md` is the spec that settles it.
+**It now binds three things, not one** — though not all three the same way. The Python engine
+and the compiled wheel each *emit* the file and must match it byte for byte. The browser's wasm
+is held to the same rules **move by move** instead: `engine-rs/tests/wasm_parity.py` asks the
+shipped module what it asks the Python engine and requires the same answers. That is deliberate
+— diffing the artifact against a fresh build would fail the day the runner's rustc moves, for a
+module that plays exactly the same game, and a check nobody can act on is a check that gets
+switched off. `ci.yml`'s `browser:` job says so at length.
+
+So a rules change is a change to `engine/src/royals_engine/` *and* to `engine-rs/`, and the
+browser artifact has to be rebuilt — and only then is re-recording even a question. If the two
+engines disagree, exactly one of them is wrong and the goldens will not say which;
+`docs/PORTING.md` is the spec that settles it.
 
 Re-recording to make a red build green is the single most expensive mistake available here. It
 converts the one property that makes two implementations worth maintaining into a file that
@@ -131,3 +150,25 @@ Enforced by `tests/test_engine_purity.py`:
 The codebase comments *why*, at length, especially where something is counter-intuitive or
 was arrived at the hard way. Match that. A comment explaining a performance decision or a
 rule's edge case is in keeping here; a comment restating what the line does is not.
+
+Numbers in prose follow one rule: **exact where the reader is meant to check it, rounded into
+words where it is only conveying scale.** "195 tests, and 127 means you forgot the web package"
+is a check and has to be exact. "thirteen thousand lines", "about thirty-six times faster" are
+rhetoric, and a rounded word is still true two commits later where a digit is not. Every count
+in this file is the first kind, which is why they live here and nowhere else.
+
+## Re-measuring this file
+
+Every figure above comes from something that already runs. From the repo root:
+
+```bash
+python3 -m pytest tests/ -q                      # the total, and 195 vs 127 above
+ROYALS_NO_ACCEL=1 python3 -m pytest tests/ -q    # the 192 passed / 3 skipped split
+(cd tests && python3 regress.py check all)       # the three golden line counts
+cargo test --manifest-path engine-rs/Cargo.toml  # the 33
+python3 engine-rs/tests/wasm_parity.py           # prints its own question count
+```
+
+For the per-file breakdown, `python3 -m pytest tests/<file> --collect-only -q` — counting
+`def test_` undercounts badly, because several files parametrise (`test_accel.py` reads as 11
+and collects 23).

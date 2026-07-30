@@ -10,7 +10,7 @@ How Royals is put together, and why. For the rules of the game itself see
 ```
                       ┌─────────────────────────┐
                       │   royals_engine         │   pure stdlib, no UI, no I/O
-                      │   hasher / engine / ai  │
+                      │   hasher / engine / ai  │   (+ royals_accel, if installed)
                       └────────────┬────────────┘
                                    │  imported by
               ┌────────────────────┼────────────────────┐
@@ -18,11 +18,22 @@ How Royals is put together, and why. For the rules of the game itself see
       ┌───────▼──────┐    ┌────────▼───────┐    ┌───────▼────────┐
       │ apps/desktop │    │ apps/terminal  │    │ web/           │
       │ tkinter      │    │ ANSI           │    │ FastAPI + REST │
-      └──────────────┘    └────────────────┘    └────────────────┘
+      └──────────────┘    └────────────────┘    └───────┬────────┘
+                                                        │ serves
+                                                ┌───────▼────────┐
+                                                │ the browser    │
+                                                │ + royals.wasm  │
+                                                └────────────────┘
 ```
 
 One engine, three front ends, and a hard wall between them. The engine does not know
 which of the three is calling it and is forbidden from finding out.
+
+The browser is the fourth consumer and the odd one out: it is served *by* the web front end
+rather than importing anything, and it carries its own copy of the rules — the same rules,
+compiled from the Rust to WebAssembly. That copy answers one question, quickly, and the server
+still decides. See "The engine exists twice" below, and "The web layer" for the one rule the
+page is allowed to get wrong.
 
 ## The engine exists twice
 
@@ -35,13 +46,21 @@ The rules are implemented in Python and again in Rust, and **both are kept**.
             │                               │
             │                  ┌────────────┴────────────┐
             │                  │                         │
-            │           royals_accel wheel        royals.wasm (50 KB)
+            │           royals_accel wheel           royals.wasm
             │           optional; import          shipped in static/,
             │           it and ai.py uses it      the browser's own copy
             │                  │                         │
             └──────────────────┴──── tests/golden_moves.txt ────┘
-                          all three must agree, byte for byte
+              two of them emit it byte for byte; the third is
+                    held to the same rules, move by move
 ```
+
+**~36x** is measured, and worth stating precisely because everything else here rests on it: a
+depth-6 search from the position `golden_search.txt`'s first game starts from takes 3.16s in
+CPython and 0.091s through the wheel — 23,000 nodes a second against 810,000 — on the laptop
+this was developed on. At that ratio the compiled engine reaches depth 9 in the time Python
+takes for depth 6, which is what "three plies deeper" means elsewhere in the docs.
+`cargo run --release --example bench` in `engine-rs/` reproduces the Rust half.
 
 Not a migration with a leftover. The Python is the **reference implementation** — it is what
 `golden_moves.txt` was recorded from, it is the fallback when no wheel is present, and it is
@@ -70,11 +89,38 @@ silently falling back.
 
 **`static/royals.wasm` is the one artifact that can go stale silently.** Edit `movegen.rs`,
 forget to rebuild, and the page highlights yesterday's rules while every test stays green.
-`engine-rs/tests/wasm_parity.py` is the guard: it asks the *shipped* module the same ~24,000
-questions the Python engine is asked, and CI checks a freshly built one too, so "the rules
-diverged" and "somebody forgot to rebuild" are distinguishable.
+`engine-rs/tests/wasm_parity.py` is the guard: it asks the *shipped* module what the Python
+engine is asked — every position along the port fixtures' walks, both sides, every square,
+carrying prisoners and not, and it prints how many questions that came to — and CI checks a
+freshly built one too, so "the rules diverged" and "somebody forgot to rebuild" are
+distinguishable.
 
-For the spec a second implementation is written against, see [PORTING.md](PORTING.md).
+It is checked behaviourally rather than by diffing the artifact against a fresh build, and
+that is a deliberate choice: a byte comparison would fail the day the CI runner's rustc moves,
+for a module that plays exactly the same game. A check nobody can act on is a check that gets
+switched off.
+
+For the spec all of them are written against, see [PORTING.md](PORTING.md).
+
+### Building the two artifacts
+
+Neither is produced by `pip install -e ./engine`, and both are needed to check a rules change
+end to end. From the repo root:
+
+```bash
+maturin build --release --manifest-path engine-rs/Cargo.toml   # the royals_accel wheel
+
+cargo build --release --features wasm --target wasm32-unknown-unknown \
+  --manifest-path engine-rs/Cargo.toml                          # the browser's copy
+cp engine-rs/target/wasm32-unknown-unknown/release/royals_engine.wasm \
+   web/src/royals_web/static/royals.wasm
+```
+
+The wheel is `abi3-py310`, so one build per platform covers every CPython from 3.10 up; CI
+builds four (Linux x86-64, macOS arm64 and x86-64, Windows) on every commit and never publishes
+them — an accelerator that ships itself is one nobody decided to ship. The wasm needs
+`rustup target add wasm32-unknown-unknown` and nothing else: no npm, no wasm-bindgen, no
+generated glue. [PORTING.md](PORTING.md) §10 says why.
 
 ## The engine's one rule
 
@@ -83,24 +129,30 @@ For the spec a second implementation is written against, see [PORTING.md](PORTIN
 stops being true — or if anything in the engine imports tkinter, calls `input()`, or
 prints.
 
-This is not tidiness. The same modules run in a tkinter window, in a terminal, in a web
-worker serving many games at once, and eventually in a browser under Pyodide. **A module
-that prints to stdout or blocks on stdin has decided which of those it is.** It is also a
-security property: no third-party code sits in the path that validates a move.
+This is not tidiness. The same modules run in a tkinter window, in a terminal, and in a web
+worker serving many games at once. **A module that prints to stdout or blocks on stdin has
+decided which of those it is.** It is also a security property: no third-party code sits in the
+path that validates a move — `royals_accel` is whitelisted and is the only exception, because
+it is these same rules compiled rather than somebody else's code.
 
 The engine targets **Python ≥ 3.10, not 3.12**, so it keeps running under PyPy — several
-times faster on this search, and the intended interpreter for the server's AI worker.
+times faster than CPython on this search, which is what the fallback has to work with on a
+machine the wheel was never built for.
 
 ### Modules
 
-| Module | Lines | What it is |
-|---|---|---|
-| `hasher.py` | 327 | Board representation. 49 ints, 13 bits each. |
-| `engine.py` | 949 | Move generation, validation, execution, entering, ko. |
-| `ai.py` | 981 | Alpha-beta search and position evaluation. |
-| `notation.py` | 352 | Text and JSON forms of moves and boards. |
-| `perlin.py` | 108 | 2D noise, used only to vary the computer's opening. |
-| `compat.py` | 39 | Two helpers that outlived the legacy `RoyalsLib`. |
+| Module | What it is |
+|---|---|
+| `hasher.py` | Board representation. 49 ints, 13 bits each. |
+| `engine.py` | Move generation, validation, execution, entering, ko. |
+| `ai.py` | Alpha-beta search and position evaluation. |
+| `notation.py` | Text and JSON forms of moves and boards. |
+| `perlin.py` | 2D noise, used only to vary the computer's opening. |
+| `compat.py` | Two helpers that outlived the legacy `RoyalsLib`. |
+| `_accel.py` | Finds `royals_accel` or doesn't, honours `ROYALS_NO_ACCEL`, and reports which engine is answering. |
+
+(No line counts. They moved every commit and told a reader nothing they could act on; what the
+table is for is saying what each module is *for*.)
 
 Modules keep their original CamelCase function names, so they are conventionally imported
 aliased:
@@ -227,13 +279,20 @@ FastAPI, in `web/src/royals_web/`:
 
 | File | What it does |
 |---|---|
-| `main.py` | HTTP routing, authorization, request limits. Decides *who may ask*. |
+| `main.py` | HTTP routing, authorization, request limits, and the security headers. Decides *who may ask*. |
 | `game.py` | Game state and move validation. Decides *what is legal*. |
 | `seats.py` | Seat tokens: mint, hash, constant-time compare. |
 | `ai_pool.py` | Process pool, concurrency cap, wall-clock deadline per search. |
 | `store.py` | Bounded in-memory cache in front of the database; per-client rate limits. |
 | `persist.py` | SQLite. One row per game, holding the move list rather than the board. |
-| `static/` | The browser client — `index.html`, `app.js`, `board.js`, `style.css`. |
+| `limits.py` | ASGI middleware bounding a request body before it is read, which an HTTP-level check cannot do. |
+| `static/` | The browser client — `index.html`, `app.js`, `board.js`, `style.css`, plus `engine.js` and `royals.wasm`. |
+
+One thing in `main.py` is worth naming here rather than leaving in the source: the
+Content-Security-Policy carries `'wasm-unsafe-eval'`, without which Chrome refuses to compile
+`royals.wasm` at all. Despite the name it is the narrow token — it permits WebAssembly
+compilation and nothing else, and `'unsafe-eval'` proper stays refused. It is the one
+relaxation the browser engine cost.
 
 The design rests on two rules. The first:
 
@@ -246,7 +305,20 @@ plays by, so a person and the machine are held to literally the same rules, and 
 legal?" is a tuple membership test rather than a second, subtly different implementation of
 the rulebook.
 
-The second, which arrived with two players:
+**The page's own copy of the engine does not weaken that, and the asymmetry is worth being
+precise about.** `static/engine.js` drives `royals.wasm` to answer "which squares can this
+piece reach" without a round trip — 100ms a pick-up on mobile data, for a question about a
+position the page was already holding. But the module holds a *position*, not a *history*, so
+it cannot apply the rule that a move may not return the game to a position it has already
+stood in. What it returns is therefore a **superset**: every legal move, plus any that repeat.
+
+That is not a rounding error — 43% of positions along the regression walks have at least one
+move struck off by ko — so the page draws the local answer immediately and then reconciles
+against the server's, which can only ever take squares away. The server is unchanged and
+still re-derives everything on submission. The local copy exists to make the page quick, never
+to make it right.
+
+The second rule, which arrived with two players:
 
 > **Every endpoint that changes a game asks who is asking.**
 
@@ -324,8 +396,11 @@ database path appear wherever someone happened to run the server from.
 ## Running it under PyPy
 
 The engine's whole no-dependencies discipline exists to keep this available, and the
-server runs under PyPy too — the full suite passes on both interpreters and both goldens
-come out byte-identical. Installing it needs three lines rather than the usual two:
+server runs under PyPy too — the full suite passes on both interpreters and all three goldens
+come out byte-identical. What PyPy does *not* get is the accelerator: `royals_accel` is an
+abi3 CPython wheel, so a PyPy run is always the pure-Python path and `test_accel.py` skips.
+That is the configuration it is there to keep honest. Installing it needs three lines rather
+than the usual two:
 
 ```bash
 pypy3 -m pip install -e ./engine
@@ -366,32 +441,35 @@ rather than a live bug — but it is a float path in the phase PyPy helps most.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for the workflow. In short:
 
-- **`tests/golden_moves.txt`** — the rules contract. 13,051 lines. Every legal move from a spread
+- **`tests/golden_moves.txt`** — the rules contract. Thirteen thousand lines. Every legal move from a spread
   of positions, the board it produces, and what the evaluator thinks it is worth. Must stay
   byte-identical.
 - **`tests/golden_search.txt`** — node counts per move. Expected to churn.
-- **`tests/test_engine_purity.py`** — enforces the no-dependencies, no-UI rule. (25)
-- **`tests/test_notation.py`** — round-trips for the text and JSON move forms. (51)
-- **`tests/test_web_api.py`** — the REST surface, against FastAPI's `TestClient`. (68)
-- **`tests/test_break_rules.py`** — what a break may fall onto, and freeing. (24)
-- **`tests/test_flights.py`** — `moveFlights` against the executors. (4)
+- **`tests/test_engine_purity.py`** — enforces the no-dependencies, no-UI rule.
+- **`tests/test_notation.py`** — round-trips for the text and JSON move forms.
+- **`tests/test_web_api.py`** — the REST surface, against FastAPI's `TestClient`.
+- **`tests/test_break_rules.py`** — what a break may fall onto, and freeing.
+- **`tests/test_flights.py`** — `moveFlights` against the executors.
 - **`tests/test_accel.py`** — the optional accelerator: that boards come back hashable, that
-  `ROYALS_NO_ACCEL` is honoured, and that clearing game state and capping the transposition
-  table both reach the compiled side. (13)
+  `ROYALS_NO_ACCEL` is honoured, that clearing game state and capping the transposition table
+  both reach the compiled side, and that both engines refuse malformed input the same way.
 
 And outside pytest, because they check the other implementation:
 
-- **`cargo test`** in `engine-rs/` — 33 across six binaries, including the tables checked
-  against dumps taken from the Python.
+- **`cargo test`** in `engine-rs/` — the unit tests plus three integration targets, including
+  the tables checked against dumps taken from the Python. Note that it does *not* compile the
+  tests in `src/wasm.rs`, which are behind `--features wasm`.
 - **`engine-rs/src/bin/royals-golden.rs`** — emits `golden_moves.txt`; must match byte for byte.
-- **`engine-rs/tests/wasm_parity.py`** — asks the shipped `static/royals.wasm` ~24,000
-  questions and compares against the Python engine.
+- **`engine-rs/tests/wasm_parity.py`** — asks the shipped `static/royals.wasm` what the Python
+  engine is asked, and reports how many questions that came to.
 
-185 in total under pytest. The web tests import `fastapi`, so the full suite needs the server installed
+The web tests import `fastapi`, so the full suite needs the server installed
 (`pip install -e ./web`); the engine's own tests need nothing but the standard library,
 which is the point. CI runs them in their own CPython-only job for that reason — the
 goldens matrix installs the engine alone, so `importorskip` would turn the entire server
-into a silent pass there.
+into a silent pass there. **The totals each of these should report are in
+[CLAUDE.md](../CLAUDE.md)**, written down once so they cannot drift apart; check yours against
+those rather than against a number quoted here.
 
 ## The Backup directory
 

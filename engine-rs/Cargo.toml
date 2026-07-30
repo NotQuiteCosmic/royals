@@ -2,10 +2,9 @@
 # implementation and the fallback -- see docs/PORTING.md -- so this crate is optional at
 # every level: an optional dependency of the wheel, an optional wheel for the app.
 #
-# Every feature and optional dependency the port will ever need is declared here on day one,
-# even though only `board` and `tables` exist yet. That is deliberate: this file and
-# src/lib.rs are the only two files more than one workstream would otherwise want to touch,
-# so they land complete and then nobody edits them again.
+# Every feature and optional dependency is declared here rather than added as each one was
+# needed, which is why this file has barely changed since the port started: the shape of the
+# crate was settled before the modules existed, so nothing about adding a rule touches it.
 
 [package]
 name = "royals-engine"
@@ -18,19 +17,20 @@ license = "MIT"
 publish = false
 
 [lib]
-# maturin renames the cdylib to whatever pyproject.toml's module-name says (W5 wires that up
-# as royals_engine._rust), so this stays the Rust-side crate name and nothing more.
+# maturin renames the cdylib to whatever pyproject.toml's module-name says -- `royals_accel`,
+# top-level and deliberately not `royals_engine._rust`; see _accel.py for why -- so this is
+# the Rust-side crate name and nothing more.
 name = "royals_engine"
 crate-type = ["rlib", "cdylib"]
 
 [features]
 default = []
-# W5: PyO3 bindings, built by maturin into the royals_engine package.
+# The PyO3 bindings, built by maturin into the royals_accel wheel.
 python = ["dep:pyo3"]
-# W6: the browser build. Single-threaded, no SharedArrayBuffer.
+# The browser build. Single-threaded, no SharedArrayBuffer.
 #
-# It carries **no dependency**, where the skeleton expected wasm-bindgen. Two reasons, found
-# on turning it on: the wasm-bindgen CLI that must match the crate needs rustc 1.86 against
+# It carries **no dependency**, where wasm-bindgen would be the obvious one. Two reasons, both
+# found on turning it on: the wasm-bindgen CLI that must match the crate needs rustc 1.86 against
 # this crate's 1.80, so rebuilding the module would need a second pinned tool on top of the
 # target -- and the interface turned out to be two byte buffers and five integers, which is
 # nothing to generate glue for. `src/wasm.rs` exports plain C functions and `static/engine.js`
@@ -39,8 +39,9 @@ python = ["dep:pyo3"]
 wasm = []
 
 [dependencies]
-# Versions pinned to what the toolchain in this repo builds today rather than to the newest
-# release; bump them in the workstream that first turns the feature on.
+# Pinned to what the toolchain in this repo builds rather than to the newest release. Bumping
+# one is a deliberate act: `rust-version` above is what the CI wheel job and anybody's `cargo
+# build` have to satisfy.
 pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"], optional = true }
 
 # No dev-dependencies, and none are wanted. The table-conformance tests parse the Python

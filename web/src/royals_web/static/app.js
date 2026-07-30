@@ -24,6 +24,22 @@ import * as engine from "/static/engine.js";
 
 const $ = (id) => document.getElementById(id);
 
+// Which engine is answering, in the corner of the header.
+//
+// `engine.ready` never rejects -- it resolves false when the module could not be loaded, and
+// the page keeps working by asking the server -- so this needs no catch and has no failure
+// path of its own. It resolves *after* the badge has already rendered in its muted state,
+// which is the point: the honest answer is shown first and upgraded only once earned.
+engine.ready.then((local) => {
+  const badge = $("engine-badge");
+  if (!badge) return;
+  badge.classList.toggle("is-local", local);
+  badge.querySelector(".engine-badge-tag").textContent = local ? "RS" : "PY";
+  badge.title = local
+    ? "Playing with the engine built into this page — squares light up instantly."
+    : "Asking the server for legal moves — a little slower, exactly the same game.";
+});
+
 const el = {
   setup: $("setup"), game: $("game"), legend: $("legend"), share: $("share"),
   board: $("board"), marks: $("marks"), overlay: $("overlay"), overlayText: $("overlay-text"),

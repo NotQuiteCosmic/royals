@@ -148,8 +148,8 @@ jobs:
   # Python engine is the source, and the accelerator is rebuilt from source above.
   #
   # So the shipped module is asked what the Python engine is asked -- every position along the
-  # port fixtures' walks, every square, both sides, carrying prisoners and not, about 24,000
-  # questions -- and has to answer the same. A freshly built module is checked the same way,
+  # port fixtures' walks, every square, both sides, carrying prisoners and not -- and has to
+  # answer the same. A freshly built module is checked the same way,
   # which is what separates "the Rust and Python rules have diverged" from "somebody forgot to
   # rebuild the artifact". Those want different fixes and the script says which it found.
   #

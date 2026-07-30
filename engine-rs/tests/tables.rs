@@ -1,16 +1,16 @@
 //! Every startup table, checked element for element against a dump from the Python engine.
 //!
-//! This is the cheapest bug-catcher in the port and it runs before any game rule exists: if
-//! the encoding or the geometry disagrees by one square, W3 and W4 would find out as a
-//! mismatch somewhere in a 13,496-line golden diff instead of as a failing assert naming the
-//! square. Re-dump with:
+//! This is the cheapest bug-catcher in the crate, and it needs no game rule to be right: the
+//! encoding and the geometry are settled before a move is generated, so if either disagrees
+//! by one square this says which square, where every test above it would say only that a
+//! golden diff thousands of lines long had moved. Re-dump with:
 //!
 //! ```text
 //! python3 engine-rs/tests/fixtures/dump_tables.py
 //! ```
 //!
 //! A fixture that moves means the Python side's tables moved, which is a rules change and
-//! needs the same justification `golden.txt` does. The files are whitespace-separated
+//! needs the same justification `golden_moves.txt` does. The files are whitespace-separated
 //! integers rather than JSON so that this test needs no dev-dependency and `cargo test`
 //! works offline.
 

@@ -1,9 +1,11 @@
 """Whether a compiled accelerator is available, and the one switch that turns it off.
 
 The engine has two implementations. The modules around this one are the reference: they are
-pure standard library, they run under CPython and PyPy and Pyodide alike, and they are what
+pure standard library, they run under CPython and PyPy alike, and they are what
 `tests/golden_moves.txt` was recorded from. `royals_accel` is an optional wheel carrying the
-same rules compiled, and installing it is the only thing that turns it on.
+same rules compiled, and installing it is the only thing that turns it on. (PyPy never has
+it: the wheel is abi3 CPython, so PyPy is always this path, which is one of the reasons it is
+worth keeping fast.)
 
 **Not installing it is a supported configuration, not a degraded one.** That is what lets
 install-desktop.sh promise that nothing needs installing, and it is why this module fails

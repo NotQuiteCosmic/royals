@@ -51,12 +51,27 @@ PIECE_NAMES = {Hasher.ROYAL: "royal", Hasher.PAWNS: "pawn", Hasher.SPY: "spy"}
 
 # Depth is the whole of the difficulty setting. Times measured on a midgame position;
 # a small cloud VM should be assumed to be roughly three times slower.
+# Depths, and roughly what each costs with the compiled engine. Re-laddered when the Rust
+# port landed: the search got about thirty-six times faster, so the whole previous ladder
+# (2 through 6) had come to cost less than `novice` used to, and `royal` -- the setting a
+# player picks when they want to be beaten -- was answering in under a tenth of a second.
+#
+# The speed is spent on strength rather than latency: every rung moved up about three plies,
+# which is what a 36x search buys at an effective branching factor of ~3.4, and the top rung
+# still costs roughly what the top rung always cost. A player who chose `royal` gets the same
+# few seconds of waiting and a considerably better opponent for it.
+#
+# **These map a name to a depth at creation time and nowhere else.** A game stores its
+# `ai_depth` as an integer and `replay()` takes that integer straight back, so an in-flight
+# game started under the old ladder keeps playing at the depth it was created with -- a game
+# saved as `royal` is still a depth-6 game and does not silently become something else.
+# Nothing reverse-maps a depth to a name, so there is no display to go stale either.
 DIFFICULTIES = {
-    "novice": 2,    # ~0.01s
-    "casual": 3,    # ~0.04s
-    "strong": 4,    # ~0.11s
-    "expert": 5,    # ~0.53s
-    "royal":  6,    # ~1.9s
+    "novice": 3,    # ~0.001s
+    "casual": 5,    # ~0.016s
+    "strong": 7,    # ~0.19s
+    "expert": 8,    # ~0.82s
+    "royal":  9,    # ~3.1s
 }
 DEFAULT_DIFFICULTY = "strong"
 
@@ -104,6 +119,12 @@ def legal_moves(board, contr, ko_boards):
 
     So this function serves all three callers: the move validator, the UI's highlighting,
     and the pass/draw detector. Nothing else may decide what is legal.
+
+    The page does now compute an answer of its own, in wasm, so that highlighting need not
+    wait for a round trip -- but it holds a position and not a history, so what it produces
+    is a superset of this: every legal move, plus any that the ko filter above strikes off.
+    It is drawn immediately and then reconciled against this one, which can only ever take
+    squares away. Deciding and answering are different jobs; this is the one that decides.
     """
     return [m for m in AI.listAllMoves(board, contr)
             if AI.performOneStep(board, contr, m) not in ko_boards]
@@ -432,9 +453,11 @@ def play_move(game, move, side=None):
         return game
 
     if move not in legal:
-        # Deliberately not explaining which rule it broke: the client should be asking
-        # for legal moves, not guessing, and a validator that narrates is a validator
-        # that can be used to probe the position.
+        # Deliberately not explaining which rule it broke: a validator that narrates is a
+        # validator that can be used to probe the position. A well-behaved client rarely
+        # arrives here -- it asks what is legal first -- but it legitimately can, because the
+        # copy of the engine in the page cannot see the ko history and will offer a repeat.
+        # That is a move to refuse plainly, not to explain.
         raise IllegalMove("that is not a legal move")
 
     game.passes = 0
@@ -616,7 +639,13 @@ def board_to_json(board):
 
     The browser gets parsed squares rather than packed integers on purpose: unpacking
     13-bit fields in JavaScript would be a second implementation of the board format,
-    and the moment there are two, they disagree. The client draws what it is told.
+    and the moment there are two, they disagree.
+
+    That is still true, and it is why this shape survived the page gaining an engine. The
+    wasm module is handed these same fields and does its own packing with the one function
+    that knows how -- so the format has exactly two implementations, both compiled from the
+    rules, and engine-rs/tests/wasm_parity.py is what holds them to each other. JavaScript
+    has none, which is the point.
     """
     out = []
     for code in board:

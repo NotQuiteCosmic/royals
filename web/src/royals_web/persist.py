@@ -177,10 +177,11 @@ class Database:
     #
     #     sqlite3.OperationalError: cannot commit transaction - SQL statements in progress
     #
-    # It is not a fussy difference. Every write here failed under PyPy, which is the
-    # interpreter the engine bends over backwards to stay compatible with because it runs
-    # the search several times faster. Keeping that door open in the engine is worth
-    # nothing if the server around it cannot open a database.
+    # It is not a fussy difference. Every write here failed under PyPy, which the engine
+    # bends over backwards to stay compatible with: it runs the search several times faster
+    # than CPython does, and it is what a deployment has for speed when the compiled wheel
+    # is not an option -- that wheel is abi3 CPython, so PyPy never gets it. Keeping the door
+    # open in the engine is worth nothing if the server around it cannot open a database.
     #
     # fetchone() is not enough either: a SELECT that matched a row is only part-read, so
     # the statement stays open exactly the same way.

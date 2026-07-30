@@ -24,6 +24,20 @@
 <div id="app">
 
   <header class="topbar">
+    <!--
+      Which engine is answering. The page carries its own copy of the rules (engine.js and
+      royals.wasm) so that picking a piece up is instant; when that fails to load the page
+      still works, it just asks the server every time and the squares light up a round trip
+      later. That is a real difference in feel and nothing else on screen shows it.
+
+      Muted until engine.js says otherwise, so the honest state is the default: a badge that
+      claimed the fast path before the module had loaded would be wrong for the first moment
+      of every visit, and wrong permanently if the fetch failed.
+    -->
+    <span id="engine-badge" class="engine-badge" title="Checking the local engine…">
+      <span class="engine-badge-stack" aria-hidden="true"></span>
+      <span class="engine-badge-tag">PY</span>
+    </span>
     <h1>Royals</h1>
     <p class="tagline">Gather your spy, four pawns and royal onto one square.</p>
   </header>

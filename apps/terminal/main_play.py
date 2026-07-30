@@ -55,12 +55,22 @@ if setting == 0:
 
 	if gameMode == 2: humanSides = [False, False]
 
-	# the search roughly sextuples in cost per level: 2 is near-instant, 3 about a second
-	# and a half, 4 closer to ten.
+	# The search roughly triples in cost per level, and where that becomes a wait depends
+	# entirely on which engine is answering. With the compiled one (the royals-accel wheel):
+	# 7 is about a fifth of a second, 8 under a second, 9 about three. Without it, in pure
+	# Python, subtract three from all of those -- 6 is already a couple of seconds and 8 is
+	# most of a minute.
+	#
+	# This comment used to say "3 about a second and a half, 4 closer to ten", which was the
+	# pure-Python cost before the packed-int board and then the Rust port; both numbers had
+	# been wrong for two rewrites. The prompt asks which engine is running rather than
+	# guessing, so the advice it gives is about the machine it is actually on.
 	if gameMode != 0:
+		fast = artificialPlayer._accel.active()
+		advice = "7 to 9 recommended" if fast else "4 or 5 recommended — no compiled engine here"
 		depthCheck = False
 		while not depthCheck:
-			depthIn = input("How deep should the computer calculate? (3 or 4 recommended)   ")
+			depthIn = input("How deep should the computer calculate? (%s)   " % advice)
 			if depthIn.isdigit() and int(depthIn) > 0:
 				aiDepth = int(depthIn)
 				depthCheck = True
@@ -176,7 +186,11 @@ if setting == 0:
 			beforeLast = lastMove
 
 			if humanSides[contr]:
-				tOrigin = Engine.getOrigin(board, contr)
+				# `getOrigin`, not `Engine.getOrigin`. It moved to prompt.py when the engine
+				# package became importable by a web worker -- it blocks on input(), which a
+				# server has no answer for -- and this call site was left behind, so every
+				# human turn raised AttributeError. See the import at the top of this file.
+				tOrigin = getOrigin(board, contr)
 				#print(Engine.sumWeight(tOrigin))
 				# an origin carries its own square now, so there is nothing to resolve.
 				origin = tOrigin[Engine.ORIGIN_SQUARE]

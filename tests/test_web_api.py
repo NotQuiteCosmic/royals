@@ -1089,27 +1089,38 @@ def test_a_game_played_over_http_survives_a_restart(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_the_search_depth_can_be_capped(client, monkeypatch):
-    """A depth-6 search is seconds of pinned CPU that anyone can ask for by clicking a
+    """The deepest search is seconds of pinned CPU that anyone can ask for by clicking a
     menu. On a laptop nobody else can reach, that is fine; on a public address it is the
-    one request that costs meaningfully more than it takes to make."""
+    one request that costs meaningfully more than it takes to make.
+
+    The cap and the names are derived from DIFFICULTIES rather than written down. This test
+    used to hard-code `MAX_DEPTH = 4` and expect `strong` to survive it, which was true of
+    one particular ladder and stopped being true the moment the ladder moved -- the mechanism
+    was still correct and the test still failed. What is worth asserting is that capping
+    keeps the shallow end and drops the deep end, whatever the numbers happen to be.
+    """
     from royals_web import main as M
 
     monkeypatch.setattr(M, "MAX_DEPTH", None)
     assert set(M.allowed_difficulties()) == set(G.DIFFICULTIES), "uncapped by default"
 
-    monkeypatch.setattr(M, "MAX_DEPTH", 4)
+    by_depth = sorted(G.DIFFICULTIES.items(), key=lambda kv: kv[1])
+    kept_name, kept_depth = by_depth[1]     # the second-shallowest survives the cap
+    dropped_name = by_depth[-1][0]          # the deepest does not
+
+    monkeypatch.setattr(M, "MAX_DEPTH", kept_depth)
     offered = M.allowed_difficulties()
-    assert "royal" not in offered and "expert" not in offered
-    assert "strong" in offered and max(offered.values()) == 4
+    assert dropped_name not in offered
+    assert kept_name in offered and max(offered.values()) == kept_depth
 
     # what the menu offers and what the server accepts are the same list
     listed = {d["name"] for d in client.get("/api/difficulties").json()["difficulties"]}
     assert listed == set(offered)
 
-    refused = client.post("/api/games", json={"mode": "ai", "difficulty": "royal"})
+    refused = client.post("/api/games", json={"mode": "ai", "difficulty": dropped_name})
     assert refused.status_code == 422, refused.text
     assert client.post("/api/games",
-                       json={"mode": "ai", "difficulty": "strong"}).status_code == 200
+                       json={"mode": "ai", "difficulty": kept_name}).status_code == 200
 
 
 def test_a_cap_never_leaves_an_empty_menu(monkeypatch):

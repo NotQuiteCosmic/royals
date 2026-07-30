@@ -10,9 +10,14 @@
 #
 # Both are verified before anything is removed. If either path turns out to be something
 # else -- a directory you happen to have called Royals, an app somebody else built -- it
-# is reported and left exactly where it is. Nothing else on the machine is touched, because
-# the installer never put anything anywhere else: no packages, no PATH entries, no
-# shell-profile edits.
+# is reported and left exactly where it is.
+#
+# One thing that is not a path also goes: royals-accel, the optional compiled engine, if the
+# installer managed to get it. That is the only package involved and removing it is
+# best-effort, exactly as installing it was. Nothing else on the machine is touched, because
+# the installer never put anything anywhere else: no PATH entries, no shell-profile edits.
+# --dry-run lists the package alongside the paths, so nothing is uninstalled that the dry run
+# did not warn about.
 #
 #     sh uninstall.sh --dry-run    list what would be removed, remove nothing
 #     sh uninstall.sh --yes        don't ask for confirmation

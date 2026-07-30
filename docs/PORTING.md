@@ -2,16 +2,37 @@
 
 This is the specification a second implementation of the Royals engine is written against.
 It exists because [`tests/golden_moves.txt`](../tests/golden_moves.txt) is a
-**cross-language conformance oracle** — 13,051 lines stating what every legal move does to
-the board and what every resulting position is worth, in terms of parsed fields and square
-numbers and never in terms of how a board is stored. Any implementation that plays the same
-game produces that file byte for byte.
+**cross-language conformance oracle** — thirteen thousand lines stating what every legal move
+does to the board and what every resulting position is worth, in terms of parsed fields and
+square numbers and never in terms of how a board is stored. Any implementation that plays the
+same game produces that file byte for byte.
 
 > **The bar: a port is correct when its emitter's output is byte-identical to
 > `golden_moves.txt`. Not "equivalent", not "passes the tests". Identical.**
 
-If you are reading this to write the Rust engine, you should need nothing else. Read
-[RULES.md](RULES.md) for why the rules are what they are; read this for what to build.
+Read [RULES.md](RULES.md) for why the rules are what they are; read this for what to build.
+
+## Where this stands
+
+**The port described here has been written.** [`engine-rs/`](../engine-rs) is the Rust engine,
+and it reaches players two ways: as `royals_accel`, an optional wheel the Python package
+delegates to (§9), and as `static/royals.wasm`, the copy the browser runs (§10). Each is held
+to this specification on every commit — the wheel by emitting `golden_moves.txt` byte for byte
+and by running the whole suite twice, once forced onto each engine; the browser's copy by
+being asked what the Python engine is asked. `.github/workflows/ci.yml` is where all of that
+runs.
+
+**This file stays in the imperative anyway, and that is deliberate.** Its job is not to
+describe `engine-rs/` — the code is better at that, and CLAUDE.md gives this file a different
+one: *when the two engines disagree, exactly one of them is wrong and the goldens will not say
+which.* A document written from the code cannot settle that argument, because it would have
+inherited whatever the code got wrong. So what follows is written to be readable by someone
+who has never opened `engine-rs/`, and every section states what the rules **are** rather than
+what some file currently does. Where a section is now implemented, it names the file — as a
+place to look, not as its source of truth.
+
+A third implementation is not hypothetical, either. The browser's was the second port, it went
+in after this document was first written, and §10 exists because this file did not describe it.
 
 ---
 
@@ -38,6 +59,7 @@ Everything in the "Port" column is integer-only and free of any language's RNG.
 
 A board is **49 squares in reading order**, each packing one square into 13 bits. In Rust:
 `[u16; 49]`, `Copy`, 98 bytes — no allocation, no reference counting.
+*(Implemented in `engine-rs/src/board.rs`; the tables built from it in `tables.rs`.)*
 
 | Bits | Field |
 |---|---|
@@ -70,7 +92,7 @@ the eight fields already say. They exist because move generation asks for them m
 times per search and a table lookup beats a re-derivation.
 
 Precompute all 8,192 codes at startup (`UNPACK`). Do not ship it as data — build it, then
-check it. `fixtures/port_fixtures.json` carries `unpack_sha256`, the SHA-256 of
+check it. `tests/fixtures/port_fixtures.json` carries `unpack_sha256`, the SHA-256 of
 `",".join(",".join(str(v) for v in row) for row in UNPACK)`. Match that digest before
 writing another line of code; almost every encoding mistake shows up here, cheaply.
 
@@ -125,7 +147,10 @@ exactly that.
 
 Concretely:
 
-- **`math.isqrt` is an exact integer square root** (floor). Rust: `u64::isqrt`. Verify the
+- **`math.isqrt` is an exact integer square root** (floor). Rust has `u64::isqrt`, but only
+  from 1.84 — `engine-rs/` pins `rust-version = "1.80"` and carries its own integer Newton in
+  `eval.rs` rather than raise the floor for one function. Whatever you use, do not reach for a
+  float `sqrt`: that is the precise hazard this section exists about. Verify the
   truncation agrees on a fixture sweep rather than assuming.
 - **`spreadPenalty`** computes `isqrt(9 * SCALE * SCALE * q) / (2 * n)`, where
   `q = max(n*sx2 − sx*sx, n*sy2 − sy*sy)`. Both operands are non-negative here, so Rust's
@@ -141,6 +166,8 @@ ported. See §1.
 ---
 
 ## 5. Move generation order
+
+*(Implemented in `engine-rs/src/movegen.rs`.)*
 
 **The order moves are generated is part of the contract.** `golden_moves.txt` records moves
 sorted by `moveText`, so generation order does not show there directly — but the fixture
@@ -173,6 +200,8 @@ It returns an **empty list** — not a six-list of empties — when there are no
 ---
 
 ## 6. Executors: the three that bite
+
+*(Implemented in `engine-rs/src/exec.rs`.)*
 
 ### `exePush` — build all payloads, then commit ascending
 
@@ -221,6 +250,8 @@ move and you would not know which change did it.
 ---
 
 ## 7. Search
+
+*(Implemented in `engine-rs/src/search.rs`, with the evaluator in `eval.rs`.)*
 
 ### Transposition table
 
@@ -271,7 +302,9 @@ window opens at `±INFINITY`. Node counts land in `golden_search.txt`.
 
 ## 8. The emitter
 
-Build a binary that reproduces the MOVES sweep. Formats, exactly:
+A binary reproduces the MOVES sweep and its output is diffed against the golden. Formats,
+exactly (`engine-rs/src/bin/royals-golden.rs` is the one that exists; `engine-rs/tests/`
+carries the two integration tests that run it and the search sweep on every `cargo test`):
 
 **Board** — for each of 49 squares, skip if all eight semantic fields are zero, else
 `IndexToAlg(i) + ":" + fields joined by ","`. Squares joined by `"|"`. Empty board is
@@ -331,10 +364,10 @@ a fixture dump can never certify a walk the recorded file doesn't take.
 
 ## 9. The accelerator contract
 
-The compiled engine is **optional**. `royals_engine` keeps its exact Python API and falls
-back to the pure-Python modules when no extension is present — that is what keeps
-`install-desktop.sh`'s "no pip required" promise true, keeps `test_engine_purity.py`
-meaningful, and keeps the PyPy cross-check alive.
+The compiled engine is **optional**. `royals_engine` keeps its exact Python API and falls back
+to the pure-Python modules when no extension is present — that is what lets `install-desktop.sh`
+promise that nothing the game needs gets installed, keeps `test_engine_purity.py` meaningful,
+and keeps the PyPy cross-check alive (PyPy never has the wheel: it is abi3 CPython).
 
 **`ROYALS_NO_ACCEL=1` forces the pure-Python path** even when an extension is installed.
 Everything that dispatches must honour it. CI runs the whole suite both ways and requires
@@ -344,25 +377,128 @@ worth their cost.
 The search crosses the FFI boundary **once per move, not once per node**, so marshalling
 cost is irrelevant where it matters. A board is 49 small integers.
 
+**Read the switch once, at import.** Flipping the environment variable mid-process would let
+one half of a search run compiled and the other half not, and any disagreement that produced
+would be blamed on the rules rather than on the harness.
+
+### As it is implemented
+
+| | |
+|---|---|
+| `engine/src/royals_engine/_accel.py` | finds the module, honours the switch, reports which engine answers |
+| `engine/src/royals_engine/ai.py` | the dispatch shims: each accelerated function delegates at the top and keeps its Python body underneath |
+| `engine-rs/src/py.rs`, `engine-rs/pyproject.toml` | the PyO3 bindings and the wheel that carries them |
+| `tests/test_accel.py` | that the wheel is really answering, and the contract below |
+
+**The distribution is `royals-accel` and the import is `royals_accel` — top-level, not
+`royals_engine._rust`.** That is not a naming preference. An editable install points
+`royals_engine.__path__` at the source tree while a wheel lands in site-packages, so a
+submodule would be unimportable in exactly the layout this repo is developed in — and it would
+fail by *silently falling back*, which is the failure mode hardest to notice.
+
+### Both engines must refuse the same things the same way
+
+This is the one part of the contract the goldens cannot express, because they only ever
+exercise valid input. A malformed call never appears in `golden_moves.txt`, so a port can
+reproduce that file perfectly and still break every caller that catches an exception.
+
+| Called with | Both must raise |
+|---|---|
+| a side that is not 0 or 1 (`fullCheck`, `listAllMoves`, `takeTurn`, …) | `ValueError` |
+| a move whose kind is not `jump`/`push`/`free`/`break` | `ValueError` |
+| an origin outside 1–49, or a target outside the board | `IndexError` |
+| a break direction outside 0–3 | `IndexError` |
+
+It is written down because both sides once got it wrong, in opposite directions: Rust raised
+`PanicException` where Python raised `IndexError`, and Python *silently returned a board* for
+an unknown kind — `performOneStep` was an if-chain ending in an unconditional
+`return Engine.exeBreak(...)`, so `"wobble"` was executed as a break. Neither is reachable
+through the server, which gates on `move not in legal`. That is exactly why it needed a test
+rather than a bug report.
+
 ---
 
-## 10. Checklist
+## 10. The browser target
+
+The third implementation, and the one this document originally didn't mention.
+`web/src/royals_web/static/royals.wasm` is `engine-rs/` compiled to WebAssembly, driven by
+`static/engine.js`, and it answers one question inside the page: **which squares can this piece
+reach.** That question cost a round trip before — 100ms or more on mobile data, every time a
+piece was picked up, for an answer about a position the page was already holding.
+
+**The board crosses as parsed fields, not packed codes.** The page is handed 49 squares of
+eight semantic values (§2) and hands the same back; the packing happens on the Rust side, in
+the one function that knows how. Unpacking 13-bit fields in JavaScript would be a second
+implementation of the board format, and the moment there are two they disagree.
+
+**Two orderings are a contract, and getting either wrong sends a legal-looking move somewhere
+else.** `engine.js` decodes a move's kind by indexing `["jump", "push", "break", "free"]` with
+a byte, and a break's direction by indexing `["d", "u", "l", "r"]` — the initials of the
+headings, which is what the server decodes back. A Rust test asserts the first; note that it is
+behind `--features wasm`, so **a bare `cargo test` never compiles it**.
+
+**The answer is a superset, deliberately.** The module holds a position, not a history, so it
+cannot apply the ko rule — a move may not return the game to a position it has already stood
+in (§7). What it returns is every legal move plus any that repeat. That is not a rounding
+error: **43% of positions along the fixture walks have at least one move struck off by ko**. So
+the page draws the local answer immediately and reconciles against the server's, which can only
+ever take squares away. Any fourth implementation that ships a rules engine to a client needs
+to decide this question explicitly rather than discover it.
+
+**No wasm-bindgen.** The interface is plain `extern "C"` over two byte buffers and five
+integers, with about fifty hand-written lines of JavaScript against it. wasm-bindgen would
+generate that glue, and generating it needs its CLI at a version matching the crate exactly —
+which today means a newer rustc than this crate's `rust-version`. A second pinned tool, for an
+interface that is nothing to generate.
+
+**The artifact is checked in**, which makes it the one part of the engine that can go stale in
+silence: change a rule, forget to rebuild, and the page plays yesterday's game while every test
+stays green. `engine-rs/tests/wasm_parity.py` is the guard. It asks the shipped module what the
+Python engine is asked, and given a freshly built module as an argument it checks that too —
+which is what distinguishes "the rules have diverged" from "somebody forgot to rebuild". Both
+run in CI. To rebuild, from the repo root:
 
 ```bash
-cd tests && python3 regress.py check all        # 445 / 13,051 / 245 lines
-python3 -m pytest tests/ -q                     # must report 165, not 101
-python3 regress.py fixtures                     # regenerate + self-check
+cargo build --release --features wasm --target wasm32-unknown-unknown \
+  --manifest-path engine-rs/Cargo.toml
+cp engine-rs/target/wasm32-unknown-unknown/release/royals_engine.wasm \
+   web/src/royals_web/static/royals.wasm
 ```
 
-- [ ] `UNPACK` digest matches `unpack_sha256`
-- [ ] Ray tables match the fixture element for element
-- [ ] Emitter output is byte-identical to `golden_moves.txt`
-- [ ] Integer-only throughout; `isqrt` truncation verified against Python
-- [ ] `orderMoves` sorts stably on the score alone
-- [ ] Generation order matches §5 exactly
-- [ ] TT sign and bound-flag negation verified both directions
-- [ ] `spyBreak` gap ported as-is, not fixed
-- [ ] `ROYALS_NO_ACCEL=1` produces identical goldens
+Single-threaded, so no `SharedArrayBuffer` and no COOP/COEP headers — the search is serial
+anyway. The one server-side cost is `'wasm-unsafe-eval'` in the Content-Security-Policy, the
+narrow token that permits WebAssembly compilation and nothing else.
+
+**The server stays authoritative.** It re-derives every legal move on submission whether or not
+the page asked first. Nothing here changes that, and nothing here may be relied on to.
+
+---
+
+## 11. Checklist
+
+From the repo root:
+
+```bash
+(cd tests && python3 regress.py check all)      # 445 / 13,051 / 245 lines identical
+python3 -m pytest tests/ -q                     # the total is in CLAUDE.md; check it
+(cd tests && python3 regress.py fixtures)       # regenerate + self-check
+```
+
+- [x] `UNPACK` digest matches `unpack_sha256`
+- [x] Ray tables match the fixture element for element
+- [x] Emitter output is byte-identical to `golden_moves.txt`
+- [x] Integer-only throughout; `isqrt` truncation verified against Python
+- [x] `orderMoves` sorts stably on the score alone
+- [x] Generation order matches §5 exactly
+- [x] TT sign and bound-flag negation verified both directions
+- [x] `spyBreak` gap ported as-is, not fixed
+- [x] `ROYALS_NO_ACCEL=1` produces identical goldens
+- [x] Both engines raise the same exception types on malformed input (§9)
+- [x] The browser's kind and direction orderings match `engine.js` (§10)
+- [x] `wasm_parity.py` is green against the *shipped* `royals.wasm`, not just a fresh build
+
+Ticked because the Rust port satisfies all of them and CI keeps it that way. They are the list
+to re-check against a **new** implementation — or against this one, the day a rule changes.
 
 **If `golden_moves.txt` moves and you did not intend to change the rules, the port has a
 bug. Do not re-record it.**

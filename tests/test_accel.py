@@ -197,6 +197,57 @@ def test_table_limit_reaches_the_compiled_side():
         "TABLE_LIMIT never reached the compiled engine" % (totals[1], totals[300_000]))
 
 
+# ---- the two implementations refuse the same things the same way --------------------------
+# The goldens compare what the engines *compute*, which means they only ever exercise valid
+# input. That left a gap: for a while the two disagreed on every malformed call. Rust raised
+# PanicException where Python raised IndexError, and worse, Python *silently returned a board*
+# for an unknown move kind -- performOneStep was an if-chain ending in an unconditional
+# `return Engine.exeBreak(...)`, so "wobble" was executed as a break.
+#
+# Neither behaviour is reachable from a client (game.py gates on `move not in legal`), which
+# is exactly why it needed a test rather than a bug report: nothing in normal play would ever
+# have shown it.
+
+BAD_CALLS = [
+    ("side too high",      lambda: AI.fullCheck(entered_board(), 2),                          ValueError),
+    ("side negative",      lambda: AI.fullCheck(entered_board(), -1),                         ValueError),
+    ("side on listAll",    lambda: AI.listAllMoves(entered_board(), 7),                       ValueError),
+    ("side on takeTurn",   lambda: AI.takeTurn(entered_board(), 2, 1),                        ValueError),
+    ("unknown kind",       lambda: AI.performOneStep(entered_board(), 0, (25, "wobble", 3, False)), ValueError),
+    ("origin 0",           lambda: AI.performOneStep(entered_board(), 0, (0, "jump", 3, False)),    IndexError),
+    ("origin 50",          lambda: AI.performOneStep(entered_board(), 0, (50, "jump", 3, False)),   IndexError),
+    ("target off board",   lambda: AI.performOneStep(entered_board(), 0, (25, "jump", 99, False)),  IndexError),
+    ("break dir too high", lambda: AI.performOneStep(entered_board(), 0, (25, "break", 9, False)),  IndexError),
+]
+
+
+@pytest.mark.parametrize("label,call,expected", BAD_CALLS, ids=[c[0] for c in BAD_CALLS])
+def test_malformed_input_is_refused(label, call, expected):
+    """Whichever engine is loaded, the refusal is the same type.
+
+    Parametrised over the exception rather than just 'it raises', because the failure this
+    replaced was two engines raising *different* types for the same mistake -- so a caller
+    that caught one broke the moment a wheel was installed.
+    """
+    with pytest.raises(expected):
+        call()
+
+
+def test_no_malformed_move_silently_returns_a_board():
+    """The sharp end of the above, stated on its own because it is the one that lost data.
+
+    A board coming back from a move that isn't a move is worse than any exception: the caller
+    carries on with a position that has nothing to do with what it asked for.
+    """
+    board = entered_board()
+    for bad in [(25, "wobble", 3, False), (0, "jump", 3, False), (25, "jump", 99, False)]:
+        try:
+            got = AI.performOneStep(board, 0, bad)
+        except (ValueError, IndexError):
+            continue
+        pytest.fail("performOneStep%r returned a board instead of refusing: %r" % (bad, got))
+
+
 # ---- the purity carve-out stays narrow ----------------------------------------------------
 
 def test_the_accelerator_import_is_guarded():

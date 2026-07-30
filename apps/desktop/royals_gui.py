@@ -18,15 +18,29 @@
 # and every click advances that by exactly one step. advance() is the loop MainPlay
 # runs; it returns to the event loop wherever MainPlay would have called input().
 #
-# The computer thinks on a worker thread. Measured on the packed-int board, a search costs
-# roughly four to five times the level below it -- depth 3 a tenth of a second, 4 half a
-# second, 5 a bit over two, 6 ten and a half. So the shallow end doesn't need a thread at
-# all and the deep end very much does, and a search inside a click handler is that long
-# with the window unable to redraw and greyed out by the window server.
+# The computer thinks on a worker thread, and it still needs one -- but for a different
+# reason than it used to, so the reasoning is worth restating rather than patching.
 #
-# (MainPlay's comment above its depth prompt still quotes the figures from before that
-# rewrite -- 3 about a second and a half, 4 closer to ten. Those are about twenty times
-# what the same searches cost now.)
+# A search costs roughly three times the level below it. With the compiled engine (the
+# royals-accel wheel) depth 7 is about a fifth of a second, 8 under a second, 9 about three.
+# Without it, in pure Python, everything is some thirty-six times dearer: depth 6 is a
+# couple of seconds and 8 is most of a minute. Both are configurations this window has to be
+# usable in, since the wheel is optional by design.
+#
+# So at the top of the range a search is seconds either way, and seconds inside a click
+# handler is a window that cannot redraw and gets greyed out by the window server. The
+# thread stays.
+#
+# What changed is what the thread buys. It used to be the only thing between the player and
+# a frozen window, because a Python search holds the GIL the whole way through and tkinter
+# cannot repaint without it -- the thread moved the freeze rather than removing it. The
+# compiled engine releases the GIL for the duration of the search, so the window genuinely
+# keeps painting while the computer thinks. On the pure-Python path it is still the old
+# bargain.
+#
+# (Every timing above has been wrong twice: once when the packed-int board landed and again
+# when the engine was ported. If they read as suspiciously round, re-measure before trusting
+# them -- see docs/ARCHITECTURE.md for how to run both engines.)
 
 import math
 import queue
@@ -42,6 +56,26 @@ import tkinter.font as tkfont
 from royals_engine import hasher as Hasher
 from royals_engine import engine as Engine
 from royals_engine import ai as artificialPlayer
+from royals_engine import _accel
+
+
+# Whether the compiled engine is answering. Read once, here, because everything downstream
+# of it -- how deep the buttons go, what the advice says, what colour the badge is -- has to
+# agree, and because _accel itself decides once at import for the same reason.
+FAST_ENGINE = _accel.active()
+
+# How deep the buttons offer to go, and what to say about it. Both depend on the engine: the
+# difference between the two is about thirty-six times, which is the difference between "a
+# fifth of a second" and "most of a minute" at the top of the range. One set of numbers
+# cannot honestly describe both.
+DEPTH_MAX = 9 if FAST_ENGINE else 6
+DEPTH_DEFAULT = 7 if FAST_ENGINE else 5
+DEPTH_ADVICE = (
+    "7 to 9 recommended — 8 takes about a second a move, 9 about three"
+    if FAST_ENGINE else
+    "5 or 6 recommended — 6 takes about two and a half seconds a move, 7 nearer ten. "
+    "Installing royals-accel makes the deeper settings practical."
+)
 
 
 ####################################################################################
@@ -1106,7 +1140,7 @@ class RoyalsWindow:
 
         self.modeVar = tk.IntVar(value=1)
         self.sideVar = tk.IntVar(value=0)
-        self.depthVar = tk.IntVar(value=3)
+        self.depthVar = tk.IntVar(value=DEPTH_DEFAULT)
         self.noiseVar = tk.IntVar(value=50)
 
         # mode
@@ -1134,17 +1168,23 @@ class RoyalsWindow:
 
         row = tk.Frame(self.aiBox, bg=PANEL)
         row.pack(fill="x", pady=(2, 2))
-        # A spinbox is a native control here and would not take any of this palette. Six
-        # is the whole range anyway, so it costs nothing to lay it out and gains a control
-        # that matches everything around it.
+        # A spinbox is a native control here and would not take any of this palette. Nine
+        # is the whole range, so it costs nothing to lay it out and gains a control that
+        # matches everything around it.
+        #
+        # The range used to stop at six because seven was ten seconds of waiting. With the
+        # compiled engine seven is a fifth of a second, so the old ceiling was cutting off
+        # the settings a player would actually want.
         self.depthButtons = []
-        for value in range(1, 7):
+        for value in range(1, DEPTH_MAX + 1):
             b = StoneChoice(row, str(value), self.depthVar, value)
-            b.pack(side="left", padx=(0, 12))
+            b.pack(side="left", padx=(0, 8))
             self.depthButtons.append(b)
 
-        tk.Label(self.aiBox, text="4 or 5 recommended — 5 takes a couple of seconds a move, "
-                                  "6 about ten",
+        # Which advice is true depends on which engine is answering, and the difference is
+        # a factor of thirty-six -- large enough that one sentence cannot serve both. Saying
+        # "7 to 9" on a machine with no wheel would be recommending a minute-long wait.
+        tk.Label(self.aiBox, text=DEPTH_ADVICE,
                  bg=PANEL, fg=TEXT_DIM, font=FONT["small"], wraplength=400,
                  justify="left", anchor="w").pack(fill="x", pady=(0, 8))
 
@@ -1736,6 +1776,19 @@ class RoyalsWindow:
 
         if self.aiBusy or self.phase == "over": return
 
+        # The engine badge is not part of the game, and it has to be answered before either
+        # of the two lookups below or it will be answered *by* them: squareAt falls through
+        # to self.view.square(), which returns whatever square lies under the point whether
+        # or not anything was drawn there. So a click on a decoration in the corner would
+        # pick up or put down a piece on the square behind it -- the same misrouting the
+        # break badge's tag is careful to avoid, arriving by a different road.
+        #
+        # Swallowed rather than ignored: returning here means the click does nothing at all,
+        # which is what a status indicator should do when clicked.
+        if self.engineBadgeHint(event.x, event.y):
+            self.setHint(_accel.describe())
+            return
+
         mark = self.markAt(event.x, event.y)
         if mark is not None:
             self.markClick(mark)
@@ -2035,6 +2088,72 @@ class RoyalsWindow:
 
         # the near two strips of lettering, held back so the pieces don't stand on them
         self.drawCoords(v, True)
+
+        # Last of all, and in screen space: the badge belongs to the window rather than to
+        # the board, so it neither turns with the yaw nor moves with a drag.
+        self.drawEngineBadge()
+
+    # ---- the engine badge -----------------------------------------------------------------
+    #
+    # Which engine is answering, in the top-left corner of the board. Colour when the compiled
+    # one is, grey when it is the Python.
+    #
+    # Worth having because the difference is otherwise invisible: the two play identically and
+    # the only symptom of a missing wheel is that the machine feels slow, which is
+    # indistinguishable from the machine being busy. A player who never installs royals-accel
+    # should be able to see that, not deduce it.
+    #
+    # Drawn rather than loaded. Nothing else in this file is an image -- the whole interface is
+    # bevel(), plate() and engrave() -- and Pillow is not a dependency, so a PNG would mean
+    # adding one and then greyscaling at runtime. Drawn, the two states are a palette swap.
+    #
+    # A stack of three, because that is what the game is about: pieces gathering onto a square.
+    #
+    # **The two states differ in value, not hue, and that is not a compromise.** This palette
+    # is achromatic on purpose -- see LOOK above -- and measuring it bears that out: every
+    # colour in the file has a channel spread under 24. There is no colour here to take away,
+    # so a literal "colour versus greyscale" would have produced two identical badges: an
+    # indicator that looks implemented and says nothing, which is worse than none.
+    #
+    # So the compiled engine gets the full ink-on-paper range the pieces themselves use, and
+    # the Python gets the muted greys the sunk parts of the cabinet use. Lit up against dimmed.
+    # Both are drawn by the same code from the four names below, so they cannot drift apart.
+
+    BADGE_X = 16          # from the canvas's left edge
+    BADGE_Y = 16          # from its top edge
+    BADGE_W = 30
+    BADGE_H = 34
+
+    def drawEngineBadge(self):
+        c = self.canvas
+        x, y, w, h = self.BADGE_X, self.BADGE_Y, self.BADGE_W, self.BADGE_H
+
+        # body / highlight / shadow / label -- the whole difference between the two states.
+        if FAST_ENGINE:
+            body, lit, shade, ink = WHITE, EDGE_LT, RULE, TEXT
+        else:
+            body, lit, shade, ink = WELL, EDGE, EDGE_DK, TEXT_DIM
+
+        plate(c, x, y, x + w, y + h, PANEL, EDGE_LT, EDGE_DK, depth=2, tags="enginebadge")
+
+        # three discs, near edge to far, the way a stack reads on the board
+        for i in range(3):
+            top = y + h - 10 - i * 6
+            c.create_oval(x + 6, top, x + w - 6, top + 9,
+                          fill=body, outline=shade, tags="enginebadge")
+            # the light line along the top -- the same trick everything else here is built on
+            c.create_arc(x + 6, top, x + w - 6, top + 9, start=20, extent=140,
+                         style="arc", outline=lit, tags="enginebadge")
+
+        engrave(c, x + w / 2.0, y + 8, "RS" if FAST_ENGINE else "PY",
+                FONT["small"], ink, EDGE_LT, tags="enginebadge")
+
+    # What the badge would say if there were room to say it. Bound to <Motion> rather than
+    # drawn, because the board underneath is already carrying every mark the game needs and
+    # a permanent caption in the corner would be one more thing between the player and it.
+    def engineBadgeHint(self, sx, sy):
+        x, y, w, h = self.BADGE_X, self.BADGE_Y, self.BADGE_W, self.BADGE_H
+        return x <= sx <= x + w and y <= sy <= y + h
 
     # The board as a thing with a thickness: a slab, the carved border laid on top of it,
     # the black rule round the playfield and the field sunk behind that. Flat, the border

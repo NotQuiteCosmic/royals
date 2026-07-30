@@ -10,7 +10,8 @@ the accelerator is rebuilt by CI on every commit.
 
 So the shipped module is asked the same questions the Python engine is asked, and has to give
 the same answers. Every position along the port fixtures' walks, every square, both sides,
-carrying prisoners and not: about 47,000 questions, which takes a couple of seconds.
+carrying prisoners and not -- a few seconds' work, and it prints how many questions that came
+to rather than quoting a figure here that would rot the moment the walks change length.
 
 Pass a freshly built module as an argument and it is checked too. That separates the two ways
 this can fail, and they want different fixes:

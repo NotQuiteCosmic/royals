@@ -152,7 +152,58 @@ def listMoves(moveArray, origin, movingPris, into):
 
 
 # Applies one move and returns the resulting board, leaving cBoard alone.
+# The kinds performOneStep knows how to execute. Written down rather than left implicit in
+# the if-chain below, which is what let an unknown kind fall through to being treated as a
+# break -- see checkMove.
+KINDS = ("jump", "push", "free", "break")
+
+
+def checkSide(contr):
+    """A side is 0 or 1. Nothing else indexes anything sensible."""
+    if contr not in (0, 1):
+        raise ValueError("side must be 0 (blue) or 1 (red), got %r" % (contr,))
+    return contr
+
+
+def checkMove(move):
+    """Reject a move that is not one, before anything tries to execute it.
+
+    This exists because the if-chain below used to end in an unconditional
+    `return Engine.exeBreak(...)`, so a move with a kind of "wobble" -- or a typo, or a
+    tuple built by hand in a REPL -- was silently executed as a break and handed back a
+    board. Nothing raised, and the caller got a position that had nothing to do with what
+    it asked for. A move that isn't a move should say so.
+
+    The bounds match Hasher.Get_Space_Data's: squares run 1 to 49, and an origin outside
+    that used to reach `cBoard[-1]` and quietly execute against the last square of the
+    board. A break's target is a direction index rather than a square, which is the
+    asymmetry notation.py exists to contain.
+    """
+    origin, kind, target, _pris = move
+
+    if kind not in KINDS:
+        raise ValueError("%r is not a move kind (one of %s)" % (kind, ", ".join(KINDS)))
+
+    if not isinstance(origin, int) or origin < 1 or origin > 49:
+        raise IndexError("origin %r is off the board (squares run 1 to 49)" % (origin,))
+
+    if kind == "break":
+        if not isinstance(target, int) or target < 0 or target >= len(Engine.pushDirs):
+            raise IndexError("break direction %r is not one of 0 to %d"
+                             % (target, len(Engine.pushDirs) - 1))
+    elif not isinstance(target, int) or target < 0 or target > 48:
+        raise IndexError("target %r is off the board (0-based squares run 0 to 48)" % (target,))
+
+    return move
+
+
 def performOneStep(cBoard, contr, move):
+    # Validated before the shim, not inside each branch, so both implementations refuse the
+    # same input in the same way. The compiled side validates again for anything calling it
+    # directly, but this is what makes the two agree.
+    checkSide(contr)
+    checkMove(move)
+
     if _accel.accel is not None:
         # Comes back a tuple, not a list. A board is its own key in the ko set and the
         # transposition table, so a list here would silently stop matching.
@@ -175,6 +226,12 @@ def performOneStep(cBoard, contr, move):
 # comes out of checkMoves rather than from the loop here, and only ever while not carrying
 # prisoners, since a stack bringing its own can't free anybody.
 def listAllMoves(cBoard, contr, spaces = None):
+    # Checked even though the search calls this at every node: measured at 8.9ns, which is
+    # 0.56ms across a depth-6 pure-Python search that takes 2.6 seconds. Two hundredths of a
+    # percent is not a reason to leave an entry point unguarded -- and game.py calls this
+    # directly, so it is an entry point whatever the search does with it.
+    checkSide(contr)
+
     if _accel.accel is not None:
         # `spaces` is only ever a parse of cBoard the caller already had, so ignoring it
         # changes nothing but who does the walk.
@@ -395,10 +452,17 @@ def evaluateSides(cBoard):
 # but it is the shape the heuristic is easiest to read in, and it keeps the two definitions
 # from drifting apart by being the same one.
 def checkPosition(cBoard, contr, spaces = None):
+    checkSide(contr)
     return evaluateSides(cBoard)[contr]
 
 
 def fullCheck(cBoard, contr):
+    # `adv[contr] - adv[1 - contr]` on a two-element list is the whole reason this needs
+    # checking: contr=2 reads off the end, and contr=-1 quietly reads the *other* side and
+    # returns a plausible number with the sign inverted. The second is worse than the first,
+    # because nothing raises.
+    checkSide(contr)
+
     if _accel.accel is not None:
         return _accel.accel.full_check(cBoard, contr)
 
@@ -439,9 +503,14 @@ history = {}
 table = {}
 tableOld = {}
 
-# How many positions one generation holds before it is retired. 300k of these costs a few
-# hundred MB, which is the point where keeping more stops paying for itself at the depths
-# anyone actually plays at.
+# How many positions one generation holds before it is retired, past which keeping more stops
+# paying for itself at the depths anyone actually plays at.
+#
+# What that costs depends on which engine is answering, and the gap is wide: measured at this
+# limit, a compiled worker peaks around 79 MB, where this pure-Python table ran to roughly 175
+# MB per generation -- and tableOld means two are live at once. A server sets it lower for that
+# reason; see the measured table in web/src/royals_web/ai_pool.py, which is where the number
+# that matters is written down.
 TABLE_LIMIT = 300000
 
 # Whether any of it survives from one move to the next. Turning this off restores what the
@@ -682,14 +751,16 @@ def minimax(cBoard, contr, rootContr, alpha, beta, depthTrack, pvMove = None, at
 # real scores. INFINITY rather than math.inf so the search stays entirely in whole numbers.
 def chooseMove(cBoard, contr, depth = 3):
     global calcCount, killers, history, table, tableOld
+    checkSide(contr)
 
     if _accel.accel is not None:
         # The ko history is handed over on every call rather than mirrored on the other side.
         # Engine.koTrack stays the single authority, which is what lets ai_pool.py keep its
         # load-one-game / run / drop discipline with no changes at all.
         # TABLE_LIMIT goes across on every call rather than being mirrored once. It is a plain
-        # module global that callers assign to -- ai_pool.py drops it to 50,000 because a few
-        # hundred MB per generation is fatal on the box it runs on -- and an assignment cannot
+        # module global that callers assign to -- ai_pool.py drops it to 50,000 because the
+        # default costs more memory per worker than a small box has to spare -- and an
+        # assignment cannot
         # trigger a setter, so a mirrored copy would go stale the first time anyone used the
         # knob as documented.
         score, move, nodes = _accel.accel.choose_move(
@@ -752,6 +823,7 @@ def newGame():
 # no legal move.
 def takeTurn(cBoard, contr, depth = 3):
     global calcCount
+    checkSide(contr)
 
     if _accel.accel is not None:
         # Shimmed separately from chooseMove even though the Python body below would already

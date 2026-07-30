@@ -9,9 +9,11 @@ moves that are perfectly legal. Every job here therefore begins by loading the s
 exactly one game and ends by dropping it, and workers only ever handle one job at a time.
 This is the same thing regress.py does between sweeps with koReset()/koRecord().
 
-**Denial of service.** A depth-6 search is seconds of pinned CPU that anybody can ask
-for by clicking a menu. A handful of concurrent requests will saturate a small machine,
-and nothing about any individual request looks abusive. So: a hard cap on how many
+**Denial of service.** A depth-6 search is seconds of pinned CPU in the pure-Python engine,
+and a fraction of a second through the compiled one -- and anybody can ask for it by clicking
+a menu. The caps below are sized for the slow case on purpose: a deployment without the wheel
+is a supported one, and it is the one where a handful of concurrent requests saturates a small
+machine. Nothing about any individual request looks abusive either way. So: a hard cap on how many
 searches run at once, a queue that refuses rather than grows, and a wall-clock deadline
 on every search. A separate process pool also means a crash or a runaway on a malformed
 position takes down a worker rather than the web server.

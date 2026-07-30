@@ -19,9 +19,10 @@ description = "The Royals game engine: board representation, move generation, an
 # door is a syntax or stdlib feature newer than 3.10. Don't add one.
 requires-python = ">=3.10"
 
-# Deliberately empty, and worth keeping that way. A dependency-free engine is what lets
-# the same code run under CPython, under PyPy, inside a web worker, and in the browser
-# under Pyodide without a compatibility matrix. It is also a real security property:
+# Deliberately empty, and worth keeping that way. A dependency-free engine is what lets the
+# same code run under CPython, under PyPy and inside a web worker without a compatibility
+# matrix -- and it is why `pip install -e ./engine` needs no Rust toolchain, even though a
+# compiled build of these same rules exists next door. It is also a real security property:
 # no third-party code sits in the path that validates moves.
 dependencies = []
 

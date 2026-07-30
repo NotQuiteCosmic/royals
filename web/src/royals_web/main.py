@@ -30,6 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from royals_engine import notation as N
+from royals_engine import _accel
 
 from royals_web import game as G
 from royals_web import persist
@@ -58,15 +59,22 @@ API_LIMIT, API_WINDOW = 600, 60
 
 # The deepest search this server will agree to run, or None for no ceiling.
 #
-# A depth-6 search is about two seconds of pinned CPU on this laptop and rather more on a
-# small shared machine, and it is available to anybody who can click a menu. That is
-# survivable while the only person who can reach the server is sitting at it, and stops
-# being survivable the moment the address is public: the AI pool bounds how many searches
-# run at once and how long each may take, but nothing else bounds how *expensive* the ones
-# that do run are allowed to be.
+# The argument is unchanged and the arithmetic is not. A `royal` search is about three
+# seconds of pinned CPU on this laptop and rather more on a small shared machine, and it is
+# available to anybody who can click a menu. That is survivable while the only person who can
+# reach the server is sitting at it, and stops being survivable the moment the address is
+# public: the AI pool bounds how many searches run at once and how long each may take, but
+# nothing else bounds how *expensive* the ones that do run are allowed to be.
 #
-# Unset means no ceiling, so playing at home keeps every difficulty. A public deployment
-# sets it -- ROYALS_MAX_DEPTH=5 drops `royal` and leaves everything else.
+# What moved is which depth is the expensive one. This used to say "a depth-6 search is about
+# two seconds"; with the compiled engine depth 6 is under a tenth of a second and the ladder
+# now runs to 9. Anyone reasoning about load from the old number would have been out by more
+# than thirty times, in the direction that matters.
+#
+# Unset means no ceiling, so playing at home keeps every difficulty. A public deployment sets
+# it, and the useful settings moved with the ladder: **ROYALS_MAX_DEPTH=8 drops `royal` and
+# leaves everything else**, 7 drops `expert` too. A value of 5 or 6 now leaves only the two
+# shallowest rungs rather than trimming one -- it is a much blunter instrument than it was.
 def _max_depth():
     raw = os.environ.get("ROYALS_MAX_DEPTH", "").strip()
     if not raw:
@@ -120,6 +128,16 @@ async def _sweep_forever():
 
 @contextlib.asynccontextmanager
 async def lifespan(app):
+    # Which engine the AI workers will use, said once, out loud.
+    #
+    # The compiled and pure-Python engines play identically -- that is the whole design, and
+    # CI enforces it -- so the only symptom of a missing wheel is that searches take some
+    # thirty-six times longer. On a server that is indistinguishable from the box being busy,
+    # and it is the kind of thing found by accident weeks later while investigating something
+    # else. One line at startup turns it into a fact in the log.
+    logging.getLogger("royals").info("%s | difficulties: %s", _accel.describe(),
+                                     ", ".join("%s=%d" % kv for kv in G.DIFFICULTIES.items()))
+
     pool.start()
     db = persist.open_default()
     store.attach(db)

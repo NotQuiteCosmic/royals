@@ -24,6 +24,7 @@ engine/src/royals_engine/   the game itself — no UI, no dependencies
                             allowed to know how a move is packed
   perlin.py                 noise, used only to vary the computer's opening
   compat.py                 two helpers that outlived the legacy RoyalsLib
+  _accel.py                 finds the compiled engine, or doesn't, and says which
 
 apps/desktop/royals_gui.py  tkinter window, with a hand-rolled 3D board
 apps/terminal/main_play.py  the same game in a terminal
@@ -34,25 +35,33 @@ apps/terminal/main_play.py  the same game in a terminal
 web/src/royals_web/         FastAPI server — REST API and a browser client
   main.py                   routing and request limits: who may ask
   game.py                   game state and move validation: what is legal
+  seats.py                  the two seats and the tokens that prove one is yours
   ai_pool.py                process pool, concurrency cap, per-search deadline
-  store.py                  in-memory game store, bounded and TTL'd
+  persist.py                SQLite: a game is stored as its move list, not its board
+  store.py                  bounded, TTL'd cache in front of persist.py
+  limits.py                 the ASGI body-size cap, before a request is read
   static/                   the browser client — index.html, app.js, board.js, style.css
-    engine.js               loads royals.wasm and asks it what is legal
-    royals.wasm             the engine again, 50 KB, so highlighting is instant
+    engine.js               drives royals.wasm so highlighting is instant
+    royals.wasm             the engine again, compiled from engine-rs/ — see below
 
 engine-rs/                  the same rules in Rust — the optional compiled engine
-  src/board.rs              the 13-bit square encoding and the ray geometry
+  src/lib.rs                the module map, and the one move type all of it agrees on
+  src/board.rs              the 13-bit square encoding and the geometry
+  src/tables.rs             the rays and the unpacked squares, built at startup
   src/movegen.rs            move generation
   src/exec.rs               the executors
   src/eval.rs               integer-only evaluation
   src/search.rs             alpha-beta, the transposition table
   src/py.rs                 the PyO3 bindings, built into the royals_accel wheel
   src/wasm.rs               the browser build
+  src/bin/royals-golden.rs  emits golden_moves.txt, which is how the port is proved
   tests/wasm_parity.py      asks the shipped .wasm what the Python engine is asked
 
 tests/regress.py            the regression harness
 tests/golden_moves.txt      the rules contract — see below
-docs/                       the rulebook, the architecture notes, and the port spec
+tests/golden_enter.txt      the entering phase, which is CPython's RNG and stays there
+tests/golden_search.txt     node counts per move; expected to churn
+docs/                       the rulebook, the architecture notes, the port spec, hosting
 Backup/                     frozen Python-2-era originals, kept as the historical record
 ```
 
@@ -77,11 +86,17 @@ curl -fsSL https://raw.githubusercontent.com/NotQuiteCosmic/royals/master/instal
 It clones the game to `~/Royals`, writes a launcher next to it, and on macOS builds
 `~/Applications/Royals.app` so it's double-clickable. Then it opens the window.
 
-It **installs no Python packages** — no pip, no virtualenv, nothing added to your system
-Python. It doesn't need to: `royals_engine` imports the standard library and nothing else,
-so the launcher just puts `engine/src` on `PYTHONPATH`. It writes to those two paths in your
-home directory and nowhere else, needs no sudo, and refuses to run with it. Pass
-`--dry-run` to see exactly what it would do without it doing anything.
+It **installs nothing it needs** — no virtualenv, nothing added to your system Python, nothing
+outside those two paths in your home directory. It needs no sudo and refuses to run with it.
+`royals_engine` imports the standard library and nothing else, so the launcher just puts
+`engine/src` on `PYTHONPATH`. Pass `--dry-run` to see exactly what it would do without it
+doing anything.
+
+There is one exception, and it is best-effort: the installer makes a single attempt at
+`pip install --user royals-accel`, the optional compiled engine described below. Every way that
+can fail — no wheel for your machine, no network, no pip — ends in carrying on without it, and
+`--no-accel` skips the attempt entirely. The game plays the same either way; it just thinks
+quicker. `sh ~/Royals/uninstall.sh` removes it again along with everything else.
 
 It won't overwrite things it didn't create: if `~/Royals` is already something else, or if
 an `Royals.app` is there that this installer didn't build, it stops and says so rather than
@@ -96,12 +111,16 @@ for working on any of it, carry on below.
 
 ## Running it
 
+Every command block here starts at the repo root; anything that has to run elsewhere says so
+in a subshell, so the line after it still begins where you did.
+
 ```bash
 python3 -m pip install -e ./engine        # once
 
-python3 apps/desktop/royals_gui.py                 # the window
-cd apps/terminal && python3 main_play.py           # the terminal
-cd tests && python3 regress.py check all           # the tests
+python3 apps/desktop/royals_gui.py                    # the window
+(cd apps/terminal && python3 main_play.py)            # the terminal
+(cd tests && python3 regress.py check all)            # the rules contract
+python3 -m pytest tests/ -q                           # the unit tests
 ```
 
 And the server, which needs its own install because it has dependencies the engine
@@ -134,7 +153,7 @@ lsof -nP -iTCP:8000 -sTCP:LISTEN     # find it
 
 `tests/golden_moves.txt` records, from a spread of reachable positions, **every legal move
 both sides have, the board each one produces, and what the evaluator thinks the result
-is worth.** 13,051 lines of it. It says nothing about how any of that is computed — only
+is worth.** Thirteen thousand lines of it. It says nothing about how any of that is computed — only
 what the rules do — which is why it survived the rewrite from the original
 variable-length bit encoding to the packed integers used today.
 
@@ -152,9 +171,8 @@ move, so it moves whenever the tree is walked differently — often for a perfec
 reason. Re-recording it is normal. Re-recording `golden_moves.txt` is not.
 
 ```bash
-cd tests
-python3 regress.py check all     # verify
-python3 regress.py write search  # re-record just the search baseline
+(cd tests && python3 regress.py check all)      # verify
+(cd tests && python3 regress.py write search)   # re-record just the search baseline
 ```
 
 ## Why the engine has no dependencies
@@ -163,33 +181,37 @@ python3 regress.py write search  # re-record just the search baseline
 `tests/test_engine_purity.py` fails the build if that stops being true — or if anything
 in the engine imports tkinter, calls `input()`, or prints.
 
-This is not tidiness. The same modules need to run in a tkinter window, in a terminal, in
-a web worker serving many games at once, and eventually in a browser under Pyodide. A
-module that prints to stdout or blocks on stdin has decided which of those it is. It is
-also a security property: no third-party code sits in the path that validates a move.
+This is not tidiness. The same modules need to run in a tkinter window, in a terminal, and in
+a web worker serving many games at once. A module that prints to stdout or blocks on stdin has
+decided which of those it is. It is also a security property: no third-party code sits in the
+path that validates a move. (The browser is the one front end these modules never reach — it
+runs its own copy of the rules, compiled from the Rust to WebAssembly. What keeps that honest
+is the server, which validates every move with this engine.)
 
-The engine targets **Python ≥ 3.10**, not 3.12, so it keeps running under PyPy — faster on
-this search, and the intended interpreter for the server's AI worker. Scores are computed in
-integers rather than floats for a related reason: CPython and PyPy once disagreed in the last
-decimal place on a square root, which flipped an alpha-beta cutoff and changed the move
-played. CI runs the goldens under both.
+The engine targets **Python ≥ 3.10**, not 3.12, so it keeps running under PyPy — a good deal
+faster than CPython on this search, and the interpreter to reach for when there is no compiled
+wheel. Scores are computed in integers rather than floats for a related reason: CPython and
+PyPy once disagreed in the last decimal place on a square root, which flipped an alpha-beta
+cutoff and changed the move played. CI runs the goldens under both, and integers are also what
+lets a second and third implementation reproduce them at all.
 
 ## It is faster if you have the compiled engine, and identical if you don't
 
 The same rules are also implemented in Rust, under `engine-rs/`. It plays exactly the same
-game about **36 times faster** — enough for the computer player to think three plies deeper in
-the same time — and it reaches you two ways:
+game about **thirty-six times faster** — enough for the computer player to think three plies
+deeper in the same time — and it reaches you two ways:
 
 - **`royals-accel`**, an optional wheel. `install-desktop.sh` tries for one and shrugs if there
   isn't a build for your machine. Nothing else changes; the game just thinks quicker.
-- **`static/royals.wasm`**, 50 KB, which the browser loads so that picking a piece up is
+- **`static/royals.wasm`**, about 50 KB, which the browser loads so that picking a piece up is
   instant instead of a round trip to the server.
 
 **Not having either is a supported configuration, not a degraded one.** With no wheel and no
-wasm the Python engine answers, and it answers the same. That is checked rather than hoped for:
-`tests/golden_moves.txt` is a 13,051-line record of what every legal move does, and all three
-have to reproduce it byte for byte on every commit. `ROYALS_NO_ACCEL=1` forces the Python path
-if you want to see for yourself.
+wasm the Python engine answers, and it answers the same. That is checked rather than hoped for.
+`tests/golden_moves.txt` records what every legal move does from a spread of positions; the
+Python engine and the wheel each have to reproduce it byte for byte on every commit, and the
+browser's copy is held to the same rules move by move, by a script that asks it what it asks
+the Python engine. `ROYALS_NO_ACCEL=1` forces the Python path if you want to see for yourself.
 
 ## The server never trusts the board
 
@@ -199,16 +221,24 @@ four small values — and the server loads the position from its own store and
 independently regenerates every legal move before accepting one.
 
 `AI.listAllMoves` is the same generator the computer plays by, so a person and the machine
-are held to literally the same rules, and "is this legal?" is a tuple membership test
-rather than a second, subtly different implementation of the rulebook.
+are held to literally the same rules, and "is this legal?" is a tuple membership test rather
+than a second, subtly different implementation of the rulebook.
+
+The browser does now carry a copy of the rules, and it changes nothing about that. What the
+page computes locally is which squares to light up, and it is deliberately allowed to be
+generous: it holds the position in front of it, not the history behind it, so it cannot apply
+the rule that a move may not repeat an earlier position. The server can only ever take squares
+away from that answer, and it re-derives every legal move on submission whether or not the page
+asked first.
 
 ## Status
 
 | Part | State |
 |---|---|
-| Engine | Working. Both goldens green under CPython and PyPy. |
+| Engine (Python) | Working. All three goldens green under CPython and PyPy. |
+| Engine (Rust) | Working, and optional. Ships as the `royals-accel` wheel and as the browser's wasm; CI holds both to the same goldens. |
 | Desktop (tkinter) | Working. |
 | Terminal | Working. |
-| Web API + client | Working; games are in memory only, so they don't survive a restart. |
-| Tests | 95 altogether: 22 engine-purity, 51 notation, 22 web API. |
-| Accounts, persistence | Not started. `store.py` is the seam Postgres goes behind. |
+| Web API + client | Working. Games are kept in SQLite as their move list, so they survive a restart. |
+| Tests | Green. The counts CI expects are in [CLAUDE.md](CLAUDE.md) — one place, so they can't disagree. |
+| Accounts | Not started, and may never be. A game is shared as a link and a seat is proved by a token, which is what `seats.py` does instead. |

@@ -9,11 +9,18 @@
 #     ~/Royals                     a git clone of the game        (set ROYALS_HOME to move it)
 #     ~/Applications/Royals.app    a double-clickable launcher     (macOS only)
 #
-# No packages are installed. That is not a shortcut -- royals_engine imports the standard
-# library and nothing else, an invariant the test suite enforces, so the game runs from a
-# checkout with PYTHONPATH pointing at it. No pip, no venv, no virtualenv activation, and
-# nothing outside your home directory is touched. Removing it is `sh uninstall.sh`, or
-# deleting those two paths by hand.
+# Nothing the game needs gets installed. That is not a shortcut -- royals_engine imports the
+# standard library and nothing else, an invariant the test suite enforces, so the game runs
+# from a checkout with PYTHONPATH pointing at it. No venv, no virtualenv activation, and
+# nothing outside your home directory is touched.
+#
+# One package is *tried*, and it is optional: royals-accel, a compiled build of the same
+# engine that thinks about thirty-six times faster. It goes in with `pip install --user`, so
+# still inside your home directory, and every way it can fail ends in carrying on without it.
+# `--no-accel` skips the attempt. See "the optional accelerator" further down for why that is
+# a best-effort bonus rather than a step that can fail the install.
+#
+# Removing it is `sh uninstall.sh`, or deleting those two paths by hand.
 #
 # Do not run this with sudo. It installs into your home directory; run as root it would
 # create root-owned files there that you then cannot delete without sudo again.
@@ -58,13 +65,13 @@ Installs the Royals desktop game into ~/Royals (and ~/Applications/Royals.app on
 
     ROYALS_HOME=/some/path sh install-desktop.sh    install somewhere other than ~/Royals
 
-Needs no sudo, and the game itself installs no Python packages -- it runs from the
-checkout, because the engine imports the standard library and nothing else.
+Needs no sudo, and nothing the game needs is installed -- it runs from the checkout,
+because the engine imports the standard library and nothing else.
 
 The one exception is optional and best-effort: if pip is available, this tries for
-royals-accel, a compiled build of the same engine that is about thirty times faster. It
-plays identically; it just thinks quicker. Every way that can fail is treated as "carry
-on without it", and --no-accel skips the attempt entirely.
+royals-accel, a compiled build of the same engine that is about thirty-six times faster.
+It plays identically; it just thinks quicker. Every way that can fail is treated as
+"carry on without it", and --no-accel skips the attempt entirely.
 
 To remove it: sh uninstall.sh
 USAGE
@@ -141,7 +148,8 @@ On macOS, install it from https://www.python.org/downloads/ (that build includes
 Tk support the game's window needs). On Linux, use your package manager."
 
 # Version gate. The engine targets >= 3.10 and stays there on purpose so it keeps running
-# under PyPy; see CONTRIBUTING.md.
+# under PyPy, which is what a machine with no compiled wheel has for speed; see
+# CONTRIBUTING.md.
 PY_VERSION="$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
 [ -n "$PY_VERSION" ] || die "could not run $PY -- it is on PATH but does not work."
 PY_MAJOR="${PY_VERSION%%.*}"
@@ -313,7 +321,7 @@ step "wrote $LAUNCHER"
 
 # ---------------------------------------------------------------- the optional accelerator
 #
-# royals-accel is a compiled build of the same engine, about thirty times faster, and the
+# royals-accel is a compiled build of the same engine, about thirty-six times faster, and the
 # game is entirely playable without it. Everything above this point is the install; this is
 # a bonus that is *tried* and then forgotten about.
 #
@@ -324,10 +332,12 @@ step "wrote $LAUNCHER"
 #   - offline, or PyPI unreachable              -> skip
 #   - pip refuses to touch a managed environment -> skip
 #
-# The promise at the top of this file is that nothing gets installed and nothing outside
-# your home directory is touched. Turning a failure here into an error would break that
-# promise retroactively: someone whose machine has no wheel would be told the install
-# failed, when what actually happened is that the game will run in Python and be slower.
+# The promise at the top of this file is that nothing the game NEEDS gets installed, and that
+# nothing outside your home directory is touched. This is the one package that goes in, it is
+# not needed, and --user keeps it inside $HOME -- so both halves of that promise survive.
+# Turning a failure here into an error would not: someone whose machine has no wheel would be
+# told the install failed, when what actually happened is that the game will run in Python and
+# be slower.
 #
 # --user keeps it out of any system location, and --only-binary :all: means pip will never
 # quietly decide to build it from source, which would need a Rust toolchain and take

@@ -6,21 +6,21 @@
 //! check. See `docs/PORTING.md` for the spec and CLAUDE.md for the rule that governs it:
 //! **if the golden moves and you did not mean to change the rules, this side has a bug.**
 //!
-//! The module map, and who owns what:
+//! The module map:
 //!
-//! | module     | contents                                        |
-//! |------------|-------------------------------------------------|
-//! | `board`    | square encoding, geometry, winner check          |
-//! | `tables`   | everything computed at startup: UNPACK, the rays |
-//! | `movegen`  | `check_moves` and the legality helpers           |
-//! | `exec`     | the executors: move, push, break, drop           |
-//! | `eval`     | integer-only evaluation                          |
-//! | `search`   | ordering, alpha-beta, the transposition table    |
-//! | `py`       | PyO3 bindings (feature `python`)                 |
-//! | `wasm`     | wasm-bindgen bindings (feature `wasm`)           |
+//! | module     | contents                                          |
+//! |------------|---------------------------------------------------|
+//! | `board`    | square encoding, geometry, winner check            |
+//! | `tables`   | everything computed at startup: UNPACK, the rays   |
+//! | `movegen`  | `check_moves` and the legality helpers             |
+//! | `exec`     | the executors: move, push, break, drop             |
+//! | `eval`     | integer-only evaluation                            |
+//! | `search`   | ordering, alpha-beta, the transposition table      |
+//! | `py`       | PyO3 bindings, the `royals_accel` wheel (`python`) |
+//! | `wasm`     | plain C exports for the browser (`wasm`)           |
 //!
-//! Nothing in this file changes after the skeleton commit -- everything below is either a
-//! module declaration or the one type every workstream has to agree on.
+//! Everything below is either a module declaration or [`Move`], which is the one type every
+//! other module has to agree on — which is why this file is nearly all comment.
 
 pub mod board;
 pub mod eval;

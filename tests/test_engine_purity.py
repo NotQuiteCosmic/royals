@@ -1,9 +1,9 @@
 """The engine must stay importable by things that are not a terminal.
 
-royals_engine is imported by a tkinter window, a terminal driver, and (soon) a web
-worker serving many games at once. Those have almost nothing in common, and the only
-reason one package can serve all of them is that it assumes nothing about who is
-calling: no widgets, no stdin, no stdout.
+royals_engine is imported by a tkinter window, a terminal driver, and a web worker
+serving many games at once. Those have almost nothing in common, and the only reason one
+package can serve all of them is that it assumes nothing about who is calling: no widgets,
+no stdin, no stdout.
 
 That property was true by accident and is now checked. Before the package split the
 engine held Engine.getOrigin (which blocked on input()), three ANSI-printing display
@@ -22,8 +22,8 @@ import pytest
 
 ENGINE_DIR = pathlib.Path(__file__).resolve().parent.parent / "engine" / "src" / "royals_engine"
 
-# Modules a browser (Pyodide), a server worker, or a GUI process may not have, may not
-# have meaningfully, or should never see the engine reach for.
+# Modules a server worker or a GUI process may not have, may not have meaningfully, or
+# should never see the engine reach for.
 BANNED_IMPORTS = {
     "tkinter",
     "curses",
@@ -31,7 +31,10 @@ BANNED_IMPORTS = {
     "subprocess",
     "http",
     "urllib",
-    "pickle",       # never deserialize a board with this -- see the security plan
+    # A board is a tuple of small ints and travels as JSON or as RAN text; nothing in this
+    # engine has a reason to unpickle anything, and a deserializer that can construct
+    # arbitrary objects has no business next to the move validator.
+    "pickle",
     "shelve",       # pickle in a trenchcoat
 }
 
@@ -102,8 +105,9 @@ def test_no_io_calls(path):
 @pytest.mark.parametrize("path", engine_modules(), ids=lambda p: p.name)
 def test_only_stdlib_and_self_imports(path):
     """The engine has zero third-party dependencies. That is what lets the same source
-    run under CPython, PyPy, and Pyodide without a compatibility matrix, and it keeps
-    third-party code out of the path that validates moves."""
+    run under CPython and PyPy without a compatibility matrix, and it keeps third-party
+    code out of the path that validates moves. royals_accel is the one exception, and it
+    is not third-party code: it is these same rules, compiled from engine-rs/."""
     allowed_stdlib = {
         "math", "random", "operator", "copy", "struct", "itertools",
         "functools", "collections", "typing", "dataclasses", "enum",

@@ -50,9 +50,55 @@ body {
 
 #app { max-width: 1120px; margin: 0 auto; }
 
-.topbar { margin-bottom: 18px; }
+.topbar { margin-bottom: 18px; position: relative; padding-left: 34px; }
 .topbar h1 { margin: 0; font-size: 26px; letter-spacing: 3px; text-transform: uppercase; }
 .tagline { margin: 4px 0 0; color: var(--dim); font-size: 13px; }
+
+/* Which engine is answering.
+ *
+ * Absolutely placed rather than laid out inline so it cannot shift the title as it changes
+ * state -- the tag flips PY/RS after the wasm loads, and a badge that reflowed the header a
+ * moment into every visit would be worse than no badge.
+ *
+ * Grey is the resting state and the colour is earned. Unlike the desktop window, whose palette
+ * is deliberately achromatic and has no colour to remove, this one does -- so here the
+ * distinction really is colour against greyscale. */
+.engine-badge {
+  position: absolute;
+  left: 0;
+  top: 2px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 26px;
+  color: var(--dim);
+  cursor: default;
+  user-select: none;
+}
+
+/* three discs, the way a stack reads on the board */
+.engine-badge-stack {
+  width: 18px;
+  height: 16px;
+  background:
+    radial-gradient(circle at 50% 22%, currentColor 3.2px, transparent 3.4px),
+    radial-gradient(circle at 50% 52%, currentColor 3.2px, transparent 3.4px),
+    radial-gradient(circle at 50% 82%, currentColor 3.2px, transparent 3.4px);
+  opacity: 0.55;
+}
+
+.engine-badge-tag {
+  font-size: 9px;
+  letter-spacing: 1px;
+  font-weight: 700;
+}
+
+/* Set by app.js once engine.ready has settled, never before. */
+.engine-badge.is-local {
+  color: var(--green);
+}
+.engine-badge.is-local .engine-badge-stack { opacity: 1; }
 
 .hidden { display: none !important; }
 

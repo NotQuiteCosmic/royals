@@ -237,9 +237,9 @@ pub fn get_legal_push_length(
                 // a lone spy slips in, so that square always costs exactly 1
                 strength -= 1;
 
-                // ...and if the spy slipped into a stack, that stack breaks apart. NOT WIRED
-                // UP -- breaks are their own move type, so this would have to report one
-                // rather than a push length. Left exactly as it stands in Python.
+                // ...and the stack it slipped into comes apart. Not decided here: this
+                // function only ever answers a length, and a break is its own move type.
+                // exe_push does the scattering once the shuffle is done.
             } else {
                 // Shoving the whole square along, prisoners and all. They are being carried
                 // rather than liberated, so their weight counts against the push exactly

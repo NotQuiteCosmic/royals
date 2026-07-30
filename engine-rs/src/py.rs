@@ -87,9 +87,54 @@ fn from_board<'py>(py: Python<'py>, board: &Board) -> Bound<'py, PyTuple> {
     PyTuple::new_bound(py, board.iter())
 }
 
+/// A side is 0 or 1.
+///
+/// `full_check` computes `adv[contr] - adv[1 - contr]` over a two-element array, so an
+/// unchecked value here is an out-of-bounds index -- which surfaces to Python as a
+/// `PanicException` and a line of `thread '<unnamed>' panicked` on stderr. That is the wrong
+/// type to catch and the wrong thing to find in a server log, and the pure-Python engine
+/// raises `ValueError` for the same input. The two implementations agreeing on what a refusal
+/// looks like is part of what makes them interchangeable.
+fn check_side(contr: u8) -> PyResult<u8> {
+    if contr > 1 {
+        return Err(PyValueError::new_err(format!(
+            "side must be 0 (blue) or 1 (red), got {contr}"
+        )));
+    }
+    Ok(contr)
+}
+
+/// Reject a move that is not one, matching `ai.checkMove` exactly -- including which of
+/// `ValueError` and `IndexError` each failure earns, since a caller that catches one and not
+/// the other must not care which engine answered.
 fn to_move(m: &PyMove) -> PyResult<Move> {
     let kind = MoveKind::from_str(&m.1)
         .ok_or_else(|| PyValueError::new_err(format!("{:?} is not a move kind", m.1)))?;
+
+    if m.0 < 1 || m.0 > 49 {
+        return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+            "origin {} is off the board (squares run 1 to 49)",
+            m.0
+        )));
+    }
+
+    // A break's target is a direction index into pushDirs, not a square. The asymmetry is the
+    // engine's oldest trap -- see docs/PORTING.md -- so the bound depends on the kind.
+    if kind == MoveKind::Break {
+        if m.2 as usize >= board::PUSH_DIRS.len() {
+            return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+                "break direction {} is not one of 0 to {}",
+                m.2,
+                board::PUSH_DIRS.len() - 1
+            )));
+        }
+    } else if m.2 > 48 {
+        return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+            "target {} is off the board (0-based squares run 0 to 48)",
+            m.2
+        )));
+    }
+
     Ok(Move::new(m.0, kind, m.2, m.3))
 }
 
@@ -103,6 +148,7 @@ fn from_move(m: Move) -> PyMove {
 
 #[pyfunction]
 fn list_all_moves(board: Vec<u16>, contr: u8) -> PyResult<Vec<PyMove>> {
+    let contr = check_side(contr)?;
     let board = to_board(board)?;
     let spaces = movegen::parse_board(&board);
     Ok(movegen::list_all_moves(&board, contr, &spaces)
@@ -118,6 +164,7 @@ fn perform_one_step<'py>(
     contr: u8,
     mv: PyMove,
 ) -> PyResult<Bound<'py, PyTuple>> {
+    let contr = check_side(contr)?;
     let board = to_board(board)?;
     let mv = to_move(&mv)?;
     Ok(from_board(py, &exec::perform_one_step(&board, contr, mv)))
@@ -132,6 +179,7 @@ fn evaluate_sides(board: Vec<u16>) -> PyResult<(Score, Score)> {
 
 #[pyfunction]
 fn full_check(board: Vec<u16>, contr: u8) -> PyResult<Score> {
+    let contr = check_side(contr)?;
     let board = to_board(board)?;
     Ok(eval::full_check(&board, contr))
 }
@@ -194,6 +242,7 @@ fn choose_move(
     ko_boards: Vec<Vec<u16>>,
     table_limit: usize,
 ) -> PyResult<(Score, Option<PyMove>, u64)> {
+    let contr = check_side(contr)?;
     let board = to_board(board)?;
     let (score, mv, nodes) = with_game(py, ko_boards, table_limit, move |game| {
         let (score, mv) = game.choose_move(&board, contr, depth);
@@ -212,6 +261,7 @@ fn take_turn<'py>(
     ko_boards: Vec<Vec<u16>>,
     table_limit: usize,
 ) -> PyResult<(Bound<'py, PyTuple>, Option<PyMove>, Score, u64)> {
+    let contr = check_side(contr)?;
     let board = to_board(board)?;
     let (next, mv, score, nodes) = with_game(py, ko_boards, table_limit, move |game| {
         let (next, mv, score) = game.take_turn(&board, contr, depth);

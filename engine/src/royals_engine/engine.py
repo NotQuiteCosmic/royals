@@ -42,7 +42,6 @@ def makeOrigin(cBoard, square, movingPris = False, spyBreak = False):
     return (movingPris, spyBreak, square, cBoard[square - 1])
 
 
-### Working-- after a little Type consternation. But working!
 # The weight of the stack an origin object describes -- the same question the other three
 # answer, with prisoners counting against the total only when they are being carried along.
 def sumWeightOrigin(tOrigin):
@@ -311,11 +310,10 @@ def getLegalPushLength(cBoard, inputSpace, inputData, dirIndex, contr, movingPri
             elif spyOnly:
                 strength -= 1
 
-                #...and if the spy slipped into a stack, that stack breaks apart.
-                #NOT WIRED UP YET -- breaks are their own move type, so this needs to
-                #report one rather than a push length. Left commented until that exists.
-                #if spaceCaptors(targ) > 1:
-                #    return 0
+                #...and the stack it slipped into comes apart. That is not decided here:
+                #this function only ever answers a length, and a break is its own move type.
+                #exePush does the scattering once the shuffle is done -- see the shatter
+                #branch at the end of it.
 
             #shoving the whole square along, prisoners and all. They are being carried rather
             #than liberated, so their weight counts against the push exactly like anyone
@@ -990,11 +988,9 @@ def checkMoves(cBoard, tOrigin, contr, spaces = None):
 
 
     ###### ORTHO PUSH SUITE and BREAK SUITE ######
-    # First task: make it check the directions and return range.
-    # OK... this is a mess. What do I need to do here? I need to:
-    # 1. Do a Range Check on each orthogonal direction. I think that's all. The RangeCheck should supposedly
-    #    return an accurate representation of whether a push is possible or not. Captured spies shouldn't matter...
-    #    at least, not yet. Save that to the break section.
+    # One range check per orthogonal direction, and getLegalPushLength's answer is the whole
+    # of it: a non-zero length means the push is on offer, and which square it lands on is
+    # the first entry of the ray it walked.
     # Breaks are a spy's trick -- a stack holding one can scatter. That counts a spy held
     # prisoner just as much as one standing: breaking is how it gets out, and the stack that
     # scatters is its captor's.

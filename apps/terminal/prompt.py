@@ -13,7 +13,6 @@ from royals_engine import hasher as Hasher
 from royals_engine import engine as Engine
 
 
-### WORKING!
 #   takes:    cBoard (a board -- 49 square codes)
 #             contr (bool, whose turn – right now, blue = False and red = True.).
 #   returns:  an origin object, (movingPris, spyBreak, square, code)
