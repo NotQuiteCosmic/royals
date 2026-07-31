@@ -246,6 +246,136 @@ def entry_to_json(piece, square):
     return {"kind": "enter", "piece": PIECE_TO_LETTER[piece], "square": square_to_alg(square)}
 
 
+# ---------------------------------------------------------------------------
+# Whole games, as text
+# ---------------------------------------------------------------------------
+# A game record is its move list and nothing else. Every front end already keeps one --
+# the server in a database column, the desktop as it plays -- and every one of them is the
+# same list of RAN tokens, so a file is that list with somewhere to put a date on it.
+#
+# These are string functions and do no file I/O, deliberately. The engine is imported by a
+# web worker and compiled into a browser, neither of which has a filesystem to speak of;
+# opening a file is each front end's business. That is the same line print() is on the
+# wrong side of.
+
+MAGIC = "# Royals 1"
+COMMENT = "#"
+
+# Long enough that a wrapped line still holds several plies, short enough to read in a
+# terminal and to diff sensibly. Nothing parses the line breaks -- decode splits on
+# whitespace -- so this is purely how it looks.
+WRAP = 72
+
+PLY_PASS, PLY_ENTER, PLY_MOVE = "pass", "enter", "move"
+
+
+def decode_ply(token):
+    """One token from a move list -> (kind, payload).
+
+        "--"      ->  ("pass",  None)
+        "@Rd4"    ->  ("enter", (piece, 1-based square))
+        "Jd3f5"   ->  ("move",  move tuple)
+
+    The three are told apart by their first character and by nothing else, which is why
+    the prefixes had to be distinct in the first place. Every reader of a game record --
+    replay, the review UI, the terminal viewer -- needs exactly this dispatch, and one
+    that is written out once cannot be got subtly different in three places.
+    """
+    if not isinstance(token, str):
+        raise NotationError("a ply is a string, got %r" % (type(token).__name__,))
+
+    text = token.strip()
+    if text == PASS:
+        return PLY_PASS, None
+    if text.startswith(ENTER_PREFIX):
+        return PLY_ENTER, decode_entry(text)
+    return PLY_MOVE, decode_move(text)
+
+
+def encode_game(moves, notes=()):
+    """A move list -> the text of a game record.
+
+    `moves` is a list of RAN tokens -- exactly what `Game.moves` holds and what the
+    database column stores -- and every one is decoded on the way past. That check is the
+    point of encoding here rather than joining with spaces at the call site: a front end
+    that has just learned to write its moves down gets told at save time that it wrote one
+    wrong, instead of producing a file that fails to load later with nothing left to say
+    which ply was at fault.
+
+    `notes` are free-text lines for the header. They are dropped on read, so anything a
+    reader must have has to be in the tokens -- which it is: the entering placements are
+    plies like any other, and a pass is written down rather than implied.
+    """
+    tokens = []
+    for index, token in enumerate(moves):
+        try:
+            decode_ply(token)
+        except NotationError as exc:
+            raise NotationError("ply %d (%r) is not playable notation: %s"
+                                % (index + 1, token, exc)) from exc
+        tokens.append(token.strip())
+
+    lines = [MAGIC]
+    for note in notes:
+        lines.extend(_comment(note))
+    lines.extend(_wrap(tokens))
+    return "\n".join(lines) + "\n"
+
+
+def _comment(note):
+    """A note as comment lines, and never as anything else.
+
+    splitlines rather than split("\\n"): it also breaks on \\r, \\x0b, \\x0c, \\x1c-\\x1e and
+    U+2028/9. A note is often something a person typed, and one that smuggled a line break
+    past this would land in the file as a line of tokens.
+    """
+    for line in str(note).splitlines() or [""]:
+        yield ("%s %s" % (COMMENT, line)).rstrip()
+
+
+def _wrap(tokens):
+    line = []
+    for token in tokens:
+        if line and len(" ".join(line)) + 1 + len(token) > WRAP:
+            yield " ".join(line)
+            line = []
+        line.append(token)
+    if line:
+        yield " ".join(line)
+
+
+def decode_game(text):
+    """The text of a game record -> its move list.
+
+    Comments are dropped and the rest is split on whitespace, which means the result is
+    precisely what `moves.split()` gives in game.replay and what the database column
+    holds. The file and the stored record are therefore the same string, and round-tripping
+    is a property of the format rather than an agreement between two pieces of code.
+
+    Every token is decoded before returning, so a truncated, corrupted or hand-edited file
+    fails here -- with the offending ply named -- rather than replaying into a position
+    nobody played to.
+    """
+    if not isinstance(text, str):
+        raise NotationError("a game record is text, got %r" % (type(text).__name__,))
+
+    tokens = []
+    for line in text.splitlines():
+        # A '#' can never occur inside a token, so anything from one to the end of the
+        # line is a comment wherever it appears. Strictly more permissive than
+        # whole-line comments, and unambiguous for the same reason.
+        tokens.extend(line.split(COMMENT, 1)[0].split())
+
+    for index, token in enumerate(tokens):
+        try:
+            decode_ply(token)
+        except NotationError as exc:
+            raise NotationError("ply %d (%r) is not playable notation: %s"
+                                % (index + 1, token, exc)) from exc
+
+    return tokens
+
+
 def entry_from_json(obj):
     if not isinstance(obj, dict) or obj.get("kind") != "enter":
         raise NotationError("not an entering placement: %r" % (obj,))

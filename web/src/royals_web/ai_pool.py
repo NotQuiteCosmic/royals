@@ -67,7 +67,14 @@ MAX_WORKERS = int(os.environ.get("ROYALS_AI_WORKERS", "2"))
 # player's game feel broken instead of one player's request failing honestly.
 MAX_QUEUE = int(os.environ.get("ROYALS_AI_QUEUE", "8"))
 
-SEARCH_DEADLINE = float(os.environ.get("ROYALS_AI_DEADLINE", "20"))
+# Twenty was headroom over the deepest search on offer until the ladder gained one at ten
+# ply, which measures about eighteen seconds a move on the machine this was developed on --
+# near enough the old ceiling that a slower server would have answered 504 rather than a
+# move, for a difficulty its own menu offered. The deadline is not a performance setting; it
+# is the bound on how long one request may pin a core, and the thing that decides whether a
+# long search is *offered* is ROYALS_MAX_DEPTH. A deployment that does not want half-minute
+# searches caps the menu there rather than letting them start and killing them.
+SEARCH_DEADLINE = float(os.environ.get("ROYALS_AI_DEADLINE", "60"))
 
 
 class AIBusy(Exception):
@@ -112,16 +119,23 @@ def take_turn(board, contr, depth, ko_boards):
         _clear_game_state()
 
 
-def choose_entry(board, contr, piece, is_spy, seed, noise):
+def choose_entry(board, contr, piece, is_spy, seed, noise, step):
     """Pick a square to enter a piece on.
 
     setEntryNoise is deterministic in its seed -- it builds the Perlin fields from
     Perlin.field(seed) and field(seed + 1) -- so passing the game's stored seed on every
     call reproduces the same opening field each time, and makes a game replayable from
     (seed, moves) alone rather than depending on process-local state.
+
+    `step` is how far down the entering order this placement is, and it is here for the same
+    reason: enterVaried draws from an rng, and one seeded per (seed, step) is a placement no
+    worker's history can influence. A pool worker serves whichever game asks next, so
+    anything that carried state between calls would make an opening depend on what else the
+    server happened to be doing.
     """
     AI.setEntryNoise(noise, seed)
-    return AI.chooseEntry(board, contr, piece, is_spy)
+    return AI.enterVaried(board, contr, piece, is_spy, noise,
+                          Engine.entryRng(seed, step))
 
 
 # ---------------------------------------------------------------------------
@@ -179,10 +193,10 @@ class AIPool:
     async def take_turn(self, board, contr, depth, ko_boards):
         return await self._run(take_turn, board, contr, depth, list(ko_boards))
 
-    async def choose_entry(self, board, contr, piece, is_spy, seed, noise):
+    async def choose_entry(self, board, contr, piece, is_spy, seed, noise, step):
         # Entering is cheap, but it goes through the same pool so there is one code path
         # and one place where concurrency is bounded.
-        return await self._run(choose_entry, board, contr, piece, is_spy, seed, noise)
+        return await self._run(choose_entry, board, contr, piece, is_spy, seed, noise, step)
 
 
 pool = AIPool()

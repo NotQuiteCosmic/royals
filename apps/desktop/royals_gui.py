@@ -42,13 +42,17 @@
 # when the engine was ported. If they read as suspiciously round, re-measure before trusting
 # them -- see docs/ARCHITECTURE.md for how to run both engines.)
 
+import datetime
 import math
 import queue
+import random
 import threading
 
 import tkinter as tk
 from tkinter import ttk
 import tkinter.font as tkfont
+import tkinter.filedialog as filedialog
+import tkinter.messagebox as messagebox
 
 # The engine is an installed package now (pip install -e ./engine), so the sys.path fixup
 # that used to sit here is gone. Aliased on import so every call site below reads exactly
@@ -56,6 +60,8 @@ import tkinter.font as tkfont
 from royals_engine import hasher as Hasher
 from royals_engine import engine as Engine
 from royals_engine import ai as artificialPlayer
+from royals_engine import notation as N
+from royals_engine import record as Record
 from royals_engine import _accel
 
 
@@ -68,13 +74,15 @@ FAST_ENGINE = _accel.active()
 # difference between the two is about thirty-six times, which is the difference between "a
 # fifth of a second" and "most of a minute" at the top of the range. One set of numbers
 # cannot honestly describe both.
-DEPTH_MAX = 9 if FAST_ENGINE else 6
+DEPTH_MAX = 10
 DEPTH_DEFAULT = 7 if FAST_ENGINE else 5
 DEPTH_ADVICE = (
-    "7 to 9 recommended — 8 takes about a second a move, 9 about three"
+    "7 to 9 recommended — 8 takes about a second a move, 9 about five. 10 is the deepest "
+    "there is and thinks for something like twenty seconds a move."
     if FAST_ENGINE else
     "5 or 6 recommended — 6 takes about two and a half seconds a move, 7 nearer ten. "
-    "Installing royals-accel makes the deeper settings practical."
+    "Past that it is minutes a move, and 10 is not worth starting. Installing "
+    "royals-accel makes the deeper settings practical."
 )
 
 
@@ -972,20 +980,25 @@ class StoneButton(tk.Label):
 # toggles its variable between 0 and 1; anything else makes it a radio that sets the
 # variable to that value. The markers are the ones the era used, drawn in mono so the
 # text after them lines up whichever way they are showing.
+#
+# Every line reads in ink, and the row for the white side is why that is written down. It
+# used to be lettered in the white the pieces are drawn in, which against this panel is
+# 1.06 to 1 -- a label the eye cannot find at all, on the one control a player has to read
+# before the game starts. A side is said here, the way the log and the status line say it,
+# and shown only where there is a board to show it on.
 class StoneChoice(tk.Frame):
-    def __init__(self, parent, text, variable, value=None, command=None, fg=None):
+    def __init__(self, parent, text, variable, value=None, command=None):
         tk.Frame.__init__(self, parent, bg=PANEL)
 
         self.variable = variable
         self.value = value
         self.command = command
         self.enabled = True
-        self.colour = fg or TEXT
 
         self.mark = tk.Label(self, font=FONT["mark"], bg=PANEL, fg=TEXT_KEY, padx=0)
         self.mark.pack(side="left")
         self.label = tk.Label(self, text=" " + text, font=FONT["body"], bg=PANEL,
-                              fg=self.colour, anchor="w")
+                              fg=TEXT, anchor="w")
         self.label.pack(side="left", fill="x", expand=True)
 
         for widget in (self, self.mark, self.label):
@@ -1010,11 +1023,16 @@ class StoneChoice(tk.Frame):
         else: self.mark.configure(text="(*)" if on else "( )")
 
         if not self.enabled:
-            self.mark.configure(fg=PANEL_LT)
+            # The whole row dims to one colour. The marker used to be drawn in PANEL_LT --
+            # a shade *lighter* than the panel it sits on, 1.06 to 1 -- which is not a muted
+            # control but an absent one: the two boxes in the side panel start disabled, so
+            # what a player saw there was a label with nothing in front of it. Off is a
+            # state a control can be in and still be read.
+            self.mark.configure(fg=TEXT_DIM)
             self.label.configure(fg=TEXT_DIM)
         else:
             self.mark.configure(fg=TEXT_KEY if on else TEXT_DIM)
-            self.label.configure(fg=self.colour)
+            self.label.configure(fg=TEXT)
 
     def setEnabled(self, on):
         self.enabled = on
@@ -1076,6 +1094,21 @@ def sideName(contr):
     return "Black" if contr else "White"
 
 
+# What a position in a record is called: "Move 7", or "Entering 3 of 12" during the opening.
+#
+# Neither is the ply number the slider is indexed by, and that is why this exists. A record
+# counts the twelve placements as plies 1 to 12, so the seventh move of a game is ply 19 --
+# the right handle for code, and no help to somebody trying to say where they have got to.
+# `phase` and `turn` come off the Position, which got them from record.turn_of_ply, so this
+# is formatting and not a second opinion about the numbering.
+def reviewLabel(spot, enterSteps):
+    if not spot.turn:
+        return "Start"
+    if spot.phase == Record.PHASE_ENTERING:
+        return "Entering %d of %d" % (spot.turn, enterSteps)
+    return "Move %d" % spot.turn
+
+
 class RoyalsWindow:
     def __init__(self, root):
         self.root = root
@@ -1099,6 +1132,12 @@ class RoyalsWindow:
         self.swallowRelease = False
         self.redrawPending = False
 
+        # Which game is the current one, as a number that only ever goes up. Anything this
+        # window hands to the event loop -- a search, a pause -- carries the number the game
+        # had when it was asked for, and is dropped on arrival if the number has moved on.
+        # See pollAI for what goes wrong without it.
+        self.gameGen = 0
+
         self.frame = None
         self.buildSetup()
 
@@ -1120,6 +1159,17 @@ class RoyalsWindow:
     def buildSetup(self):
         if self.frame: self.frame.destroy()
 
+        # Whatever was being played is over as far as this window is concerned, whether it
+        # finished or the player walked away from it mid-search.
+        self.gameGen += 1
+
+        # And so is whatever was being reviewed. Every review handler already declines to do
+        # anything when this is None, so dropping it here is what makes the arrow keys -- which
+        # are bound to the root and therefore still live on this screen -- no-ops rather than
+        # eight TclErrors against the widgets buildGame's frame took with it. The review was
+        # of a game that no longer exists; there is nothing to guard, only something to forget.
+        self.review = None
+
         # the setup screen is a column of controls and wants no more room than it asks for
         self.viewReady = False
         self.root.resizable(False, False)
@@ -1140,6 +1190,7 @@ class RoyalsWindow:
 
         self.modeVar = tk.IntVar(value=1)
         self.sideVar = tk.IntVar(value=0)
+        self.entryVar = tk.IntVar(value=0)
         self.depthVar = tk.IntVar(value=DEPTH_DEFAULT)
         self.noiseVar = tk.IntVar(value=50)
 
@@ -1154,11 +1205,23 @@ class RoyalsWindow:
         # side
         self.sideBox = self.carvedBox(self.frame, "YOUR SIDE")
         self.sideButtons = []
-        for value, text, colour in ((0, "White  —  enters first", WHITE),
-                                    (1, "Black  —  moves first", BLACK)):
-            b = StoneChoice(self.sideBox, text, self.sideVar, value, fg=colour)
+        # The hollow and filled squares are the ones setStatus puts in front of whose turn
+        # it is, so the same two marks mean the same two sides everywhere a player reads
+        # them. They carry the colour; the lettering does not have to.
+        for value, text in ((0, "□  White  —  enters first"),
+                            (1, "■  Black  —  moves first")):
+            b = StoneChoice(self.sideBox, text, self.sideVar, value)
             b.pack(fill="x", pady=1)
             self.sideButtons.append(b)
+
+        # entering. Its own box rather than a line in COMPUTER below, because it governs
+        # every side's placements in every mode -- including a 2 player game, where there is
+        # no computer at all and the box below is empty of anything that applies.
+        self.entryBox = self.carvedBox(self.frame, "ENTERING")
+        for value, text in ((0, "Players choose their squares"),
+                            (1, "Squares chosen at random  —  the placement rules still apply")):
+            StoneChoice(self.entryBox, text, self.entryVar, value,
+                        command=self.refreshSetup).pack(fill="x", pady=1)
 
         # depth
         self.aiBox = self.carvedBox(self.frame, "COMPUTER")
@@ -1166,20 +1229,26 @@ class RoyalsWindow:
         tk.Label(self.aiBox, text="Search depth", bg=PANEL, fg=TEXT,
                  font=FONT["body"], anchor="w").pack(fill="x")
 
-        row = tk.Frame(self.aiBox, bg=PANEL)
-        row.pack(fill="x", pady=(2, 2))
-        # A spinbox is a native control here and would not take any of this palette. Nine
-        # is the whole range, so it costs nothing to lay it out and gains a control that
+        # A spinbox is a native control here and would not take any of this palette. Ten is
+        # the whole range, so it costs nothing to lay it out and gains a control that
         # matches everything around it.
         #
         # The range used to stop at six because seven was ten seconds of waiting. With the
         # compiled engine seven is a fifth of a second, so the old ceiling was cutting off
         # the settings a player would actually want.
+        #
+        # Two rows of five rather than one of ten, and that is about the window rather than
+        # about the settings: laid out in a line, ten buttons come to 486 pixels and drag
+        # the whole setup screen ninety wider than the title plate above them, which is
+        # fixed. Five to a row leaves the column the width it was drawn to be.
         self.depthButtons = []
-        for value in range(1, DEPTH_MAX + 1):
-            b = StoneChoice(row, str(value), self.depthVar, value)
-            b.pack(side="left", padx=(0, 8))
-            self.depthButtons.append(b)
+        for start in (1, 6):
+            row = tk.Frame(self.aiBox, bg=PANEL)
+            row.pack(fill="x", pady=(2, 0))
+            for value in range(start, start + 5):
+                b = StoneChoice(row, str(value), self.depthVar, value)
+                b.pack(side="left", padx=(0, 8))
+                self.depthButtons.append(b)
 
         # Which advice is true depends on which engine is answering, and the difference is
         # a factor of thirty-six -- large enough that one sentence cannot serve both. Saying
@@ -1200,12 +1269,18 @@ class RoyalsWindow:
         self.noiseScale = StoneSlider(self.aiBox, self.noiseVar)
         self.noiseScale.pack(anchor="w")
 
-        tk.Label(self.aiBox, text="0 opens the same way every game. The seed is logged, so an "
-                                  "opening worth seeing again can be played again.",
+        tk.Label(self.aiBox, text="0 opens the same way every game; 100 puts every piece on a "
+                                  "square drawn at random. The seed is logged, so an opening "
+                                  "worth seeing again can be played again.",
                  bg=PANEL, fg=TEXT_DIM, font=FONT["small"], wraplength=400,
                  justify="left", anchor="w").pack(fill="x")
 
-        StoneButton(self.frame, "START GAME", self.startGame).pack(anchor="w", pady=(4, 0))
+        start = tk.Frame(self.frame, bg=PANEL)
+        start.pack(anchor="w", pady=(4, 0))
+        StoneButton(start, "START GAME", self.startGame).pack(side="left")
+        # A game saved from here, or downloaded from the browser -- they are the same file.
+        StoneButton(start, "OPEN A SAVED GAME", self.openGame,
+                    font=FONT["small"]).pack(side="left", padx=(12, 0))
 
         self.refreshSetup()
 
@@ -1213,14 +1288,17 @@ class RoyalsWindow:
         self.noiseValue.configure(text="%3d" % self.noiseVar.get())
 
     # Side only means something in a 1 player game, and there is no computer to configure
-    # in a 2 player one.
+    # in a 2 player one. The variety slider goes further than that: it feeds chooseEntry,
+    # and a random opening never calls it, so in that mode it is a control that would do
+    # nothing at all.
     def refreshSetup(self):
         for b in self.sideButtons: b.setEnabled(self.modeVar.get() == 1)
 
         playsItself = self.modeVar.get() != 0
+        liveNoise = playsItself and not self.entryVar.get()
         for b in self.depthButtons: b.setEnabled(playsItself)
-        self.noiseScale.setEnabled(playsItself)
-        self.noiseValue.configure(fg=TEXT_KEY if playsItself else TEXT_DIM)
+        self.noiseScale.setEnabled(liveNoise)
+        self.noiseValue.configure(fg=TEXT_KEY if liveNoise else TEXT_DIM)
 
     ################################################################################
     ####### GAME WINDOW ############################################################
@@ -1259,11 +1337,26 @@ class RoyalsWindow:
         self.canvas.bind("<ButtonRelease-1>", self.onRelease)
         self.canvas.bind("<Double-Button-1>", self.onDoubleClick)
         self.canvas.bind("<Configure>", self.onResize)
-        self.root.bind("<Home>", lambda e: self.resetView())
+        # Home means two things depending on what the window is doing, and the one that
+        # applies while reviewing is the one a person pressing it there wants.
+        self.root.bind("<Home>", self.onHome)
+        self.root.bind("<End>", lambda e: self.reviewGoTo(1 << 30))
+        self.root.bind("<Left>", lambda e: self.reviewStep(-1))
+        self.root.bind("<Right>", lambda e: self.reviewStep(1))
 
         self.viewW = openW
         self.viewH = openH
         self.view.fit(self.viewW, self.viewH)
+
+        # The drag flags belong to the canvas that has just been replaced. A game begun while
+        # the board was being turned used to inherit dragging=True from the one before it, and
+        # redraw reads that as `v.detail = not self.dragging` -- so the new board came up in
+        # the low-detail form the drag uses and stayed there until somebody turned it again.
+        self.dragging = False
+        self.dragFrom = (0, 0)
+        self.dragBase = (YAW_DEF, PITCH_DEF)
+        self.swallowRelease = False
+        self.redrawPending = False
 
         panel = tk.Frame(self.frame, bg=PANEL, width=310)
         panel.grid(row=0, column=1, sticky="nsew", padx=(7, 14), pady=14)
@@ -1328,6 +1421,52 @@ class RoyalsWindow:
                     font=FONT["small"]).pack(side="left")
         StoneButton(buttons, "RESET VIEW", self.resetView,
                     font=FONT["small"]).pack(side="left", padx=(8, 0))
+
+        # Keeping the game and walking back through it. A second row rather than a longer
+        # one: four of these do not fit across a 310px panel at this font.
+        self.archiveRow = tk.Frame(panel, bg=PANEL)
+        self.archiveRow.pack(fill="x", pady=(8, 0))
+        StoneButton(self.archiveRow, "SAVE", self.saveGame,
+                    font=FONT["small"]).pack(side="left")
+        StoneButton(self.archiveRow, "REVIEW", self.startReview,
+                    font=FONT["small"]).pack(side="left", padx=(8, 0))
+
+        # The review controls stand in the same place, and only while reviewing. Built here
+        # rather than on demand so the panel's height does not jump as it appears; the
+        # scrubber is the one part that has to be rebuilt, because a StoneSlider takes its
+        # range at construction and the range is however long the game turned out to be.
+        self.reviewRow = tk.Frame(panel, bg=PANEL)
+        self.reviewVar = tk.IntVar(value=0)
+        self.reviewVar.trace_add("write", self.onReviewSlide)
+
+        steps = tk.Frame(self.reviewRow, bg=PANEL)
+        steps.pack(fill="x")
+        for text, command in (("|<", lambda: self.reviewGoTo(0)),
+                              ("<", lambda: self.reviewStep(-1)),
+                              (">", lambda: self.reviewStep(1)),
+                              (">|", lambda: self.reviewGoTo(1 << 30))):
+            StoneButton(steps, text, command, font=FONT["small"],
+                        width=2).pack(side="left", padx=(0, 6))
+        StoneButton(steps, "DONE", self.exitReview,
+                    font=FONT["small"]).pack(side="right")
+
+        # Which move is on the board, directly over the scrubber. This is the number
+        # somebody stepping through a game keeps their place by, so it is the one thing in
+        # the row at reading size; the ply position beside it is smaller, because it is
+        # what the slider is indexed by rather than what anyone would say out loud. They
+        # are not the same number -- see turnMark, and record.turn_of_ply.
+        markRow = tk.Frame(self.reviewRow, bg=PANEL)
+        markRow.pack(fill="x", pady=(7, 1))
+        self.reviewMark = tk.Label(markRow, text="", font=FONT["status"], bg=PANEL,
+                                   fg=TEXT_KEY, anchor="w")
+        self.reviewMark.pack(side="left")
+        self.reviewPly = tk.Label(markRow, text="", font=FONT["small"], bg=PANEL,
+                                  fg=TEXT_DIM, anchor="e")
+        self.reviewPly.pack(side="right")
+
+        self.reviewScale = None
+        self.reviewScaleHolder = tk.Frame(self.reviewRow, bg=PANEL)
+        self.reviewScaleHolder.pack(fill="x")
 
     # In one colour the board says everything by shape, and a shape has to be told where a
     # colour could just be seen. Drawn with the same icon functions the board uses, so the
@@ -1431,12 +1570,61 @@ class RoyalsWindow:
         self.aiDepth = max(1, int(self.depthVar.get()))
 
         self.buildGame()
+        self.resetGameState()
 
-        if mode != 0:
-            noise = self.noiseVar.get() / 100.0
-            seed = artificialPlayer.setEntryNoise(noise)
-            if noise: self.log("Entering seed: " + str(seed), "grey")
-            else: self.log("Fixed opening (no entering noise).", "grey")
+        # Nobody picks their squares: the twelve placements are drawn uniformly from the
+        # legal ones, both sides alike. The seed is logged for the same reason the entering
+        # noise seed is -- an opening worth seeing again can be played again.
+        #
+        # After resetGameState rather than before it, because that is where the two of them
+        # are given the defaults a game gets when nobody chose -- which is what openGame
+        # relies on, having no menu to read them from.
+        self.randomEntry = bool(self.entryVar.get())
+        self.entrySeed = random.randrange(1 << 30) if self.randomEntry else None
+
+        if self.randomEntry:
+            # setEntryNoise is skipped outright here rather than set to zero: it only feeds
+            # chooseEntry and entryShortlist, and a random opening calls neither.
+            self.log("Entering at random. Seed: " + str(self.entrySeed), "grey")
+        elif mode != 0:
+            # The slider drives two things and the seed ties both to this game: how far the
+            # Perlin field tilts the ranking, and how loosely enterVaried picks off it.
+            self.entryNoise = self.noiseVar.get() / 100.0
+            self.entrySeed = artificialPlayer.setEntryNoise(self.entryNoise)
+            if self.entryNoise >= 1.0:
+                self.log("The computer enters at random. Seed: " + str(self.entrySeed), "grey")
+            elif self.entryNoise:
+                self.log("Entering seed: " + str(self.entrySeed), "grey")
+            else:
+                self.log("Fixed opening (no entering variety).", "grey")
+
+        self.log("ENTERING — royals first, then the four pawns, then the spies.", "grey")
+        if self.randomEntry:
+            self.log("Nobody chooses: every piece lands on a square drawn from the legal "
+                     "ones. A royal or pawn can't enter touching something its own side "
+                     "already controls; a spy goes anywhere empty.", "grey")
+        else:
+            self.log("A royal or pawn can't enter touching something you already control, "
+                     "your dragon included. A spy goes anywhere empty.", "grey")
+        self.log("Drag anywhere on the board to turn it. Double click off the play, or "
+                 "RESET VIEW, to put it back.", "grey")
+
+        # there is a board now, so the canvas may draw
+        self.viewReady = True
+        self.advance()
+
+    # Everything a game window needs before anything is drawn in it. Split out of startGame
+    # because opening a saved game needs the same blank slate and none of the questions
+    # above it -- a record carries its own opening, so there is no seed or noise to set.
+    def resetGameState(self):
+        # A new game, so nothing the last one left in the event loop belongs here any more.
+        self.gameGen += 1
+
+        # What a game is played under when nobody was asked -- openGame has no menu to read.
+        # startGame overwrites these immediately after calling this.
+        self.randomEntry = False
+        self.entrySeed = None
+        self.entryNoise = 0.0
 
         self.board = Hasher.Entering_Board()
         self.phase = "entering"
@@ -1463,18 +1651,15 @@ class RoyalsWindow:
         self.hasPris = False
         self.aiBusy = False
 
+        # The game as it is played, one RAN token per ply. Until this existed the window
+        # kept no account of a game at all -- it called the executors directly and wrote
+        # down only boards, into the ko set -- so a game played here left nothing anybody
+        # could keep, send on or read back. See recordPly.
+        self.record = []
+        self.review = None
+
         Engine.koReset()
         artificialPlayer.newGame()
-
-        self.log("ENTERING — royals first, then the four pawns, then the spies.", "grey")
-        self.log("A royal or pawn can't enter touching something you already control, your "
-                 "dragon included. A spy goes anywhere empty.", "grey")
-        self.log("Drag anywhere on the board to turn it. Double click off the play, or "
-                 "RESET VIEW, to put it back.", "grey")
-
-        # there is a board now, so the canvas may draw
-        self.viewReady = True
-        self.advance()
 
     ################################################################################
     ####### THE LOOP ###############################################################
@@ -1484,6 +1669,14 @@ class RoyalsWindow:
 
     def advance(self):
         self.redraw()
+
+        # A search is already out on this position, and it will advance the game itself when
+        # it answers. Stepping again here is what starts a second one -- two searches on one
+        # position, two results, two moves played for one side. Reachable from anything that
+        # can call advance twice: a pause that fires late, a click that arrives while the
+        # computer is thinking.
+        if self.aiBusy: return
+
         if self.phase == "entering": self.enterStep()
         elif self.phase == "play": self.playStep()
 
@@ -1496,8 +1689,31 @@ class RoyalsWindow:
 
             # every square is hemmed in, so this side sits the step out
             if not options:
-                self.log(sideName(contr) + " has nowhere to enter a "
+                self.log(self.turnMark() + sideName(contr) + " has nowhere to enter a "
                          + PIECE_NAMES[piece] + " — skipped.", "grey")
+                self.recordPly(N.PASS)
+                self.enterIndex += 1
+                continue
+
+            # A random opening is placed inside this one call: the branch continues rather
+            # than returning, so all twelve land before the event loop gets the window back.
+            # That is what keeps it free of timers -- nothing is left scheduled for a game
+            # that NEW GAME may have torn down, and there is no gap between placements for a
+            # click to arrive in. entryOptions is never filled either, so drawSquare
+            # highlights nothing and boardClick has nothing to act on.
+            if self.randomEntry:
+                square = Engine.randomEntry(self.board, contr, isSpy,
+                                            Engine.entryRng(self.entrySeed, self.enterIndex))
+                self.board = Engine.dropPiece(self.board, square, contr, piece)
+                # A dealt placement is a ply like any other: the record has to carry it, or
+                # a saved random game replays every later move as the other side's.
+                self.recordPly(N.encode_entry(piece, square))
+                self.lastMove = [square]
+                self.lastFlights = ()
+                self.log(self.turnMark() + sideName(contr) + " "
+                         + PIECE_NAMES[piece] + " enters at "
+                         + Hasher.IndexToAlg(square - 1).upper(),
+                         "black" if contr else "white")
                 self.enterIndex += 1
                 continue
 
@@ -1517,8 +1733,10 @@ class RoyalsWindow:
             self.setStatus(label, contr)
             self.setHint("Thinking…  (" + count + ")")
             self.redraw()
-            self.runAI(lambda b=self.board, c=contr, p=piece, s=isSpy:
-                       artificialPlayer.chooseEntry(b, c, p, s), self.finishAIEntry)
+            self.runAI(lambda b=self.board, c=contr, p=piece, s=isSpy,
+                              n=self.entryNoise,
+                              r=Engine.entryRng(self.entrySeed, self.enterIndex):
+                       artificialPlayer.enterVaried(b, c, p, s, n, r), self.finishAIEntry)
             return
 
         self.startPlay()
@@ -1530,14 +1748,18 @@ class RoyalsWindow:
         # chooseEntry gives back None when there is nowhere, though enterStep has already
         # checked that there is somewhere.
         if square is None:
-            self.log(sideName(contr) + " has nowhere to enter a "
+            self.log(self.turnMark() + sideName(contr) + " has nowhere to enter a "
                      + PIECE_NAMES[piece] + " — skipped.", "grey")
+            self.recordPly(N.PASS)
         else:
             self.board = Engine.dropPiece(self.board, square, contr, piece)
+            self.recordPly(N.encode_entry(piece, square))
             self.lastMove = [square]
             self.lastFlights = ()
-            self.log(sideName(contr) + " " + PIECE_NAMES[piece] + " enters at "
-                     + Hasher.IndexToAlg(square - 1).upper(), "black" if contr else "white")
+            self.log(self.turnMark() + sideName(contr) + " "
+                     + PIECE_NAMES[piece] + " enters at "
+                     + Hasher.IndexToAlg(square - 1).upper(),
+                     "black" if contr else "white")
 
         self.enterIndex += 1
         self.advance()
@@ -1547,10 +1769,13 @@ class RoyalsWindow:
 
         if square in self.entryOptions:
             self.board = Engine.dropPiece(self.board, square, contr, self.entryPiece)
+            self.recordPly(N.encode_entry(self.entryPiece, square))
             self.lastMove = [square]
             self.lastFlights = ()
-            self.log(sideName(contr) + " " + PIECE_NAMES[self.entryPiece] + " enters at "
-                     + Hasher.IndexToAlg(square - 1).upper(), "black" if contr else "white")
+            self.log(self.turnMark() + sideName(contr) + " "
+                     + PIECE_NAMES[self.entryPiece] + " enters at "
+                     + Hasher.IndexToAlg(square - 1).upper(),
+                     "black" if contr else "white")
             self.enterIndex += 1
             self.advance()
             return
@@ -1592,7 +1817,8 @@ class RoyalsWindow:
         moves = artificialPlayer.listAllMoves(self.board, contr)
         if not moves:
             self.legalOrigins = set()
-            self.log(sideName(contr) + " has no legal move, passing.", "grey")
+            self.log(self.turnMark() + sideName(contr) + " has no legal move, passing.", "grey")
+            self.recordPly(N.PASS)
             self.passes += 1
             self.turn += 1
 
@@ -1602,7 +1828,7 @@ class RoyalsWindow:
 
             self.redraw()
             # back through the event loop rather than straight down the stack
-            self.root.after(400, self.advance)
+            self.later(400, self.advance)
             return
 
         self.legalOrigins = set(m[0] for m in moves)
@@ -1625,7 +1851,8 @@ class RoyalsWindow:
         if move is None:
             # playStep found it a move, so this can only be the ko filter having taken the
             # last one away underneath it.
-            self.log(sideName(contr) + " has no legal move, passing.", "grey")
+            self.log(self.turnMark() + sideName(contr) + " has no legal move, passing.", "grey")
+            self.recordPly(N.PASS)
             self.passes += 1
             self.turn += 1
 
@@ -1633,10 +1860,11 @@ class RoyalsWindow:
                 self.finish("Neither side can move.", None)
                 return
 
-            self.root.after(400, self.advance)
+            self.later(400, self.advance)
             return
 
-        self.log(sideName(contr) + ": " + artificialPlayer.describeMove(move),
+        self.log(self.turnMark() + sideName(contr) + ": "
+                 + artificialPlayer.describeMove(move),
                  "black" if contr else "white")
         self.log("   score " + artificialPlayer.scoreText(score) + ", "
                  + str(artificialPlayer.calcCount) + " boards considered", "grey")
@@ -1673,6 +1901,10 @@ class RoyalsWindow:
         self.lastFlights = Engine.moveFlights(self.board, move, self.contr) if move else ()
         self.board = board
         self.lastMove = squares
+        # Below the ko check on purpose: a move that was taken back never happened, and a
+        # record that held it would replay into a game nobody played. This is the only
+        # place a move reaches the record, and every caller passes one.
+        self.recordPly(N.encode_move(move))
         Engine.koRecord(board)
         self.passes = 0
         self.turn += 1
@@ -1699,6 +1931,257 @@ class RoyalsWindow:
         if contr is None: self.log("Game finished. " + text, "grey")
         else: self.log("Game finished. " + text, "black" if contr else "white")
         self.redraw()
+        if self.record:
+            self.log("SAVE keeps this game as a text file you can open again.", "grey")
+
+    ################################################################################
+    ####### THE RECORD #############################################################
+    ################################################################################
+    # A game played here used to leave nothing behind. The window called the executors
+    # directly and wrote down only boards, into the ko set, so when it closed the game was
+    # gone -- there was nothing to keep, nothing to send anybody, and nothing to read back.
+    #
+    # What it writes now is the same list of RAN tokens the server stores in a database
+    # column and hands to a browser, which is what makes a game saved here openable there
+    # and the other way about. That interchange is not a happy accident: it is the reason
+    # every ply is written down, including the ones where nothing happened.
+    #
+    # **The entering phase is twelve plies whatever happens in it.** A side with nowhere to
+    # place sits the step out, and that skip has to be recorded, because the side of every
+    # later ply is derived from its position in the list. Leave one out and the record still
+    # reads perfectly, still replays without complaint, and replays every move after it as
+    # the *other* side's -- into a real position that nobody played to. The same goes for a
+    # pass during play. That is the failure mode this section is shaped around, and
+    # tests/test_desktop_record.py is what holds it shut.
+
+    # What a log line is filed under: which of the twelve placements, or which move.
+    #
+    # Two numberings that both restart at "— entering complete —", rather than one running
+    # count, because a game's seventh move is its nineteenth ply and "19" is the number the
+    # *record* uses. It is the right handle for code and no help at all to somebody reading
+    # back through a game. `royals_engine.record.turn_of_ply` is the same rule stated once
+    # for the review UIs; these two counters are where it comes from.
+    #
+    # Read off `enterIndex` and `turn` rather than off len(self.record), and that is not
+    # incidental: the six sites that log a ply do not agree on whether they log before or
+    # after recording it, so a mark derived from the record's length would be right at some
+    # of them and quietly off by one at the others. These two are correct at all six --
+    # enterIndex is the 0-based entering step until it is stepped past, and `turn` is the
+    # engine's move counter, which opens at 1 with whoever entered second.
+    def turnMark(self):
+        number = self.enterIndex + 1 if self.phase == "entering" else self.turn
+        return "%2d. " % number
+
+    def recordPly(self, token):
+        """Write one ply down. Every path that consumes a ply comes through here.
+
+        Deliberately not the place any decision is made: the callers know whether a ply
+        happened, and a recorder that tried to work it out for itself would be a second
+        opinion about the game loop.
+        """
+        self.record.append(token)
+
+    def recordNote(self):
+        """The one comment line a saved game carries. Metadata only -- it is dropped on read."""
+        who = ("two players" if all(self.humanSides)
+               else "the computer against itself" if not any(self.humanSides)
+               else "against the computer at depth %d" % self.aiDepth)
+        how = self.statusLabel.cget("text").strip("■□ ") if self.phase == "over" else "unfinished"
+        return "%s  %s  %s  %d plies" % (
+            datetime.date.today().isoformat(), who, how, len(self.record))
+
+    def saveGame(self):
+        if not self.record:
+            self.setHint("Nothing to save yet — the game has not started.")
+            return
+
+        path = filedialog.asksaveasfilename(
+            parent=self.root, title="Save this game",
+            defaultextension=".txt", filetypes=[("Royals game", "*.txt"), ("All files", "*")],
+            initialfile="royals-%s.txt" % datetime.date.today().isoformat())
+        if not path:
+            return
+
+        try:
+            # encode_game decodes every token on the way past, so a recorder that has
+            # written one down wrong is caught here, with the ply named -- rather than
+            # producing a file that fails to open later with nothing left to say why.
+            text = N.encode_game(self.record, notes=[self.recordNote()])
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(text)
+        except (OSError, N.NotationError) as error:
+            messagebox.showerror("Royals", "That game could not be saved.\n\n%s" % (error,),
+                                 parent=self.root)
+            return
+
+        self.log("Saved %d plies to %s" % (len(self.record), path), "grey")
+        self.setHint("Saved. Open it again from the first screen to walk through it.")
+
+    # Opening a file, from the setup screen. There is no game in the window yet, so this
+    # builds one for the record to be drawn in.
+    def openGame(self):
+        path = filedialog.askopenfilename(
+            parent=self.root, title="Open a saved game",
+            filetypes=[("Royals game", "*.txt"), ("All files", "*")])
+        if not path:
+            return
+
+        try:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+            moves, spots = Record.read(text)
+        except (OSError, UnicodeDecodeError, N.NotationError, Record.RecordError) as error:
+            messagebox.showerror("Royals", "That file could not be read.\n\n%s" % (error,),
+                                 parent=self.root)
+            return
+
+        if not moves:
+            messagebox.showerror("Royals", "There are no moves in that file.",
+                                 parent=self.root)
+            return
+
+        # A record carries its own opening, so none of the setup screen's answers apply.
+        # These are set only because the panel and the drawing read them.
+        self.humanSides = [True, True]
+        self.aiDepth = DEPTH_DEFAULT
+        self.buildGame()
+        self.resetGameState()
+        self.record = list(moves)
+        self.viewReady = True
+
+        name = path.rsplit("/", 1)[-1]
+        self.log("Opened %s — %d plies." % (name, len(moves)), "grey")
+        self.beginReview(moves, spots, live=False, title=name)
+
+    ####### REVIEW #######
+    # An animated slideshow of a game that has already been played, and nothing more.
+    #
+    # It needs none of the rules and acquires none of them. The positions were worked out
+    # by royals_engine.record, which only applies plies -- no move generation, no winner
+    # check, and above all no ko: a move in a record was already found legal at the moment
+    # it was played, so there is nothing here left to decide. koRecord and koReset are not
+    # called from anywhere below, which is what lets a review of a finished game sit inside
+    # this window without disturbing the ko set of the game still in it.
+
+    # Everything review writes over, so that DONE puts the window back as it was instead of
+    # re-entering the game loop -- which would set the computer thinking again about a move
+    # it has already made.
+    RESUME_FIELDS = ("phase", "board", "lastMove", "lastFlights", "selected", "moveArray",
+                     "breakOpen", "legalOrigins", "movingPris", "spyBreak", "hasPris")
+
+    def showReviewRow(self, on):
+        if not on:
+            self.reviewRow.pack_forget()
+            self.archiveRow.pack(fill="x", pady=(8, 0))
+            return
+
+        self.archiveRow.pack_forget()
+        if self.reviewScale is not None:
+            self.reviewScale.destroy()
+        # Set before the slider is built, and to the position review is about to open at,
+        # so the trace sees a value it already agrees with and nothing bounces.
+        self.reviewVar.set(self.review["at"])
+        # max(1, ...) because a StoneSlider divides by its range. A one-ply record has a
+        # travel of one and looks right; a zero-ply one is refused before it gets here.
+        self.reviewScale = StoneSlider(self.reviewScaleHolder, self.reviewVar, width=290,
+                                       low=0, high=max(1, len(self.review["spots"]) - 1))
+        self.reviewScale.pack(anchor="w")
+        self.reviewRow.pack(fill="x", pady=(8, 0))
+
+    def startReview(self):
+        """Walk back through the game in this window."""
+        if not self.record:
+            self.setHint("Nothing to review yet — no moves have been made.")
+            return
+        if self.aiBusy:
+            # The search is on a worker thread and its result lands in commit(), which
+            # would move the board out from under the review.
+            self.setHint("Wait for the computer to finish its move.")
+            return
+        try:
+            spots = Record.positions(self.record)
+        except Record.RecordError as error:
+            # Only reachable if the recorder above has a bug, which is exactly when it is
+            # worth saying so loudly rather than showing a plausible wrong game.
+            messagebox.showerror("Royals", "This game's record is not readable.\n\n%s"
+                                 % (error,), parent=self.root)
+            return
+        self.beginReview(self.record, spots, live=True, title="This game")
+
+    def beginReview(self, moves, spots, live, title):
+        self.review = {
+            "moves": list(moves), "spots": spots, "at": len(spots) - 1,
+            "live": live, "title": title,
+            "resume": {name: getattr(self, name) for name in self.RESUME_FIELDS}
+                      if live else None,
+            "status": self.statusLabel.cget("text"),
+            "hint": self.hintLabel.cget("text"),
+        }
+
+        self.phase = "review"
+        self.selected = None
+        self.moveArray = []
+        self.legalOrigins = set()
+        self.breakOpen = False
+        self.prisCheck.setEnabled(False)
+        self.freeCheck.setEnabled(False)
+        self.prisVar.set(0)
+
+        self.showReviewRow(True)
+        self.reviewGoTo(len(spots) - 1)
+
+    def exitReview(self):
+        review, self.review = self.review, None
+        self.showReviewRow(False)
+
+        if review and review["resume"]:
+            for name, value in review["resume"].items():
+                setattr(self, name, value)
+            self.statusLabel.configure(text=review["status"])
+            self.setHint(review["hint"])
+            self.prisCheck.setEnabled(bool(self.hasPris))
+            self.redraw()
+            return
+
+        # Nothing to go back to -- this was a file, opened into an otherwise empty window.
+        self.buildSetup()
+
+    def reviewGoTo(self, at):
+        review = self.review
+        if not review:
+            return
+
+        review["at"] = at = max(0, min(len(review["spots"]) - 1, at))
+        spot = review["spots"][at]
+
+        self.board = spot.board
+        self.lastMove = list(spot.squares)
+        self.lastFlights = spot.flights
+
+        # Setting the variable redraws the slider. onReviewSlide guards against the loop
+        # this would otherwise make: a trace fires on every set, equal value or not.
+        self.reviewVar.set(at)
+
+        last = len(review["spots"]) - 1
+        self.reviewMark.configure(text=reviewLabel(spot, len(self.enterSteps)))
+        self.reviewPly.configure(text="ply %d of %d" % (at, last))
+
+        if at == 0:
+            self.setStatus("Before the first piece was entered", None)
+        else:
+            self.setStatus("%s   %s" % (reviewLabel(spot, len(self.enterSteps)),
+                                        spot.token), spot.side)
+        self.setHint("%s — ← and → step through it, Home and End jump to either end. "
+                     "Drag to turn the board." % review["title"])
+        self.redraw()
+
+    def reviewStep(self, delta):
+        if self.review: self.reviewGoTo(self.review["at"] + delta)
+
+    def onReviewSlide(self, *args):
+        review = self.review
+        if review and self.reviewVar.get() != review["at"]:
+            self.reviewGoTo(self.reviewVar.get())
 
     ################################################################################
     ####### CLICKS #################################################################
@@ -1774,7 +2257,10 @@ class RoyalsWindow:
             self.requestRedraw()
             return
 
-        if self.aiBusy or self.phase == "over": return
+        # Dragging is handled above, so the board can still be turned while reviewing --
+        # looking at an old position from another angle is the point. What a review has no
+        # answer to is a click on a square, because nothing in it is anybody's to move.
+        if self.aiBusy or self.phase in ("over", "review"): return
 
         # The engine badge is not part of the game, and it has to be answered before either
         # of the two lookups below or it will be answered *by* them: squareAt falls through
@@ -1839,7 +2325,9 @@ class RoyalsWindow:
 
     def clickWasInert(self, square):
         if square is None: return True
-        if self.aiBusy or self.phase == "over": return True
+        # Nothing on a reviewed board answers a click, so every double click on one is free
+        # to mean "straighten this up" -- which is the whole point of the shortcut.
+        if self.aiBusy or self.phase in ("over", "review"): return True
 
         if self.phase == "entering":
             if not self.humanSides[self.entryContr]: return True
@@ -1853,6 +2341,10 @@ class RoyalsWindow:
             for kind in (0, 1, 5):
                 if target in self.moveArray[kind]: return False
         return True
+
+    def onHome(self, event):
+        if self.review: return self.reviewGoTo(0)
+        self.resetView()
 
     def resetView(self):
         self.view.setAngles(YAW_DEF, PITCH_DEF)
@@ -1999,7 +2491,8 @@ class RoyalsWindow:
         # logged before commit, so a move the ko rule takes back reads as the move
         # followed by the note taking it back, and a move that ends the game doesn't
         # print after the result.
-        self.log(sideName(self.contr) + ": " + artificialPlayer.describeMove(move),
+        self.log(self.turnMark() + sideName(self.contr) + ": "
+                 + artificialPlayer.describeMove(move),
                  "black" if self.contr else "white")
         self.commit(board, [origin, square], move)
 
@@ -2008,7 +2501,8 @@ class RoyalsWindow:
         board = Engine.exeBreak(self.board, origin, heading, self.contr)
 
         move = (origin, "break", Engine.pushIndex(heading), False)
-        self.log(sideName(self.contr) + ": " + artificialPlayer.describeMove(move),
+        self.log(self.turnMark() + sideName(self.contr) + ": "
+                 + artificialPlayer.describeMove(move),
                  "black" if self.contr else "white")
         self.commit(board, [origin], move)
 
@@ -2021,21 +2515,67 @@ class RoyalsWindow:
     # Mod_Space returns a new board rather than editing one, so there is nothing here
     # for the two threads to disagree about.
 
+    # root.after, dropped if the game that asked for it has since been torn down. Every
+    # deferred thing this window does goes through here or through pollAI's generation
+    # check; a bare root.after is how a game nobody is playing gets stepped.
+    def later(self, ms, fn):
+        gen = self.gameGen
+        self.root.after(ms, lambda: fn() if gen == self.gameGen else None)
+
     def runAI(self, work, done):
         self.aiBusy = True
         results = queue.Queue()
 
+        # BaseException rather than Exception, which normally reads as a mistake and here is
+        # the whole point. A panic in the compiled engine arrives as pyo3_runtime.
+        # PanicException, which derives from BaseException so that it cannot be swallowed by
+        # a passing `except Exception` -- and this was exactly such a handler. The thread
+        # died without ever putting anything in the queue, so pollAI polled an empty queue
+        # forever: aiBusy stayed set, the window sat on "Thinking..." with no log line, and
+        # the aiBusy guard in boardClick swallowed every click. A frozen window with nothing
+        # written down is the worst answer available; the error branch below is the right one
+        # and simply was not being reached.
+        #
+        # This does not make the engine usable again. A panic poisons the Rust search state,
+        # so every later search in this process raises too -- but it raises *visibly* now,
+        # and each one lands in the log instead of hanging.
+        #
+        # KeyboardInterrupt and SystemExit are caught along with it. That costs nothing: they
+        # are delivered to the main thread, not to this daemon worker, and a process on its
+        # way out does not care what this queue holds.
         def run():
             try: results.put(("ok", work()))
-            except Exception as error: results.put(("error", error))
+            except BaseException as error: results.put(("error", error))
 
         threading.Thread(target=run, daemon=True).start()
-        self.pollAI(results, done)
+        self.pollAI(results, done, self.gameGen)
 
-    def pollAI(self, results, done):
+    # The search runs on a thread and answers into a queue; this watches the queue from the
+    # event loop, which is what keeps the window painting while it thinks.
+    #
+    # **The generation is the whole point of this function's signature.** A search cannot be
+    # called off -- the thread has no interrupt and Python has no way to give it one -- so
+    # NEW GAME pressed mid-search leaves a worker that is still going to answer, about a
+    # position that is no longer on the board. Answering it landed the *previous* game's
+    # position on the new game: `commit` writes self.board wholesale, `finishAIEntry` drops a
+    # piece, both append a ply to a record that never contained it, and koRecord puts an old
+    # board into the ko set the new game just cleared. That last one is the quiet part -- the
+    # new game then refuses a legal first move as a repetition, and the record it writes will
+    # not replay at all.
+    #
+    # It was survivable while the deepest search was a fifth of a second. At ten ply it is
+    # closer to twenty, which is long enough that a player gets bored, starts another game,
+    # and watches the old one reappear.
+    #
+    # So the answer is dropped rather than the search stopped: no reschedule, no `done`, and
+    # aiBusy deliberately left alone, because it belongs to whatever game is running now. The
+    # thread finishes into a queue nobody reads and is collected with it.
+    def pollAI(self, results, done, gen):
+        if gen != self.gameGen: return
+
         try: kind, payload = results.get_nowait()
         except queue.Empty:
-            self.root.after(60, lambda: self.pollAI(results, done))
+            self.root.after(60, lambda: self.pollAI(results, done, gen))
             return
 
         self.aiBusy = False

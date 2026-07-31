@@ -37,7 +37,13 @@ of a block quietly breaks every line under it.
 python3 apps/desktop/royals_gui.py                       # the tkinter window
 (cd apps/terminal && python3 main_play.py)               # the terminal game
 (cd web && python3 -m uvicorn royals_web.main:app --reload)   # the server, at :8000
+python3 tools/replay.py <file>                           # step through a saved game
 ```
+
+A saved game is a text file of moves — the desktop's SAVE button, the browser's "Save moves",
+and `tools/replay.py` all read and write the same one. See "Game records" in
+[CLAUDE.md](CLAUDE.md) before changing what any of them writes: a record that drops a ply
+replays into a plausible wrong game rather than failing.
 
 ## Running the tests
 

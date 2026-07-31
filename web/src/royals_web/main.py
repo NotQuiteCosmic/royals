@@ -57,6 +57,28 @@ JOIN_LIMIT, JOIN_WINDOW = 60, 600
 # generation as fast as the network allows.
 API_LIMIT, API_WINDOW = 600, 60
 
+# Reviewing is asked for once and then scrubbed through locally, so it wants a much tighter
+# limit than the blanket one. It is by some way the most expensive thing this server will
+# do for an unauthenticated caller: a full replay, and then board_to_json for *every* ply
+# rather than the one the position is at. A hundred-ply game is a hundred times the work of
+# the read that already sits behind the blanket limit, so the blanket limit is the wrong
+# order of magnitude here rather than merely loose.
+REVIEW_LIMIT, REVIEW_WINDOW = 30, 60
+
+# The longest record this server will accept as an upload.
+#
+# It is not a rule about Royals -- MAX_PLIES lets a game reach a thousand -- it is
+# arithmetic on MAX_BODY_BYTES, which is global and stays global (see limits.py). A ply is
+# at most six characters and a separator, so this is what fits with room for the header:
+#
+#     2048 bytes / 7 bytes per ply  ~=  290 plies
+#
+# Real games run 60 to 150, so this refuses essentially nothing anybody has played. What
+# matters is that a record between this and the raw byte limit is refused *here*, with a
+# sentence saying how long it was and how long it may be, rather than by the middleware
+# with a number of bytes the reader would have to divide by seven themselves.
+REVIEW_MAX_PLIES = MAX_BODY_BYTES // 7
+
 # The deepest search this server will agree to run, or None for no ceiling.
 #
 # The argument is unchanged and the arithmetic is not. A `royal` search is about three
@@ -315,6 +337,10 @@ class NewGame(BaseModel):
     side: Union[int, Literal["random"]] = G.BLUE
     difficulty: str = Field(default=G.DEFAULT_DIFFICULTY, max_length=20)
     noise: float = Field(default=0.5, ge=0.0, le=1.0)
+    # Nobody picks their squares; the twelve placements are dealt. Nothing to validate beyond
+    # the coercion -- it changes who chooses, not what is legal, and every square it produces
+    # goes through the same `place` a clicked one does.
+    randomEntry: bool = False
     # Optional[str], not `str = None`. Pydantic treats the latter as a required string
     # that happens to have a default: leaving the field out is fine, but *sending* null
     # is a validation error. A browser form with an empty box sends null, so the shape
@@ -329,6 +355,13 @@ class JoinIn(BaseModel):
 
 class Placement(BaseModel):
     square: str = Field(max_length=2)
+
+
+class ReviewIn(BaseModel):
+    # The text of a game record, comments and all -- exactly what the download button
+    # produced. Bounded here as well as by the middleware so that an oversized field in an
+    # otherwise small body is caught by the schema rather than by the replay.
+    record: str = Field(max_length=MAX_BODY_BYTES)
 
 
 class MoveIn(BaseModel):
@@ -408,7 +441,8 @@ async def _advance(game):
         if game.phase == "entering":
             square = await pool.choose_entry(
                 game.board, game.entry_side, game.entry_piece,
-                game.entry_piece == G.Hasher.SPY, game.entry_seed, game.entry_noise)
+                game.entry_piece == G.Hasher.SPY, game.entry_seed, game.entry_noise,
+                game.enter_index)
             if square is None:
                 # _seek_entry_step already established there is somewhere to go.
                 raise HTTPException(500, "the computer failed to place a piece")
@@ -457,6 +491,14 @@ async def _invite(request, exc):
     return JSONResponse({"detail": str(exc)}, status_code=409)
 
 
+@app.exception_handler(G.ReplayError)
+async def _unplayable(request, exc):
+    # A record that is well-formed notation but does not describe a game anybody could have
+    # played. Only reachable from the review endpoint -- a stored game that failed to replay
+    # would have failed on load, long before a request saw it.
+    return JSONResponse({"detail": str(exc)}, status_code=422)
+
+
 @app.exception_handler(AIBusy)
 async def _busy(request, exc):
     return JSONResponse({"detail": "the computer is thinking about too many games at "
@@ -491,7 +533,7 @@ async def create_game(body: NewGame, request: Request):
 
     game, seat_token, invite_token = G.new_game(
         mode=body.mode, side=body.side, difficulty=body.difficulty,
-        entry_noise=body.noise, name=body.name)
+        entry_noise=body.noise, name=body.name, random_entry=body.randomEntry)
     store.put(game)
     await _advance(game)
     store.put(game)     # again after advancing: the store is write-through from M3.2 on
@@ -615,6 +657,75 @@ async def resign_game(game_id: str, x_royals_seat: str = SeatHeader()):
         G.resign(game, side)
         store.put(game)
         return _state(game, side)
+
+
+# ---------------------------------------------------------------------------
+# Reviewing a game, move by move
+# ---------------------------------------------------------------------------
+# Every position at once, in one request, rather than a request per ply. Stepping is then
+# instant and entirely local -- a scrubber dragged across a game makes no requests at all --
+# and the server does the replay once instead of once per step. A hundred-ply game is a few
+# hundred kilobytes, which is a cost worth paying once and not worth paying a hundred times.
+#
+# It is the same board_to_json the live game sends, so board.js draws a reviewed position
+# with the renderer it already has and does not learn a second board format.
+
+def _review_json(moves, spots, game):
+    """`game` is whoever knows how it ended -- see the note in G.positions."""
+    return {
+        "ply": len(moves),
+        "moves": list(moves),
+        "result": game.result,
+        "termination": game.termination,
+        "enterSteps": len(G.ENTER_STEPS),
+        # `turn` is what a reviewer is shown -- placement 3 of 12, or move 7 -- and `ply`
+        # is where that sits in the record. They differ by the whole entering phase, which
+        # is exactly why both are sent rather than the client deriving one from the other.
+        "positions": [{"board": G.board_to_json(spot.board),
+                       "lastMove": [N.square_to_alg(s) for s in spot.last_move],
+                       "phase": spot.phase,
+                       "turn": spot.turn}
+                      for spot in spots],
+    }
+
+
+@app.get("/api/games/{game_id}/positions")
+async def game_positions(game_id: str, request: Request):
+    """Every position a stored game has stood in.
+
+    Public, like reading the game itself: Royals is perfect-information and anybody with
+    the link can already watch. What it is not is cheap, hence its own rate limit.
+    """
+    if not store.may_act("review:" + client_key(request), REVIEW_LIMIT, REVIEW_WINDOW):
+        raise HTTPException(429, "too many review requests -- slow down")
+
+    game = _fetch(game_id)
+    spots, _walked = G.positions(game.moves)
+    # The stored game, not the walked one: a resignation is not a move and the move list
+    # cannot describe it.
+    return _review_json(game.moves, spots, game)
+
+
+@app.post("/api/review")
+async def review_record(body: ReviewIn, request: Request):
+    """Replay a record somebody uploaded. Stateless -- nothing is stored, nothing is created.
+
+    This is the other half of the download button: a file that leaves here can come back
+    and be walked through. It creates no game, so it needs no seat and no rate limit on
+    creation; what it needs is the same ceiling on cost as the endpoint above.
+    """
+    if not store.may_act("review:" + client_key(request), REVIEW_LIMIT, REVIEW_WINDOW):
+        raise HTTPException(429, "too many review requests -- slow down")
+
+    moves = N.decode_game(body.record)      # NotationError -> 422, naming the bad ply
+    if len(moves) > REVIEW_MAX_PLIES:
+        raise HTTPException(
+            413, "that record is %d moves long and this server will review up to %d -- "
+                 "long enough that it no longer fits in one request"
+                 % (len(moves), REVIEW_MAX_PLIES))
+
+    spots, walked = G.positions(moves)      # ReplayError -> 422
+    return _review_json(moves, spots, walked)
 
 
 @app.get("/api/health")

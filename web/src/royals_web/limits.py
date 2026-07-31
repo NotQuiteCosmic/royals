@@ -82,7 +82,13 @@ class BodyLimit:
             await self._refuse(send)
 
     async def _refuse(self, send):
-        body = b'{"detail":"request body too large"}'
+        # The limit is named rather than merely enforced. Every legitimate request here is
+        # a handful of small fields and never comes close, with one exception: uploading a
+        # game record to review it, which is the one request a person can make that is
+        # large enough to be refused and long enough that they cannot see why. A number
+        # they can compare their file against is the difference between a bug and a rule.
+        body = ('{"detail":"request body too large -- the limit is %d bytes"}'
+                % self.max_bytes).encode()
         await send({
             "type": "http.response.start",
             "status": 413,

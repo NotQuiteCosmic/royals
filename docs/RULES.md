@@ -70,6 +70,12 @@ Entering does not wrap around the edges. A square on the `a` file is not adjacen
 on the `g` file for the purposes of placement, even though it is for every move that
 follows.
 
+*Not a rule, but worth knowing where to find it:* both front ends offer an opening where
+nobody chooses. Pick it in the menu and all twelve placements are made for you, each on a
+square drawn from the ones the rules above allow — the same list you would have been
+clicking from. Everything on this page still holds; the only thing that changes is who
+picks. The game then opens with the board already full, red to move as always.
+
 ## Winning
 
 > **You win by gathering your spy, all four of your pawns and your royal onto a single
@@ -99,8 +105,8 @@ out of reach of any given stack until its weight changes.
 
 What you may land on:
 
-- **Your own pieces** — always legal, whatever is standing there and whatever it weighs.
-  The two stacks merge. This is how you assemble a winning stack.
+- **Your own pieces** — legal whatever is standing there and whatever it weighs, unless you
+  are carrying prisoners. The two stacks merge. This is how you assemble a winning stack.
 - **An empty square** — always legal.
 - **An enemy square** — legal only if it weighs no more than you do. Their spy and pawns
   become **your prisoners**.
@@ -112,8 +118,10 @@ And the exceptions, which is where most of the game's character lives:
 - Nothing may land on a square holding **your own pieces as prisoners** — you cannot jump
   onto your own jailers. Push them free instead.
 - A **dragon** flies: occupied squares do not block its path, it simply cannot end on one.
-- If you are **carrying prisoners**, you may not land on *any* occupied square, either
-  side's.
+- If you are **carrying prisoners**, *any* occupied square stops you, either side's — you
+  may not land on it and you may not pass over it. Your own pieces are no exception, and
+  this is the one place where they are not. Leave the prisoners behind and the square is
+  open again.
 
 ### Push
 
@@ -195,8 +203,13 @@ your square, held.
 - Prisoners belong to whichever side does **not** control the square they sit on.
 - You may **leave them behind** when you move on — they stand back up as a stack of their
   own side, on the square you vacated.
-- Or you may **drag them along**, which costs you: your strength drops by their number,
-  and you may no longer land on any occupied square.
+- Or you may **drag them along**, which costs you twice over: your strength drops by their
+  number, and every occupied square now stops you — you cannot land on one or pass over
+  one, your own included.
+- So **a stack carrying prisoners cannot change size.** That is a restriction on what it
+  may do, not on what may be done to it: an allied stack may still jump *onto* it, and the
+  two merge with the prisoners still held. Size changes are available from one side of the
+  move only.
 - A royal is never taken prisoner.
 
 ## Reading and writing moves

@@ -25,6 +25,12 @@ if setting == 0:
 	aiDepth = 3
 	passes = 0
 
+	# How loosely the computer picks its entering squares, and the seed both that and the
+	# Perlin tilt come off. A 2 player game asks neither question and reaches neither, but
+	# they are named here so the entering loop below is not reading a name that may not exist.
+	entryNoise = 0.0
+	entrySeed = 0
+
 	# The squares the last thing played touched, shaded by DisplayHashBoard. It is set
 	# everywhere the board changes and nowhere else, so what it shades while a side is
 	# choosing is always what the other side just did.
@@ -77,12 +83,13 @@ if setting == 0:
 			else: print("Please give a whole number of turns.")
 
 		# The entering heuristic is otherwise deterministic, so the computer opens the same
-		# way every game. This is the intensity a slider would eventually drive: 0 for that
-		# fixed opening, 100 for as varied as it goes. The seed gets printed so an opening
-		# worth seeing again can be played again.
+		# way every game. 0 is that fixed opening; 100 puts every piece on a square drawn at
+		# random, and in between the computer picks more or less loosely off its own ranking.
+		# The seed gets printed so an opening worth seeing again can be played again.
 		noiseCheck = False
 		while not noiseCheck:
-			noiseIn = input("How varied should the computer's entering be? (0-100, enter for 50)   ")
+			noiseIn = input("How varied should the computer's entering be? "
+							"(0-100, 100 is entirely random, enter for 50)   ")
 			if noiseIn == "":
 				entryNoise = 0.5
 				noiseCheck = True
@@ -101,7 +108,7 @@ if setting == 0:
 	print("A royal or a pawn can't be entered touching something you already control,")
 	print("your dragon included. A spy goes anywhere empty.")
 
-	for step in Engine.enteringSequence():
+	for enterIndex, step in enumerate(Engine.enteringSequence()):
 		enterContr = step[0]
 		piece = step[1]
 		isSpy = (piece == SPY)
@@ -144,7 +151,9 @@ if setting == 0:
 				else:
 					print("Too close to a piece you already control.")
 		else:
-			square = artificialPlayer.chooseEntry(board, enterContr, piece, isSpy)
+			square = artificialPlayer.enterVaried(
+				board, enterContr, piece, isSpy, entryNoise,
+				Engine.entryRng(entrySeed, enterIndex))
 			print(sideColor + sideName + " " + pieceName + bcolors.CEND
 				  + " enters at " + IndexToAlg(square - 1).upper())
 			board = Engine.dropPiece(board, square, enterContr, piece)

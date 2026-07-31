@@ -1133,6 +1133,67 @@ def chooseEntry(cBoard, contr, piece, isSpy, depth = ENTRY_DEPTH):
     return bestSquare
 
 
+####### How loosely it picks #######
+# The entering setting, end to end. `chooseEntry` above always plays the best square it can
+# find; this is the same choice made more or less strictly, and it is what every front end's
+# variety slider now drives.
+#
+# **Both ends are exact rather than approached.** At 0 this is `chooseEntry` itself, so the
+# opening is the fixed one, the same twelve squares every game. At 1 it is a uniform draw over
+# every legal square, which is genuinely random and not merely very varied. The old setting
+# could not reach that end from either direction: it tilted the scores with a Perlin field, and
+# a field has a strongest square, so turning the tilt up past the heuristic makes the opening
+# *more* predictable rather than less -- it converges on the field's own peak.
+#
+# In between, rank r is drawn with weight `intensity ** r`. That one expression is the whole
+# scheme and it needs no tuning constant: 0 ** 0 is 1 with every later weight zero, so 0 is the
+# top square; every weight is 1 at intensity 1, so that is uniform; and in between it is a
+# geometric decay whose ratio is the slider. The two short-circuits below are therefore
+# shortcuts and not special cases -- they are what the weights already say, minus the work.
+#
+# The ranking is `chooseEntry`'s own answer first, then every other legal square in shortlist
+# order. Deliberately not the order of the root search's scores: the loop above raises `alpha`
+# across candidates, so a losing candidate's score is a bound on how bad it is rather than a
+# value, and ranking by it would be ranking by how early each was cut off. The tail is ordered
+# by `entryDiff`, which the shortlist has already computed for every legal square anyway.
+#
+# The draw is a cumulative walk over one `rng.random()`. A softmax over the scores would read
+# better and would put an `exp()` on the path CPython and PyPy have already once disagreed on
+# in the last place -- see the note on entryScore's floats in docs/ARCHITECTURE.md. Plain
+# addition in a fixed order does not have that problem.
+def enterVaried(cBoard, contr, piece, isSpy, intensity, rng, depth = ENTRY_DEPTH):
+    intensity = max(0.0, min(1.0, float(intensity)))
+
+    if intensity <= 0.0: return chooseEntry(cBoard, contr, piece, isSpy, depth)
+    if intensity >= 1.0: return Engine.randomEntry(cBoard, contr, isSpy, rng)
+
+    spaces = Hasher.Parse_Board(cBoard)
+    ranked = entryShortlist(cBoard, spaces, contr, piece, isSpy, 49)
+    if not ranked: return None
+
+    best = chooseEntry(cBoard, contr, piece, isSpy, depth)
+    squares = [row[1] for row in ranked if row[1] != best]
+    if best is not None: squares.insert(0, best)
+
+    weights = []
+    total = 0.0
+    weight = 1.0
+    for _ in squares:
+        weights.append(weight)
+        total += weight
+        weight *= intensity
+
+    cut = rng.random() * total
+    running = 0.0
+    for square, weight in zip(squares, weights):
+        running += weight
+        if cut < running: return square
+
+    # Only reachable if the accumulated total drifts in the last place. The best square is
+    # what the game would have played anyway, so that is the right thing to fall back on.
+    return squares[0]
+
+
 # Spells a move out for the move log.
 def describeMove(move):
     if move is None: return "no legal move"

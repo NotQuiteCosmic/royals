@@ -1,0 +1,340 @@
+"""What happens to a game the player walks away from.
+
+Every other test of the window plays one game in it. The failures here need two: they are
+all one shape, which is a thing the abandoned game handed to the event loop coming back
+after the next game has started, and writing into it.
+
+That shape had exactly one symptom worth the name -- **the new game came up showing the old
+game's position** -- and several that were quieter and worse. A late `commit` appends a ply
+to a record nobody played, and puts a board the previous game stood in into the ko set this
+one just cleared: the new game then refuses a legal move as a repetition, and the file it
+writes will not load. So the assertions below are not only about the board. A board that
+happens to look right while the record behind it is wrong is the state this whole file
+exists to catch.
+
+A search cannot be called off -- the thread has no interrupt -- so the window drops the
+answer instead, by the generation token every deferred call carries. These tests block the
+engine on an Event rather than racing a real search, which is what makes "a search is in
+flight" a fact rather than a hope; a depth-10 search is about twenty seconds, and twenty
+seconds is exactly the window a player gets bored in.
+"""
+
+import pathlib
+import sys
+import threading
+import time
+
+import pytest
+
+tk = pytest.importorskip("tkinter")
+
+from royals_engine import ai as AI
+from royals_engine import engine as Engine
+from royals_engine import record as R
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "apps" / "desktop"))
+
+
+@pytest.fixture(scope="module")
+def gui():
+    """One window for the whole file, or a skip where there is no display to put it on.
+
+    **One `Tk()` per process, and that is not a preference.** Unlike test_desktop_record,
+    which drives the window by calling its handlers, everything here needs the event loop
+    actually running -- a deferred callback that never fires proves nothing either way. And
+    on macOS a *second* root's `update()` blocks inside Tk itself once a game screen has been
+    built on it: no Python callback runs, no exception is raised, the call simply does not
+    return. It was measured rather than guessed -- a counter on redraw/onResize/flushRedraw
+    stays at zero through the whole hang -- so it is below anything this repo can fix, and
+    the way round it is to want only one root.
+
+    Hence module scope and `buildSetup()` between tests: NEW GAME is the reset, which is the
+    thing being tested anyway.
+    """
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip("no display for tkinter: %s" % (exc,))
+
+    root.withdraw()
+    import royals_gui
+
+    win = royals_gui.RoyalsWindow(root)
+    try:
+        yield win
+    finally:
+        root.destroy()
+
+
+@pytest.fixture
+def window(gui):
+    gui.buildSetup()
+    gui.errors = []
+    # Tk swallows an exception raised inside a callback and prints it, so a test that only
+    # looked at the board would pass while the log filled with TclErrors.
+    gui.root.report_callback_exception = lambda *a: gui.errors.append(a)
+    yield gui
+    # Leave the next test a window with nothing outstanding in it.
+    gui.buildSetup()
+    gui.root.update()
+
+
+def pump(root, seconds=2.0, until=None):
+    """Run the event loop for a while, or until something is true."""
+    end = time.time() + seconds
+    while time.time() < end:
+        root.update()
+        if until is not None and until():
+            return True
+        time.sleep(0.01)
+    return until is None
+
+
+def blocked(monkeypatch, name, released):
+    """Make one engine call wait for the test's say-so, as a deep search would."""
+    real = getattr(AI, name)
+
+    def slow(*args, **kwargs):
+        released.wait(20)
+        # depth is the third positional argument to takeTurn; answer quickly once let go,
+        # since what is being tested is when the answer arrives and not what it is.
+        if name == "takeTurn":
+            return real(args[0], args[1], 1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(AI, name, slow)
+    return real
+
+
+def newGameStartedOver(win, **choices):
+    """NEW GAME, then START GAME, as the two buttons do it."""
+    win.buildSetup()
+    for var, value in choices.items():
+        getattr(win, var).set(value)
+    win.startGame()
+    win.root.update()
+
+
+####### The abandoned search #######
+
+def test_an_abandoned_search_cannot_reach_the_next_game(window, monkeypatch):
+    released = threading.Event()
+    blocked(monkeypatch, "takeTurn", released)
+
+    # A dealt opening so play -- and so the computer's first search -- begins at once.
+    window.modeVar.set(1); window.sideVar.set(0)
+    window.entryVar.set(1); window.depthVar.set(1)
+    window.startGame(); window.root.update()
+    assert window.aiBusy, "the computer should be thinking"
+
+    newGameStartedOver(window, modeVar=0, entryVar=1)
+    board, plies, ko = window.board, len(window.record), len(Engine.koTrack)
+
+    released.set()
+    pump(window.root, 3.0)
+
+    assert window.board == board, "the previous game's position came back"
+    assert len(window.record) == plies, "a ply nobody played was written down"
+    assert len(Engine.koTrack) == ko, "an old board went into this game's ko set"
+    assert window.errors == []
+
+
+def test_an_abandoned_placement_cannot_reach_the_next_game(window, monkeypatch):
+    """The entering half, which is the worse one: it drops a piece rather than a position,
+    so the new game gains a second royal and stops being a game of Royals at all."""
+    released = threading.Event()
+    blocked(monkeypatch, "chooseEntry", released)
+
+    window.modeVar.set(1); window.sideVar.set(0)
+    window.entryVar.set(0); window.depthVar.set(1)
+    window.startGame(); window.root.update()
+    window.enterClick(window.entryOptions[0])     # white places; red's goes to the worker
+    window.root.update()
+    assert window.aiBusy
+
+    newGameStartedOver(window, modeVar=0, entryVar=1)
+    board, plies = window.board, len(window.record)
+
+    released.set()
+    pump(window.root, 3.0)
+
+    assert window.board == board
+    assert len(window.record) == plies
+    assert window.errors == []
+
+
+def test_the_game_after_an_abandoned_one_still_writes_a_record_that_replays(window, monkeypatch):
+    """The assertion the board alone cannot make.
+
+    A stale placement lands in the record as an entry token after entering is over, which
+    `record.positions` refuses outright -- so this fails even in the case where the stale
+    write happened to leave a position that looked plausible.
+    """
+    released = threading.Event()
+    blocked(monkeypatch, "takeTurn", released)
+
+    window.modeVar.set(1); window.sideVar.set(0)
+    window.entryVar.set(1); window.depthVar.set(1)
+    window.startGame(); window.root.update()
+
+    newGameStartedOver(window, modeVar=0, entryVar=1)
+    released.set()
+    pump(window.root, 3.0)
+
+    spots = R.positions(window.record)
+    assert len(spots) == len(window.record) + 1
+    assert spots[-1].board == window.board
+
+
+####### One position, one search #######
+
+def test_two_searches_never_run_on_one_position(window, monkeypatch):
+    """`advance` is reachable twice for the same turn -- a pause firing late, a click while
+    the computer thinks -- and twice used to mean two searches and two moves for one side."""
+    released = threading.Event()
+    calls = []
+    real = AI.takeTurn
+
+    def counted(board, contr, depth, *a, **kw):
+        calls.append(1)
+        released.wait(20)
+        return real(board, contr, 1)
+
+    monkeypatch.setattr(AI, "takeTurn", counted)
+
+    window.modeVar.set(2); window.entryVar.set(1); window.depthVar.set(1)
+    window.startGame(); window.root.update()
+    assert len(calls) == 1 and window.aiBusy
+
+    window.advance()
+    window.root.update()
+    assert len(calls) == 1, "a second search was started on the same position"
+
+    released.set()
+    pump(window.root, 2.0)
+
+
+####### The token itself #######
+
+def test_a_deferred_call_belongs_to_the_game_that_asked_for_it(window):
+    fired = []
+    window.later(1, lambda: fired.append("same game"))
+    pump(window.root, 0.5, until=lambda: fired)
+    assert fired == ["same game"]
+
+    window.later(1, lambda: fired.append("old game"))
+    window.gameGen += 1                 # what NEW GAME does
+    pump(window.root, 0.5)
+    assert fired == ["same game"], "a callback outlived the game that scheduled it"
+
+
+def test_starting_and_abandoning_a_game_both_move_the_generation(window):
+    first = window.gameGen
+    window.modeVar.set(0); window.entryVar.set(1)
+    window.startGame(); window.root.update()
+    assert window.gameGen > first
+
+    playing = window.gameGen
+    window.buildSetup()
+    assert window.gameGen > playing, "walking away from a game must move it too"
+
+
+####### What the setup screen still has bound #######
+
+def test_the_review_keys_do_nothing_on_the_setup_screen(window):
+    """Home, End and the arrows are bound to the root, so they are live on a screen with no
+    board on it. They used to find `self.review` still set from the game just left and walk
+    into the widgets that game took with it."""
+    window.modeVar.set(0); window.entryVar.set(1)
+    window.startGame(); window.root.update()
+    window.startReview(); window.root.update()
+    assert window.review is not None
+
+    window.buildSetup(); window.root.update()
+    assert window.review is None, "the review outlived the game it was of"
+
+    for key in ("<Home>", "<End>", "<Left>", "<Right>"):
+        window.root.event_generate(key, when="now")
+        window.root.update()
+
+    assert window.errors == []
+
+
+####### What a new game inherits #######
+
+def test_a_new_game_does_not_inherit_the_drag(window):
+    """redraw reads `dragging` as "draw this cheaply, it is moving". Carried into the next
+    game it is never cleared, and the board stays in the low-detail form."""
+    window.modeVar.set(0); window.entryVar.set(1)
+    window.startGame(); window.root.update()
+    window.dragging = True
+    window.swallowRelease = True
+
+    newGameStartedOver(window, modeVar=0, entryVar=1)
+    assert window.dragging is False
+    assert window.swallowRelease is False
+
+
+def test_a_game_opened_from_a_file_knows_how_it_was_entered(window, tmp_path, monkeypatch):
+    """`openGame` has no menu to read, so the entering settings have to have defaults --
+    they used to exist only in startGame, and a file opened first thing left them unset."""
+    import royals_gui
+
+    window.modeVar.set(0); window.entryVar.set(1)
+    window.startGame(); window.root.update()
+    path = tmp_path / "game.txt"
+    monkeypatch.setattr(royals_gui.filedialog, "asksaveasfilename", lambda **kw: str(path))
+    window.saveGame()
+
+    window.buildSetup()
+    monkeypatch.setattr(royals_gui.filedialog, "askopenfilename", lambda **kw: str(path))
+    window.openGame(); window.root.update()
+
+    assert window.randomEntry is False
+    assert window.entrySeed is None
+    assert window.errors == []
+
+
+####### A search that falls over #######
+# The generation token above drops an answer that arrives too late. This is the other half:
+# an answer that never arrives at all, because the search raised instead of returning.
+#
+# pollAI reschedules until the queue has something in it, so the worker owes it a value on
+# every path. A failure that escapes the worker's handler is therefore not one error but a
+# permanent one -- the queue stays empty, aiBusy stays set, and the window waits on a search
+# that finished long ago with nothing to show for it.
+
+
+class FakePanic(BaseException):
+    """Stands in for pyo3_runtime.PanicException.
+
+    A panic in the compiled engine derives from BaseException *on purpose*, so that it cannot
+    be swallowed by a passing `except Exception` -- which is precisely what the worker used to
+    catch. Deriving this from BaseException rather than Exception is the whole test: an
+    `except Exception` worker leaves it uncaught, the thread dies mid-`put`, and nothing ever
+    reaches the queue.
+    """
+
+
+@pytest.mark.parametrize("failure", [FakePanic, RuntimeError],
+                         ids=["panic-from-the-compiled-engine", "an-ordinary-exception"])
+def test_a_search_that_raises_is_reported_rather_than_left_hanging(window, monkeypatch, failure):
+    def explode(*args, **kwargs):
+        raise failure("the search fell over")
+
+    monkeypatch.setattr(AI, "takeTurn", explode)
+
+    # A dealt opening, so the computer's first search starts as soon as the game does.
+    window.modeVar.set(2); window.entryVar.set(1); window.depthVar.set(1)
+    window.startGame(); window.root.update()
+
+    settled = pump(window.root, 3.0, until=lambda: not window.aiBusy)
+    assert settled, "the window is still waiting on a search that already failed"
+
+    # aiBusy is what boardClick's guard reads, so a stuck one is a window that ignores the
+    # mouse as well as one that never moves.
+    assert window.aiBusy is False
+    assert window.phase == "over"
+    assert "the search fell over" in window.logText.get("1.0", "end"), \
+        "the failure never reached the log"
+    assert window.errors == []

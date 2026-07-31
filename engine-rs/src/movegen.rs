@@ -384,15 +384,35 @@ pub fn check_moves(origin: &Origin, contr: u8, spaces: &Spaces) -> Option<CheckM
             for &square in &strand.as_slice()[..reach] {
                 let check = &spaces[square as usize];
 
+                let check_weight = check.weight as i32;
+
+                // the wee movingPrisoners suite of breakages, and it has to come FIRST.
+                // With prisoners in tow, ANY pieces at all, either side's, stop it. (check
+                // is the whole square, so there is no per-side index here -- its weight
+                // already covers both.) A stack carrying prisoners cannot change size, so
+                // there is no landing on anyone, and the square stops the strand besides.
+                //
+                // This sat below the friendly branch, which `continue`s -- so it never saw a
+                // square we control, and a carrying stack was offered a merge onto its own
+                // pieces. "Either side's" was always the intent; the short-circuit shadowed
+                // it. Nothing is lost by hoisting it: a dragon square can never hold
+                // prisoners (build_space drops every other field on one), so moving_pris and
+                // dragon_bool are mutually exclusive, and every gate it now precedes breaks
+                // on these squares too. The way to land on an ally is to leave the prisoners
+                // behind -- list_all_moves always offers that variant alongside this one.
+                if moving_pris && check_weight != 0 {
+                    break;
+                }
+
                 // Your own ground is open to you: any square your side holds is a legal
                 // landing, whatever is standing there and whatever it weighs. Without this a
                 // stack can't join a heavier friendly one, and since winning means gathering
                 // the spy, all four pawns and the royal onto a single square, they could
-                // never all arrive. Three pieces sit outside it, and they hold on either
+                // never all arrive. Four pieces sit outside it, and they hold on either
                 // side of the board: a spy jumps onto nothing, a royal is jumped onto by
-                // nothing, and a dragon does neither -- its square has no room for company,
-                // so a merge wouldn't stack it, it would erase it.
-                let check_weight = check.weight as i32;
+                // nothing, a dragon does neither -- its square has no room for company, so a
+                // merge wouldn't stack it, it would erase it -- and a stack carrying
+                // prisoners lands on nothing at all, handled above.
                 let friendly =
                     check.occupied && check.side == contr && check.dragon == 0 && check.royal == 0;
 
@@ -423,13 +443,6 @@ pub fn check_moves(origin: &Origin, contr: u8, spaces: &Spaces) -> Option<CheckM
                     if dragon_bool {
                         continue;
                     }
-                    break;
-                }
-
-                // the wee movingPrisoners suite of breakages: with prisoners in tow, ANY
-                // pieces at all, either side's, stop it. (check is the whole square, so
-                // there is no per-side index here -- its weight already covers both.)
-                if moving_pris && check_weight != 0 {
                     break;
                 }
 
@@ -737,5 +750,50 @@ mod tests {
         let got = moves(&board, 0);
         let tail: Vec<_> = got[got.len() - 2..].to_vec();
         assert_eq!(tail, vec![(25, MoveKind::Push, 25, false), (25, MoveKind::Free, 25, false)]);
+    }
+
+    #[test]
+    fn a_carrying_stack_lands_on_nobody_not_even_its_own() {
+        // Blue, three pawns on d4 holding one red pawn captive: captors 3 with the prisoner
+        // left behind, strength 2 with him in tow, so the reach differs between the two
+        // passes. The up-right strand out of d4 is e5, f6, g7.
+        //
+        // What is under test is the ORDER of the gates, not their conditions. The carrying
+        // check has to sit ABOVE the friendly short-circuit, because that branch `continue`s
+        // -- anything below it never sees a square the mover controls, and a carrying stack
+        // was being offered a merge onto its own pieces however plainly the comment said
+        // "either side's". This port inherited that ordering from the Python and so
+        // inherited the bug, which is exactly why neither golden could see it: the two
+        // engines agreed. Mirrors tests/test_carry_rules.py.
+        const E5: u8 = 32; // targets are 0-based; the squares themselves are 33, 41, 49
+        const F6: u8 = 40;
+        const G7: u8 = 48;
+
+        let jumps_from_d4 = |board: &Board, pris: bool| -> Vec<u8> {
+            moves(board, 0)
+                .iter()
+                .filter(|m| m.0 == 25 && m.1 == MoveKind::Jump && m.3 == pris)
+                .map(|m| m.2)
+                .collect()
+        };
+
+        let mut clear = EMPTY_BOARD;
+        at(&mut clear, 25, build_space(0, 0, 0, 3, 0, 0, 1, 1).unwrap());
+        let open = jumps_from_d4(&clear, true);
+        assert!(open.contains(&E5) && open.contains(&F6), "strength 2 walks two squares");
+        assert!(!open.contains(&G7), "and no further");
+
+        // one of our own pawns on e5, and the strand is shut -- the landing AND the passage
+        let mut blocked = clear;
+        at(&mut blocked, 33, build_space(0, 0, 0, 1, 0, 0, 0, 0).unwrap());
+        let carrying = jumps_from_d4(&blocked, true);
+        assert!(!carrying.contains(&E5), "a carrying stack may not merge with an ally");
+        assert!(!carrying.contains(&F6), "and the ally stops the strand, not just the landing");
+
+        // leave the prisoner behind and the same square is open again, three squares deep
+        let unencumbered = jumps_from_d4(&blocked, false);
+        for target in [E5, F6, G7] {
+            assert!(unencumbered.contains(&target), "target {} should be open", target);
+        }
     }
 }

@@ -1,4 +1,6 @@
 # RoyalsLib was imported here and never used once -- dropped with the package split.
+import random
+
 from royals_engine import hasher as Hasher
 
 Diag1 = [[0, 6], [1, 5], [2, 4], [3, 3], [4, 2], [5, 1], [6, 0]]
@@ -467,6 +469,32 @@ def enteringOptions(cBoard, contr, isSpy, spaces = None):
     return options
 
 
+# The RNG for one placement of a random opening, where nobody picks their squares and the
+# twelve pieces land wherever the rules allow. Seeded per step rather than per game, so an
+# opening is a pure function of (seed, step): the desktop and the server draw the same
+# squares from the same seed without having to agree on how many times either of them has
+# already called this, and a step some side had to sit out does not shift every later draw.
+#
+# The shift is a bijection because a step is 0..11, so two seeds can never collide.
+def entryRng(seed, step):
+    return random.Random((int(seed) << 6) | int(step))
+
+
+# A square to enter on, drawn uniformly from the legal ones, or None if there are none.
+# This is the whole of the random opening: it is enteringOptions and a die, so a placement
+# it makes is legal for exactly the reason a clicked one is, and neither the rules nor the
+# entering heuristic in ai.py has anything to say about it.
+#
+# The rng is a parameter rather than something seeded here on purpose -- no module-level RNG
+# state in the engine, and one definition of the seed-to-step derivation instead of two that
+# can drift apart.
+def randomEntry(cBoard, contr, isSpy, rng, spaces = None):
+    options = enteringOptions(cBoard, contr, isSpy, spaces)
+    if not options: return None
+
+    return options[rng.randrange(len(options))]
+
+
 # The whole entering order, as [side, piece] steps in the order they happen.
 def enteringSequence():
     order = [Hasher.ROYAL]
@@ -915,19 +943,36 @@ def checkMoves(cBoard, tOrigin, contr, spaces = None):
             check = spaces[square]
 
 
+            checkWeight = check[Hasher.WEIGHT]
+
+            # the wee movingPrisoners suite of breakages, and it has to come FIRST.
+            # If there are ANY pieces at all, either side's, BREAK IT. (check is the whole
+            # square's fields, so there is no per-side index here -- the square's weight
+            # already covers both.) A stack with prisoners in tow cannot change size, so
+            # there is no landing on anyone, and the square stops the strand besides.
+            #
+            # This used to sit below the friendly branch, which `continue`s -- so it never
+            # saw a square we control, and a carrying stack was offered a merge onto its own
+            # pieces. "Either side's" was always the intent; the short-circuit shadowed it.
+            # Nothing is lost by moving it up here: a dragon square can never hold prisoners
+            # (Build_Space drops every other field on one), so movingPris and dragonBool are
+            # mutually exclusive, and every gate it now precedes breaks on these squares too.
+            # The way to land on an ally is to leave the prisoners behind -- listAllMoves
+            # always offers that variant alongside this one.
+            if movingPris and checkWeight != 0: break
+
             # Your own ground is open to you: any square your side holds is a legal landing,
             # whatever is standing there and whatever it weighs. Without this a stack can't
             # join a heavier friendly one, and since winning means gathering the spy, all
             # four pawns and the royal onto a single square, they could never all arrive.
-            # Three pieces sit outside it, and they hold on either side of the board:
+            # Four pieces sit outside it, and they hold on either side of the board:
             #   a spy jumps onto nothing,
             #   a royal is jumped onto by nothing,
             #   a dragon does neither -- its payload ends after three bits with no room for
-            #   company, so a merge wouldn't stack it, it would erase it.
+            #   company, so a merge wouldn't stack it, it would erase it,
+            #   a stack carrying prisoners lands on nothing at all -- handled above.
             # Whatever this rules out falls through to the checks below, which stop it.
             # Assembly still works: the pawns gather on the spy, then the royal comes last.
-            checkWeight = check[Hasher.WEIGHT]
-
             friendly = (check[Hasher.OCCUPIED] and check[Hasher.SIDE] == contr
                         and not check[Hasher.DRAGON] and not check[Hasher.ROYAL])
 
@@ -955,13 +1000,6 @@ def checkMoves(cBoard, tOrigin, contr, spaces = None):
                 else:
                     break
 
-
-            # the wee movingPrisoners suite of breakages
-            if movingPris:
-                # if there are ANY pieces at all, either side's, BREAK IT.
-                # (check is the whole square's fields, so there is no per-side index
-                # here -- the square's weight already covers both.)
-                if checkWeight != 0: break
 
             # if the weight of any defenders is greater than any attackers, break.
             if checkWeight > pieceWeight:

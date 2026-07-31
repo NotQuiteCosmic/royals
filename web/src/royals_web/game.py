@@ -37,6 +37,7 @@ from royals_engine import hasher as Hasher
 from royals_engine import engine as Engine
 from royals_engine import ai as AI
 from royals_engine import notation as N
+from royals_engine import record as R
 
 from royals_web import seats as S
 
@@ -72,6 +73,7 @@ DIFFICULTIES = {
     "strong": 7,    # ~0.19s
     "expert": 8,    # ~0.82s
     "royal":  9,    # ~3.1s
+    "dragon": 10,   # ~18s
 }
 DEFAULT_DIFFICULTY = "strong"
 
@@ -188,6 +190,12 @@ class Game:
     entry_seed: int
     entry_noise: float
 
+    # Nobody picks their squares: the twelve placements are drawn from the legal ones and the
+    # game opens with the board already full. Stored rather than derived from the move list,
+    # because a game between two people is created before either of them has entered anything
+    # -- there is nothing in an empty move list to tell the two openings apart.
+    random_entry: bool = False
+
     # side -> Seat. Always both sides; for an ai game one of them is the computer.
     seats: dict = field(default_factory=dict)
 
@@ -274,7 +282,7 @@ class Game:
 
 
 def new_game(mode="ai", side=BLUE, difficulty=DEFAULT_DIFFICULTY, entry_noise=0.5,
-             entry_seed=None, rng=None, name=None):
+             entry_seed=None, rng=None, name=None, random_entry=False):
     """Start a game and return (game, seat_token, invite_token).
 
     `side` is the side the *creator* takes, or "random". The tokens are returned here and
@@ -306,6 +314,7 @@ def new_game(mode="ai", side=BLUE, difficulty=DEFAULT_DIFFICULTY, entry_noise=0.
         ai_depth=DIFFICULTIES[difficulty] if mode == "ai" else None,
         entry_seed=int(entry_seed),
         entry_noise=entry_noise,
+        random_entry=bool(random_entry),
         board=Hasher.Entering_Board(),
         invite_hash=S.hash_token(invite_token) if invite_token else None,
         seats={
@@ -323,6 +332,8 @@ def new_game(mode="ai", side=BLUE, difficulty=DEFAULT_DIFFICULTY, entry_noise=0.
         game.phase = "waiting"
     else:
         _seek_entry_step(game)
+        if game.random_entry:
+            fill_entering(game)
 
     return game, seat_token, invite_token
 
@@ -355,6 +366,12 @@ def claim_seat(game, invite_token, name=None):
     if game.phase == "waiting":
         game.phase = "entering"
         _seek_entry_step(game)
+        # A random opening is generated the moment the second player sits down, not when the
+        # invitation was written: until somebody has claimed the seat there is no game to
+        # deal a position to, and the same rule that keeps the first placement waiting keeps
+        # this waiting too.
+        if game.random_entry:
+            fill_entering(game)
     game.touch()
 
     return side, seat_token
@@ -403,6 +420,29 @@ def place(game, square, side=None):
     game.enter_index += 1
     _seek_entry_step(game)
     game.touch()
+    return game
+
+
+def fill_entering(game):
+    """Place every remaining piece at random -- both sides -- and leave the game in play.
+
+    The opening of a random game, in one go. Each square is drawn by `Engine.randomEntry`
+    from the same list `place` validates against, so a placement made here is legal for
+    exactly the reason a clicked one is, and it goes into `moves` as an ordinary entry token.
+
+    **Never called from `replay`.** The load path re-applies those tokens through `place`,
+    which is what makes a stored random game load back into the position it was played from
+    rather than into a fresh deal. The RNG is a convenience for producing an opening, not the
+    record of one: the record is the move list, as it is for every other game.
+    """
+    while game.phase == "entering":
+        # _seek_entry_step only ever stops on a step that has somewhere to go, so this
+        # cannot come back None.
+        square = Engine.randomEntry(game.board, game.entry_side,
+                                    game.entry_piece == Hasher.SPY,
+                                    Engine.entryRng(game.entry_seed, game.enter_index))
+        place(game, square, side=game.entry_side)
+
     return game
 
 
@@ -528,7 +568,7 @@ class ReplayError(Exception):
 
 def replay(*, id, mode, ai_depth, entry_seed, entry_noise, moves, seats,
            invite_hash=None, result=None, termination=None, ply=None,
-           version=0, created_at=None, updated_at=None):
+           version=0, created_at=None, updated_at=None, random_entry=False):
     """Rebuild a game by playing its moves again through `place` and `play_move`.
 
     This is the load path, and it is a replay rather than a deserialization on purpose.
@@ -558,34 +598,25 @@ def replay(*, id, mode, ai_depth, entry_seed, entry_noise, moves, seats,
     game = Game(
         id=id, mode=mode, ai_depth=ai_depth,
         entry_seed=int(entry_seed), entry_noise=float(entry_noise),
+        random_entry=bool(random_entry),
         board=Hasher.Entering_Board(), seats=dict(seats), invite_hash=invite_hash,
     )
 
     # A game whose second seat was never claimed never started, and has no moves to
     # replay -- claim_seat is what walks it into the entering phase.
+    #
+    # `fill_entering` is deliberately not called here, random or not. The placements a random
+    # game made are in `moves` like anybody else's, and _walk below puts them back through
+    # `place`; dealing a fresh position on load would replace the game that was played with
+    # one that merely could have been. The flag is carried so that a game which has not
+    # opened yet still opens the way it was asked to.
     waiting = mode == "human" and not all(s.claimed for s in game.seats.values())
     if waiting:
         game.phase = "waiting"
     else:
         _seek_entry_step(game)
 
-    try:
-        for token in stored:
-            if game.phase == "entering":
-                # A "--" during entering is a step some side had nowhere to make, and
-                # _seek_entry_step has already written it down again. Only placements are
-                # decisions anybody made.
-                if token == N.PASS:
-                    continue
-                _piece, square = N.decode_entry(token)
-                place(game, square, side=game.entry_side)
-            elif game.phase == "playing":
-                play_move(game, None if token == N.PASS else N.decode_move(token),
-                          side=game.turn % 2)
-            else:
-                raise ReplayError("%r comes after the game was already over" % (token,))
-    except (IllegalMove, GameOver, N.NotationError) as exc:
-        raise ReplayError("the stored move list is not playable: %s" % (exc,)) from exc
+    _walk(game, stored)
 
     if game.moves != stored:
         raise ReplayError("the move list does not replay to itself")
@@ -601,6 +632,99 @@ def replay(*, id, mode, ai_depth, entry_seed, entry_noise, moves, seats,
     if updated_at is not None:
         game.updated_at = float(updated_at)
     return game
+
+
+def _walk(game, stored, on_ply=None):
+    """Play a stored move list into `game`, one token at a time.
+
+    Two callers want this loop: `replay`, which wants the game at the end of it, and
+    `positions`, which wants the board after every ply. They get the same loop rather than
+    one each, because a move list has exactly one subtlety in it -- what a "--" means
+    depends on the phase, and during entering it is a step nobody made a decision at -- and
+    a second walk is a second chance to get that wrong. Getting it wrong there does not
+    fail; it shifts every later ply onto the other side and replays into a real position
+    that is not the one anybody played to.
+
+    `on_ply` is called after each token with the game as it then stands, including for a
+    skipped placement, which changes nothing but is still a ply and must still be counted.
+    """
+    try:
+        for token in stored:
+            if game.phase == "entering":
+                # A "--" during entering is a step some side had nowhere to make, and
+                # _seek_entry_step has already written it down again. Only placements are
+                # decisions anybody made.
+                if token != N.PASS:
+                    _piece, square = N.decode_entry(token)
+                    place(game, square, side=game.entry_side)
+            elif game.phase == "playing":
+                play_move(game, None if token == N.PASS else N.decode_move(token),
+                          side=game.turn % 2)
+            else:
+                raise ReplayError("%r comes after the game was already over" % (token,))
+            if on_ply is not None:
+                on_ply(game)
+    except (IllegalMove, GameOver, N.NotationError) as exc:
+        raise ReplayError("the stored move list is not playable: %s" % (exc,)) from exc
+
+
+@dataclass
+class Position:
+    """One board a game stood in, and what had just moved to reach it.
+
+    `phase` and `turn` are what a person calls the ply -- placement 3 of 12, or move 7 --
+    as against `ply`, which is the index into the record and counts the placements as moves
+    one to twelve. They come from `record.turn_of_ply` rather than from this game's own
+    `turn` field, so the number a reviewer sees and the number the engine counts by are one
+    rule and not two that happen to agree.
+    """
+    ply: int
+    board: tuple
+    last_move: list             # squares to highlight, 1-based
+    phase: str                  # "entering" | "playing"
+    turn: int                   # 1-based within the phase; 0 before anything
+
+
+def positions(moves):
+    """Walk a move list and return (every position it passed through, the game it made).
+
+    `len(moves) + 1` positions: the board before any ply, then one after each.
+
+    This is the whole of stepping through a game, and it needs nothing that live play
+    needs. Replay applies moves that were already found legal when they were played, so
+    nothing here has to decide whether a move *is* legal -- and it therefore touches no ko
+    state at all. `place` and `play_move` do consult this game's own `ko_boards`, which
+    they rebuild from scratch as they go; `Engine.koTrack` is not involved, here or
+    anywhere else outside an AI worker. A review of one game cannot disturb another.
+
+    The returned game is the one the moves alone describe, which is not quite the one that
+    was played: a resignation leaves no trace in a move list, so a caller holding the
+    stored game should report *its* ending rather than this one's.
+    """
+    stored = list(moves)
+
+    game = Game(id="", mode="human", ai_depth=None, entry_seed=0, entry_noise=0.5,
+                board=Hasher.Entering_Board(),
+                seats={BLUE: Seat(kind=HUMAN, claimed=True),
+                       RED: Seat(kind=HUMAN, claimed=True)})
+    _seek_entry_step(game)
+
+    spots = [Position(ply=0, board=game.board, last_move=[],
+                      phase=R.PHASE_ENTERING, turn=0)]
+
+    def note(g):
+        phase, turn = R.turn_of_ply(len(spots) - 1)
+        spots.append(Position(ply=len(spots), board=g.board, last_move=list(g.last_move),
+                              phase=phase, turn=turn))
+
+    _walk(game, stored, note)
+
+    # The same self-check replay makes, and for the same reason: a record that replays to
+    # a different move list than the one it claims to be is not a record of this game.
+    if game.moves != stored:
+        raise ReplayError("the move list does not replay to itself")
+
+    return spots, game
 
 
 def _restore_ending(game, result, termination):
@@ -713,10 +837,15 @@ def to_json(game, viewer_side=None, include_legal=True):
                               "name": seat.name}
                   for side, seat in game.seats.items()},
         "aiDepth": game.ai_depth,
+        "randomEntry": game.random_entry,
         "sideToMove": game.side_to_move,
         "awaitingYou": awaiting_you,
         "moves": list(game.moves),
         "ply": len(game.moves),
+        # How many plies the entering phase takes, which is how the page turns a ply index
+        # into a move number. Sent rather than assumed: the client would otherwise carry a
+        # hardcoded 12 that nothing holds to enteringSequence().
+        "enterSteps": len(ENTER_STEPS),
         "version": game.version,
         "lastMove": [N.square_to_alg(s) for s in game.last_move],
         "result": game.result,

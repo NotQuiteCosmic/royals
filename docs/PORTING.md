@@ -41,7 +41,7 @@ in after this document was first written, and §10 exists because this file did 
 | Port | Don't port |
 |---|---|
 | `hasher.py` — board encoding, tables, win check | `perlin.py` — **see below** |
-| `engine.py` — rays, move generation, executors | the entering search in `ai.py` (`chooseEntry`, `enterSearch`, `entryScore`, `enteringAnchor`) |
+| `engine.py` — rays, move generation, executors | the entering search in `ai.py` (`chooseEntry`, `enterVaried`, `enterSearch`, `entryScore`, `enteringAnchor`) |
 | `ai.py` — evaluator, move ordering, alpha-beta | `notation.py`, `moveFlights`, `describeMove`, `scoreText` |
 
 **`perlin.py` and the entering search stay in Python, permanently.** They use floats and
@@ -189,6 +189,40 @@ Reproduce exactly:
 A square can appear in both `possPushes` and `possFrees`. That is deliberate: a push into
 allies being held is two different moves onto one square — shove the whole thing along, or
 free them and stand where they stood. They cost differently, so they are measured separately.
+
+### The jump gauntlet: the carrying check goes FIRST
+
+Inside `checkMoves`' jump loop the gates are a fall-through chain, and **one of them is
+order-dependent in a way that no golden file can catch.** Port the order, not just the
+conditions:
+
+```
+carrying prisoners + any occupied square   -> break     <-- must be first
+friendly square (ours, no royal, no dragon) -> land, continue
+spy moving + any occupied square            -> break
+dragon moving + any occupied square         -> continue (flight)
+target holds our pieces captive             -> break (continue if dragon)
+target holds a royal or a dragon            -> break (continue if dragon)
+defenders outweigh attackers                -> break
+otherwise                                   -> land
+```
+
+The friendly branch **`continue`s**, so anything below it never sees a square the mover
+controls. Put the carrying check after it and it silently reads "no occupied *enemy* square",
+however plainly its comment says "either side's" — a stack with prisoners in tow gets offered
+a merge onto its own pieces, and a carrying stack can change size, which the rules forbid.
+
+This is not hypothetical: it is the bug this port shipped with. Both engines had the gates in
+that order, so they **agreed**, `golden_moves.txt` stayed byte-identical, and the differential
+oracle saw nothing. It could not have: the file contains **zero** `+pris` moves, because the
+sweep's walks never reach a position where the side to move holds a prisoner. The carrying
+half of move generation is covered by `tests/test_carry_rules.py` and by the unit test
+`a_carrying_stack_lands_on_nobody_not_even_its_own` in `movegen.rs`, and by nothing else.
+
+Hoisting it past the spy / dragon / captive / royal gates is safe and required: a dragon
+square can never hold prisoners (`Build_Space` drops every other field on one), so
+`movingPris` and `dragonBool` are mutually exclusive, and every gate it now precedes already
+breaks on the squares it breaks on.
 
 ### `checkMoves` returns a six-list
 

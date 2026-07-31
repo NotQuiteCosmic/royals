@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS games (
     ai_depth     INTEGER,
     entry_seed   INTEGER NOT NULL,
     entry_noise  REAL    NOT NULL,
+    random_entry INTEGER NOT NULL DEFAULT 0,
     moves        TEXT    NOT NULL,
     ply          INTEGER NOT NULL,
     seat0_kind   TEXT    NOT NULL,
@@ -91,7 +92,8 @@ CREATE INDEX IF NOT EXISTS games_updated ON games (updated_at);
 """
 
 COLUMNS = (
-    "id", "version", "mode", "ai_depth", "entry_seed", "entry_noise", "moves", "ply",
+    "id", "version", "mode", "ai_depth", "entry_seed", "entry_noise", "random_entry",
+    "moves", "ply",
     "seat0_kind", "seat0_hash", "seat0_claimed", "seat0_name",
     "seat1_kind", "seat1_hash", "seat1_claimed", "seat1_name",
     "invite_hash", "result", "termination", "created_at", "updated_at",
@@ -107,6 +109,10 @@ def to_row(game):
         "ai_depth": game.ai_depth,
         "entry_seed": game.entry_seed,
         "entry_noise": game.entry_noise,
+        # The one setting the move list cannot speak for. A random game that nobody has
+        # joined yet has an empty move list, and an empty move list looks the same either
+        # way -- so whether the pieces are to be dealt has to be written down.
+        "random_entry": int(game.random_entry),
         "moves": " ".join(game.moves),
         # Stored, not derived, and that is the point: a prefix of a legal game replays
         # perfectly, so the length is the one thing the move list cannot check itself.
@@ -128,6 +134,7 @@ def from_row(row):
     return G.replay(
         id=row["id"], mode=row["mode"], ai_depth=row["ai_depth"],
         entry_seed=row["entry_seed"], entry_noise=row["entry_noise"],
+        random_entry=bool(row["random_entry"]),
         moves=row["moves"], ply=row["ply"],
         seats={
             G.BLUE: G.Seat(kind=row["seat0_kind"], token_hash=row["seat0_hash"],
@@ -211,12 +218,16 @@ class Database:
         first person to notice is whoever is holding a half-finished game in the one that
         already existed. Every column added from here on needs a line in this table.
 
-        Adding a nullable column is the only migration this needs so far, and SQLite does
-        it without rewriting the table. Anything that ever needs more than that should be
-        written as a numbered step rather than bolted on here.
+        Adding a column is the only migration this needs so far, and SQLite does it without
+        rewriting the table -- including a NOT NULL one, so long as it carries a constant
+        default for the rows that already exist. Anything that ever needs more than that
+        should be written as a numbered step rather than bolted on here.
         """
         have = {row["name"] for row in self._query("PRAGMA table_info(games)")}
-        for column, ddl in (("seat0_name", "TEXT"), ("seat1_name", "TEXT")):
+        for column, ddl in (("seat0_name", "TEXT"), ("seat1_name", "TEXT"),
+                            # The default is what an older row means: every game written
+                            # before this column existed had its squares picked by hand.
+                            ("random_entry", "INTEGER NOT NULL DEFAULT 0")):
             if column not in have:
                 log.info("migrating %s: adding games.%s", self.path, column)
                 self._run(f"ALTER TABLE games ADD COLUMN {column} {ddl}")

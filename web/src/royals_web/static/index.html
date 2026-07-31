@@ -73,6 +73,18 @@
       <p class="hint">Blue enters first, so red makes the first move.</p>
     </div>
 
+    <!-- Outside #ai-options on purpose: this one governs both sides' placements, so it
+         applies just as much to a game between two people. -->
+    <div class="field">
+      <span class="label">Entering</span>
+      <div class="choice" id="entry-choice">
+        <button type="button" class="chip selected" data-entry="choose">Choose your squares</button>
+        <button type="button" class="chip" data-entry="random">Placed at random</button>
+      </div>
+      <p class="hint" id="entry-hint">Both sides enter their six pieces one at a time,
+        royals first.</p>
+    </div>
+
     <div id="ai-options">
       <div class="field">
         <span class="label">Opponent strength</span>
@@ -80,15 +92,29 @@
         <p class="hint" id="difficulty-hint"></p>
       </div>
 
-      <div class="field">
+      <div class="field" id="noise-field">
         <span class="label">Opening variety</span>
         <input type="range" id="noise" min="0" max="100" value="50">
-        <p class="hint">How much the computer varies its opening formation.</p>
+        <p class="hint">How loosely the computer picks its entering squares. 0 opens the
+          same way every game; 100 places every piece at random.</p>
       </div>
     </div>
 
     <button type="button" id="start" class="primary">Start</button>
     <p class="hint" id="setup-error"></p>
+
+    <!-- A saved game, read back in. The native file input is the one control on this page
+         that will not take the palette at all, so it is hidden and a button stands in
+         front of it; the input still does all the work. -->
+    <div class="field open-field">
+      <span class="label">Or open a saved game</span>
+      <div class="share-row">
+        <button type="button" id="open">Choose a file…</button>
+        <span class="hint" id="open-status">Walk through a game you saved earlier, one
+          move at a time.</span>
+      </div>
+      <input type="file" id="open-file" accept=".txt,.royals,text/plain" hidden>
+    </div>
   </section>
 
   <!-- What someone who was sent a link sees first.
@@ -168,6 +194,27 @@
       <button type="button" id="cancel" class="hidden">Cancel</button>
     </div>
 
+    <!-- Stepping through a game, under the board where the thing being stepped through is.
+         Every control here moves one number -- which position of the record is showing --
+         and nothing in it can reach the game: reviewing applies moves that were already
+         found legal when they were played, so there is nothing left to decide. -->
+    <div id="review" class="review hidden">
+      <button type="button" id="rv-first" title="The first position (Home)">&#9198;</button>
+      <button type="button" id="rv-prev" title="Back one move (&larr;)">&#9664;</button>
+      <input type="range" id="rv-slider" min="0" max="0" value="0"
+             aria-label="Position in the game">
+      <button type="button" id="rv-next" title="Forward one move (&rarr;)">&#9654;</button>
+      <button type="button" id="rv-last" title="The last position (End)">&#9197;</button>
+      <!-- Which move this is, which is the thing a reader is actually tracking, with the
+           position in the record underneath it. The move number is not the ply number:
+           they differ by the whole entering phase, so ply 19 is move 7. -->
+      <span class="review-count">
+        <b id="rv-number">&nbsp;</b>
+        <span id="rv-ply"></span>
+      </span>
+      <button type="button" id="rv-exit">Done</button>
+    </div>
+
     <aside class="side">
       <h3>Moves</h3>
       <ol id="movelist" class="movelist"></ol>
@@ -176,6 +223,8 @@
         <button type="button" id="resign">Resign</button>
         <button type="button" id="newgame">New game</button>
         <button type="button" id="invite-again" class="hidden">Invite link</button>
+        <button type="button" id="save">Save moves</button>
+        <button type="button" id="review-open">Review</button>
       </div>
     </aside>
   </section>

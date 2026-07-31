@@ -146,7 +146,8 @@ machine the wheel was never built for.
 | `hasher.py` | Board representation. 49 ints, 13 bits each. |
 | `engine.py` | Move generation, validation, execution, entering, ko. |
 | `ai.py` | Alpha-beta search and position evaluation. |
-| `notation.py` | Text and JSON forms of moves and boards. |
+| `notation.py` | Text and JSON forms of moves and boards, and of whole games. |
+| `record.py` | Walks a saved game back into the boards it passed through. Applies plies; decides nothing. |
 | `perlin.py` | 2D noise, used only to vary the computer's opening. |
 | `compat.py` | Two helpers that outlived the legacy `RoyalsLib`. |
 | `_accel.py` | Finds `royals_accel` or doesn't, honours `ROYALS_NO_ACCEL`, and reports which engine is answering. |
@@ -273,6 +274,21 @@ Anything running more than one game must therefore load exactly one game's state
 drop it. `web/src/royals_web/ai_pool.py` is the only place in the web app that touches these
 globals; `regress.py` does the same thing between sweeps with `koReset()`/`koRecord()`.
 
+**"A desktop app playing one game" is worth reading carefully — it means one game at a
+time, and two games can overlap in time without either of them being concurrent.** A search
+runs on a worker thread and cannot be called off; pressing NEW GAME while the computer is
+thinking leaves a search that is still going to answer, about a position that is no longer on
+the board. Answering it wrote the old game's board over the new one, appended a ply to a
+record nobody played, and put an old position into the ko set the new game had just cleared —
+the last of which made the new game start refusing legal moves as repetitions.
+
+So `royals_gui.py` carries a `gameGen` counter, bumped by `buildSetup` and `resetGameState`,
+and every deferred thing the window hands to the event loop carries the number the game had
+when it was asked for: `pollAI` drops an answer whose generation has moved, and `later()` is
+`root.after` with the same check. The search is not stopped, because it cannot be; its answer
+is simply never delivered to a game it was not computed for. `tests/test_desktop_lifecycle.py`
+is what holds that.
+
 ## The web layer
 
 FastAPI, in `web/src/royals_web/`:
@@ -355,18 +371,26 @@ phone. They are four siblings now — `#turnbar`, `.board-wrap`, `#turn-controls
 placed by named areas, so the turn line sits beside the board on a desktop and above it on
 a phone. Every id survived the split, so `app.js` was untouched by it.
 
-`ROYALS_MAX_DEPTH` caps the search a public deployment will agree to run. A depth-6 search
-is seconds of pinned CPU available to anyone who can click a menu; `allowed_difficulties()`
-is used by both the menu and the validator so what is offered and what is accepted cannot
-drift apart. Unset means no ceiling, so playing at home keeps every difficulty.
+`ROYALS_MAX_DEPTH` caps the search a public deployment will agree to run, and the top of the
+ladder is what makes it worth setting: `dragon` is ten ply, measured at about eighteen
+seconds a move on the machine this was developed on, all of it one pinned core available to
+anyone who can click a menu. `allowed_difficulties()` is used by both the menu and the
+validator so what is offered and what is accepted cannot drift apart. Unset means no
+ceiling, so playing at home keeps every difficulty.
+
+`ROYALS_AI_DEADLINE` is the other half of that and is not the same knob. It bounds how long
+a search that has already started may run; it defaults to 60s, which is headroom over ten
+ply rather than a target. Capping the *menu* is how a deployment declines a long search —
+letting one start and then killing it at the deadline spends the CPU anyway and answers 504.
 
 There is no push. The client polls `GET /api/games/{id}?since={version}`, which compares a
 counter and returns forty bytes when nothing has happened — before `to_json`, which would
 otherwise regenerate every legal move on every poll. The client pauses entirely while its
 tab is hidden.
 
-Two things the pool exists to prevent: a depth-6 search is seconds of pinned CPU that
-anybody can request by clicking a menu, and a game holds every position it has stood in, so
+Two things the pool exists to prevent: the deepest search on the menu is the better part of
+half a minute of pinned CPU that anybody can request by clicking, and a game holds every
+position it has stood in, so
 an unattended endpoint that mints games is a memory attack that needs no cleverness at all.
 Hence the hard concurrency cap, the queue that refuses rather than grows, the deadline, the
 game ceiling and the TTL.
@@ -383,6 +407,18 @@ an edited or corrupted record fails to load rather than handing both players a p
 wrong board. It has exactly one blind spot — a prefix of a legal game is a legal game, so
 truncation replays perfectly into a stale position — and the stored `ply` is there to
 close it, which is the only reason that column exists.
+
+The `random_entry` column is the second thing a move list cannot speak for, and it is worth
+saying why it is a column rather than something inferred. A random opening — the mode where
+nobody picks their squares — is dealt by `fill_entering`, which is called from `new_game` and
+from `claim_seat` and **never from `replay`**: the twelve placements it makes go into `moves`
+as ordinary entry tokens, so the load path puts them back through `place` exactly like a game
+somebody clicked out. Dealing again on load would replace the game that was played with one
+that merely could have been. But a game between two people is stored before either of them
+has entered anything, and an empty move list looks the same either way — so whether the
+pieces are still to be dealt has to be written down. Note also that the fill is driven from
+`game.py` rather than from `main._advance`: `_advance` only runs while the *computer* is to
+move, and in a game between two people it correctly does nothing at all.
 
 No `pickle`, anywhere. A board is a tuple and pickling it into a BLOB is the obvious
 shortcut and is remote code execution; everything written is text and numbers, and the
@@ -431,6 +467,24 @@ they are: `ProcessPoolExecutor` reuses them and `ai_pool` sets no `maxtasksperch
 Anything that recycles a worker per request would spend the warmup every time and land on
 the wrong side of that table.
 
+### The entering variety setting
+
+Every front end shows one 0–100 slider for how varied the computer's opening is, and it drives
+two things at once. `setEntryNoise` tilts the entering scores with a Perlin field, which
+reorders close decisions — that is the older half, and on its own it could not reach *random*,
+because a field has a strongest square and a big enough tilt converges on it. `enterVaried` is
+the other half: it ranks the legal squares (the computer's own choice first, then the rest in
+`entryShortlist` order) and draws rank `r` with weight `intensity ** r`. That expression is
+what makes both ends exact rather than approached — `0 ** 0` is 1 with every later weight zero,
+so 0 is the fixed opening; every weight is 1 at intensity 1, so that is a uniform draw over
+every legal square.
+
+`chooseEntry` itself is untouched by all of this and is still the plain "best square I can
+find", which is not an accident: `regress.py`'s `enteredBoard` calls it to build the positions
+`golden_moves.txt` and `golden_search.txt` sweep from, and those boards are in
+`tests/fixtures/port_fixtures.json` too. Changing what it returns would move the rules contract
+and the port fixtures for the sake of a menu setting.
+
 One thing to know before trusting it further: `ai.entryScore` computes in **floats**,
 through the Perlin noise field. The evaluator proper is integers-only precisely because
 CPython and PyPy once disagreed in the last place and changed the move played. The
@@ -446,10 +500,25 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for the workflow. In short:
   byte-identical.
 - **`tests/golden_search.txt`** — node counts per move. Expected to churn.
 - **`tests/test_engine_purity.py`** — enforces the no-dependencies, no-UI rule.
-- **`tests/test_notation.py`** — round-trips for the text and JSON move forms.
+- **`tests/test_notation.py`** — round-trips for the text and JSON move forms, and for a
+  whole game record: that a header changes nothing, that a note cannot smuggle a token into
+  the move list, and that the file is the same string the database column holds.
+- **`tests/test_record.py`** — the record walker against the server's replay. Two walks of a
+  move list exist on purpose and must agree ply for ply; this is what says so.
+- **`tests/test_desktop_record.py`** — the desktop's move recorder, driven through a real
+  tkinter window and then replayed two ways. Needs a display, and skips without one.
+- **`tests/test_desktop_lifecycle.py`** — what a game the player walked away from can still
+  do to the next one. Every other test of the window plays one game in it; these need two,
+  and a running event loop, so they hold one root for the whole file and block the engine on
+  an Event to make "a search is in flight" a fact rather than a race. Needs a display too.
 - **`tests/test_web_api.py`** — the REST surface, against FastAPI's `TestClient`.
 - **`tests/test_break_rules.py`** — what a break may fall onto, and freeing.
 - **`tests/test_flights.py`** — `moveFlights` against the executors.
+- **`tests/test_entering.py`** — the random opening, the mode where nobody picks their
+  squares: that every square it deals is one `enteringOptions` offered, and that an opening
+  is a pure function of its seed, which is what lets the desktop and the server deal the
+  same one. Deliberately not a golden — a recording of what one RNG did is the kind of file
+  [PORTING.md](PORTING.md) tells a second implementation not to reproduce.
 - **`tests/test_accel.py`** — the optional accelerator: that boards come back hashable, that
   `ROYALS_NO_ACCEL` is honoured, that clearing game state and capping the transposition table
   both reach the compiled side, and that both engines refuse malformed input the same way.

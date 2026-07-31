@@ -180,17 +180,23 @@ input[type=text] {
      side panel would float away from a board that has stopped growing at its maximum. */
   justify-content: start;
   grid-template-columns: minmax(0, 700px) minmax(250px, 300px);
+  /* The review bar gets a row of its own under the board rather than a place among the
+     turn controls. It belongs to the board -- it says which position of the board is
+     showing -- and a scrubber somewhere off to the side of the thing it scrubs is a
+     control you have to look for. */
   grid-template-areas:
     "board turn"
     "board controls"
     "board moves"
-    "board .";
+    "board ."
+    "review .";
 }
 
 #turnbar   { grid-area: turn; }
 .board-wrap { grid-area: board; }
 #turn-controls { grid-area: controls; }
 .side      { grid-area: moves; }
+#review    { grid-area: review; }
 
 .board-wrap {
   position: relative;
@@ -258,16 +264,66 @@ canvas { width: 100%; height: auto; display: block; border-radius: var(--radius)
 
 .side h3 { font-size: 12px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--dim); margin: 0 0 6px; }
 
+/* list-style: none, and the number written out instead. The browser's own <ol> markers
+   count plies, and a ply is not a move: the twelve placements come first, so the marker
+   beside the seventh move of the game would read 19. The marker below says what a person
+   would say. */
 .movelist {
-  margin: 0; padding: 0 0 0 34px;
+  margin: 0; padding: 0;
+  list-style: none;
   max-height: 300px; overflow-y: auto;
   font-size: 13px; color: var(--dim);
   border: 1px solid var(--line); border-radius: 6px;
 }
-.movelist li { padding: 1px 0; }
+.movelist li { padding: 1px 8px 1px 4px; display: flex; gap: 8px; }
+.ply-mark {
+  flex: 0 0 auto;
+  min-width: 26px; text-align: right;
+  color: var(--dim);
+}
 .movelist li.blue { color: var(--blue); }
 .movelist li.red { color: var(--red); }
 .movelist li.enter { opacity: .65; }
+
+/* While reviewing, the list is a way of getting somewhere as well as a record of what
+   happened, so it says which ply is on the board and takes a click to any other. */
+.movelist.steppable li { cursor: pointer; }
+.movelist.steppable li:hover { color: var(--ink); }
+.movelist li.at {
+  color: var(--gold);
+  /* An outline rather than a background: a background on an <li> in a padded <ol> stops
+     short of the number, which reads as the marker belonging to the line above. */
+  outline: 1px solid var(--gold);
+  outline-offset: 1px;
+  opacity: 1;
+}
+
+.review {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 10px;
+  max-width: min(700px, 92vmin);
+}
+/* The slider takes whatever the buttons leave. min-width: 0 because a flex item will not
+   shrink below its intrinsic size without it, and a range input's is wide enough to push
+   the buttons off the end on a phone. */
+.review input[type=range] { flex: 1 1 auto; min-width: 0; }
+.review button { padding: 7px 11px; }
+.review-count {
+  display: flex; flex-direction: column; align-items: flex-end;
+  line-height: 1.25;
+  white-space: nowrap;
+  /* Wide enough to hold "Entering 12 of 12" without the buttons jogging sideways as the
+     label changes between the two phases. */
+  min-width: 124px;
+}
+/* The move number is what a reader is tracking, so it is the one thing here at reading
+   size and in the accent colour; the ply position is reference, and dimmed. */
+#rv-number { font-size: 15px; color: var(--gold); }
+#rv-ply { font-size: 11px; color: var(--dim); }
+
+.open-field { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 16px; }
+.open-field .share-row { align-items: center; }
+.open-field .hint { margin: 0; }
 
 .legend { margin: 0; padding-left: 18px; font-size: 12px; color: var(--dim); }
 .legend li { margin-bottom: 4px; }
@@ -281,11 +337,17 @@ canvas { width: 100%; height: auto; display: block; border-radius: var(--radius)
              max(12px, env(safe-area-inset-left));
   }
 
-  /* One column, and the turn line first. */
+  /* One column, and the turn line first. The review bar stays directly under the board,
+     which is also where a thumb already is. */
   #game {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: "turn" "board" "controls" "moves";
+    grid-template-areas: "turn" "board" "review" "controls" "moves";
   }
+
+  /* The count is the first thing to go when there is no room -- the slider position says
+     the same thing, and the buttons have to stay tappable. */
+  .review { flex-wrap: wrap; }
+  .review input[type=range] { flex: 1 1 60%; }
 
   /* Sticky, so the one thing you always need to know -- whose move it is -- does not
      scroll away behind the board. It needs an opaque background and a z-index of its

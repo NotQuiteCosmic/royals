@@ -182,6 +182,155 @@ def test_entry_and_move_namespaces_do_not_collide():
 
 
 # ---------------------------------------------------------------------------
+# Whole games, as records
+# ---------------------------------------------------------------------------
+# The move list a record holds is not a list of moves -- it is a list of *plies*, three
+# kinds of thing sharing one namespace, and a pass is written down rather than implied. So
+# these build one the way a front end does, placements and all, instead of testing the
+# codec against a list of moves it would never actually be handed.
+
+def recorded_game(seed, turns=20):
+    """A move list in the shape game.Game.moves holds one: placements, then moves.
+
+    The skipped-placement "--" is reproduced faithfully, because that is the token most
+    likely to be got wrong by a front end learning to write its moves down -- it records a
+    step nobody made a decision at, and leaving it out silently shifts every later ply
+    onto the wrong side.
+    """
+    rng = random.Random(seed)
+    tokens = []
+
+    AI.setEntryNoise(0.5, seed)
+    board = Hasher.Entering_Board()
+    for contr, piece in Engine.enteringSequence():
+        is_spy = (piece == Hasher.SPY)
+        if not Engine.enteringOptions(board, contr, is_spy):
+            tokens.append(N.PASS)
+            continue
+        square = AI.chooseEntry(board, contr, piece, is_spy)
+        board = Engine.dropPiece(board, square, contr, piece)
+        tokens.append(N.encode_entry(piece, square))
+
+    Engine.koReset()
+    AI.newGame()
+    Engine.koRecord(board)
+
+    # Play opens on turn 1, so that whoever entered second moves first.
+    #
+    # The ko filter is not decoration here. Without it this produces move lists that are
+    # perfectly good notation, and that the *engine* will happily apply, but that no game
+    # could have contained -- and anything that replays a record through the rules, as the
+    # server does, then refuses them. A generator of "games" that are not games is a
+    # generator that makes real disagreements look like test bugs.
+    for turn in range(1, turns + 1):
+        contr = turn % 2
+        legal = []
+        for move in AI.listAllMoves(board, contr):
+            after = AI.performOneStep(board, contr, move)
+            if not Engine.koBreaks(after):
+                legal.append((move, after))
+        if not legal:
+            tokens.append(N.PASS)
+            continue
+        move, board = legal[rng.randrange(len(legal))]
+        Engine.koRecord(board)
+        tokens.append(N.encode_move(move))
+
+    return tokens
+
+
+RECORDED = recorded_game(11)
+
+
+def test_a_recorded_game_is_more_than_a_list_of_moves():
+    """Otherwise the round trip below is only testing encode_move again."""
+    kinds = {N.decode_ply(t)[0] for t in RECORDED}
+    assert kinds == {N.PLY_ENTER, N.PLY_MOVE}, kinds
+    assert sum(1 for t in RECORDED if t.startswith(N.ENTER_PREFIX)) == 12
+
+
+def test_game_record_round_trips():
+    # A pass has to be put in rather than found -- 20 turns of random play from a full
+    # board reaches one rarely, and an entering skip is rarer still -- so the cases that
+    # mix them in are listed explicitly instead of hoped for.
+    cases = (RECORDED,
+             [N.PASS] + RECORDED,               # a skipped placement, before anything
+             RECORDED + [N.PASS, N.PASS],       # the double pass that ends a game
+             [], [N.PASS])
+    for moves in cases:
+        assert N.decode_game(N.encode_game(moves)) == moves
+
+
+def test_the_header_is_metadata_and_nothing_more():
+    """Everything needed to replay is in the tokens. Stripping the comments changes nothing."""
+    text = N.encode_game(RECORDED, notes=["2026-07-30  vs computer  blue wins by gather"])
+    stripped = "\n".join(line for line in text.splitlines()
+                         if not line.lstrip().startswith(N.COMMENT))
+    assert N.decode_game(stripped) == N.decode_game(text) == RECORDED
+
+
+def test_a_record_is_the_same_string_the_database_stores():
+    """The file and the stored column are one format, not two that agree."""
+    stored = " ".join(RECORDED)          # persist.py's `" ".join(game.moves)`
+    assert N.decode_game(stored) == stored.split() == RECORDED
+
+
+def test_notes_cannot_smuggle_tokens_into_the_record():
+    """A note is a comment. A note containing a line break is still a comment."""
+    text = N.encode_game(["--"], notes=["harmless\nJd3f5 Jd4f6", "and\r\nPd3d4"])
+    assert N.decode_game(text) == ["--"]
+    for line in text.splitlines():
+        assert line.startswith(N.COMMENT) or line == "--", line
+
+
+def test_a_trailing_comment_is_a_comment_wherever_it_sits():
+    assert N.decode_game("Jd3f5 # nice\n# all of this\nPd3d4") == ["Jd3f5", "Pd3d4"]
+
+
+def test_wrapping_is_presentation_only():
+    """Long games wrap; the token list does not care where."""
+    text = N.encode_game(RECORDED * 8)
+    body = [l for l in text.splitlines() if not l.startswith(N.COMMENT)]
+    assert len(body) > 1, "a 160-ply record should not be one line"
+    assert all(len(l) <= N.WRAP for l in body), max(len(l) for l in body)
+    assert N.decode_game(text) == N.decode_game(" ".join(body))
+
+
+def test_encoding_names_the_ply_that_is_wrong():
+    """A front end that has just learned to record its moves finds out at save time."""
+    with pytest.raises(N.NotationError) as caught:
+        N.encode_game(["@Rd3", "Jd3f5", "Zq9q9"])
+    assert "ply 3" in str(caught.value)
+
+
+@pytest.mark.parametrize("text", [
+    "Jd3f5 Zq9q9",              # a token that is not notation
+    "Jd3f5 Jd3",                # truncated
+    "@Xd3",                     # not a piece
+    "Jd3f5 @@d3",
+    "\x00",
+])
+def test_a_corrupted_record_fails_to_load(text):
+    with pytest.raises(N.NotationError):
+        N.decode_game(text)
+
+
+def test_decode_game_rejects_non_strings():
+    for bad in (None, 42, [], b"Jd3f5"):
+        with pytest.raises(N.NotationError):
+            N.decode_game(bad)
+
+
+def test_decode_ply_classifies_without_guessing():
+    assert N.decode_ply("--") == (N.PLY_PASS, None)
+    assert N.decode_ply("@Rd4") == (N.PLY_ENTER, N.decode_entry("@Rd4"))
+    assert N.decode_ply("Jd3f5") == (N.PLY_MOVE, N.decode_move("Jd3f5"))
+    for bad in (None, 42, "", "@", "Q"):
+        with pytest.raises(N.NotationError):
+            N.decode_ply(bad)
+
+
+# ---------------------------------------------------------------------------
 # Direction letters must follow the engine, not a copy of it
 # ---------------------------------------------------------------------------
 

@@ -1085,6 +1085,185 @@ def test_a_game_played_over_http_survives_a_restart(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# The random opening
+# ---------------------------------------------------------------------------
+# The mode where nobody picks their squares. What the server has to get right is not the
+# dealing -- tests/test_entering.py holds the engine to that -- but where it happens: inside
+# the request that starts the game, once, and never again on the way back out of the
+# database. A game that re-deals itself on load is a game whose stored moves describe a
+# position it is no longer in.
+
+def test_a_random_game_opens_with_the_board_already_full(client):
+    res = client.post("/api/games", json={"mode": "ai", "side": 0, "difficulty": "novice",
+                                          "noise": 0.5, "randomEntry": True})
+    assert res.status_code == 200, res.text
+    state = res.json()["state"]
+
+    assert state["randomEntry"] is True
+    assert state["phase"] == "playing"
+    # Nothing to click and nothing to tell the client about: the phase it would describe is
+    # already over by the time the response is written.
+    assert "entering" not in state
+    # Twelve placements, and then whatever red played: the computer's opening move is
+    # computed in this same request, exactly as it would be after a hand-picked entering.
+    assert all(m.startswith("@") for m in state["moves"][:12])
+    assert len(state["moves"]) == 13
+    assert not state["moves"][12].startswith("@")
+
+
+def test_an_ordinary_game_is_still_entered_by_hand(game):
+    # The default, asserted so that adding the flag cannot quietly change what omitting it
+    # means.
+    assert game["randomEntry"] is False
+    assert game["phase"] == "entering"
+
+
+def test_every_dealt_placement_is_one_the_rules_allow(client):
+    # `positions` puts the whole move list back through `place`, which validates every
+    # placement against enteringOptions -- so this replaying at all *is* the legality claim,
+    # and the final board matching says the position is the one the game is really in.
+    state = client.post("/api/games", json={"mode": "ai", "side": 0, "difficulty": "novice",
+                                            "randomEntry": True}).json()["state"]
+    boards, walked = G.positions(state["moves"])
+
+    assert len(boards) == len(state["moves"]) + 1
+    assert G.board_to_json(walked.board) == state["board"]
+
+
+def test_a_random_opening_is_reproducible_from_its_seed():
+    a = pure_game(random_entry=True, entry_seed=4242)
+    b = pure_game(random_entry=True, entry_seed=4242)
+    c = pure_game(random_entry=True, entry_seed=4243)
+
+    assert a.moves == b.moves
+    assert a.moves != c.moves
+
+
+def test_the_desktop_and_the_server_deal_the_same_opening():
+    # The desktop draws its squares straight from the engine and the server draws them
+    # through fill_entering, so the two agree only for as long as they derive the RNG the
+    # same way. They are two front ends onto one opening, and a seed a player writes down
+    # off one of them should reproduce it on the other.
+    game = pure_game(random_entry=True, entry_seed=77)
+
+    board = Hasher.Entering_Board()
+    desktop = []
+    for index, step in enumerate(Engine.enteringSequence()):
+        contr, piece = step
+        square = Engine.randomEntry(board, contr, piece == Hasher.SPY,
+                                    Engine.entryRng(77, index))
+        if square is None: continue
+        board = Engine.dropPiece(board, square, contr, piece)
+        desktop.append(N.encode_entry(piece, square))
+
+    assert game.moves == desktop
+    assert game.board == board
+
+
+def test_a_random_game_survives_being_written_and_read_back(db):
+    game = played_out(random_entry=True)
+    db.save(game)
+    back = db.load(game.id)
+
+    assert back is not None
+    assert back.random_entry is True
+    # The point of the whole design: the board comes back from the recorded placements, not
+    # from a fresh deal that would happen to be legal and would not be this game.
+    assert back.board == game.board
+    assert back.moves == game.moves
+
+
+def test_the_random_flag_survives_a_game_nobody_has_joined_yet(db):
+    # The one case the column exists for. A game between two people is stored before either
+    # of them has entered anything, so there is nothing in its move list to say which
+    # opening it was asked for -- and a restart between "create" and "join" would otherwise
+    # hand the joiner a board to fill in by hand.
+    game, _seat, invite = G.new_game(mode="human", side=0, random_entry=True)
+    assert (game.phase, game.moves) == ("waiting", [])
+
+    db.save(game)
+    back = db.load(game.id)
+    assert back.random_entry is True
+    assert back.phase == "waiting"
+
+    G.claim_seat(back, invite)
+    assert back.phase == "playing"
+    assert len(back.moves) == 12
+
+
+def test_a_waiting_random_game_is_dealt_when_the_second_seat_is_claimed(client):
+    made = client.post("/api/games",
+                       json={"mode": "human", "side": 0, "randomEntry": True}).json()
+    state, invite = made["state"], made["inviteToken"]
+    assert state["phase"] == "waiting", "no placements until both seats are taken"
+    assert state["moves"] == []
+
+    joined = client.post(f"/api/games/{state['id']}/join",
+                         json={"invite": invite}).json()["state"]
+    assert joined["phase"] == "playing"
+    assert len(joined["moves"]) == 12
+    assert joined["randomEntry"] is True
+
+
+def test_an_older_database_gains_the_random_entry_column(tmp_path):
+    # There was no migration test at all before this, which is why _migrate has to warn
+    # about itself in prose. Build the table the way it stood before the column existed,
+    # then open it with the current code and play a game into it.
+    import sqlite3
+    from royals_web.persist import Database, SCHEMA
+
+    path = str(tmp_path / "old.db")
+    old = sqlite3.connect(path)
+    old.executescript(SCHEMA.replace("    random_entry INTEGER NOT NULL DEFAULT 0,\n", ""))
+    old.commit()
+    old.close()
+
+    assert "random_entry" not in _columns(path)
+
+    db = Database(path)
+    try:
+        assert "random_entry" in _columns(path)
+        game = played_out(random_entry=True)
+        db.save(game)
+        back = db.load(game.id)
+        assert back.random_entry is True
+        assert back.board == game.board
+    finally:
+        db.close()
+
+
+def test_the_page_offers_the_mode_and_sends_the_field_that_turns_it_on():
+    """The setup screen's half of this, which nothing else here can see.
+
+    There is no JavaScript suite, and the failure being guarded is the quiet one: a chip
+    that selects, a hint that changes, and a body that never carries the field -- so the
+    page offers a mode the server is never told about, and every game comes back entered by
+    hand with nothing anywhere saying why.
+    """
+    from royals_web.main import STATIC_DIR
+
+    markup = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    assert 'id="entry-choice"' in markup
+    assert 'data-entry="random"' in markup
+
+    source = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert "randomEntry: setup.randomEntry" in source, "the field never reaches the server"
+
+    # And the name it sends is the one the schema takes.
+    from royals_web.main import NewGame
+    assert "randomEntry" in NewGame.model_fields
+
+
+def _columns(path):
+    import sqlite3
+    conn = sqlite3.connect(path)
+    try:
+        return {row[1] for row in conn.execute("PRAGMA table_info(games)").fetchall()}
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Facing the internet
 # ---------------------------------------------------------------------------
 
@@ -1131,6 +1310,49 @@ def test_a_cap_never_leaves_an_empty_menu(monkeypatch):
     offered = M.allowed_difficulties()
     assert len(offered) == 1
     assert offered == {"novice": G.DIFFICULTIES["novice"]}, "the shallowest survives"
+
+
+def test_every_difficulty_on_the_menu_has_something_to_say_about_itself():
+    """The blurbs live in app.js and the ladder lives here, which is a drift waiting to
+    happen: a rung added on this side shows up in the menu with an empty hint under it,
+    and nothing fails. The page cannot be asked at runtime, so it is read.
+    """
+    import re
+    from royals_web.main import STATIC_DIR
+
+    source = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    block = re.search(r"const DIFFICULTY_BLURB = \{(.*?)\n\};", source, re.S)
+    assert block, "app.js no longer declares DIFFICULTY_BLURB"
+    described = set(re.findall(r"^\s*(\w+):", block.group(1), re.M))
+
+    assert described == set(G.DIFFICULTIES), \
+        "the menu and its descriptions disagree about which difficulties exist"
+
+
+def test_the_computer_can_be_asked_to_enter_at_random(client):
+    """`noise: 1.0` is the top of the variety slider, which now means every placement is a
+    uniform draw rather than a strongly tilted choice. What the server has to get right is
+    that the placements are still legal and still recorded: `positions` re-applies each one
+    through `place`, which validates it, so replaying at all is the assertion."""
+    made = client.post("/api/games", json={"mode": "ai", "side": 0,
+                                           "difficulty": "novice", "noise": 1.0})
+    assert made.status_code == 200, made.text
+    body = made.json()
+    client.headers["X-Royals-Seat"] = body["seatToken"]
+    state = play_to_move_phase(client, body["state"])
+
+    entries = [m for m in state["moves"] if m.startswith("@")]
+    assert len(entries) == 12
+    boards, walked = G.positions(state["moves"])
+    assert G.board_to_json(walked.board) == state["board"]
+
+
+def test_the_deepest_difficulty_is_ten_ply():
+    # The top of the ladder is the one rung with consequences elsewhere -- it is what
+    # ROYALS_MAX_DEPTH is for capping and what the AI deadline has to leave room for.
+    assert max(G.DIFFICULTIES.values()) == 10
+    from royals_web.ai_pool import SEARCH_DEADLINE
+    assert SEARCH_DEADLINE >= 30, "a ten-ply search needs more headroom than this"
 
 
 def test_the_default_difficulty_falls_back_when_capped_away(client, monkeypatch):
@@ -1480,3 +1702,274 @@ def test_a_schema_refusal_is_a_sentence_and_not_a_shrug(client, game):
     assert isinstance(detail, list)
     assert any("square" in (d.get("loc") or []) for d in detail), (
         "the refusal must say which field, or the client cannot say anything useful")
+
+
+# ---------------------------------------------------------------------------
+# Reviewing a game move by move
+# ---------------------------------------------------------------------------
+# The whole of stepping is "replay a prefix", so what these check is that a prefix really
+# does reproduce the game -- not that the endpoint returns the right number of things.
+
+def played_out_with_boards(seed=2, plies=20, **kwargs):
+    """A game, and the board it actually stood in after every ply, recorded as it was played.
+
+    Two independent accounts of the same game: this one built move by move as it happened,
+    and the one `/positions` builds afterwards from the move list alone. They must agree
+    ply for ply, which is the only thing that makes stepping trustworthy.
+
+    The padding is not incidental. `_seek_entry_step` writes a "--" for a placement some
+    side had nowhere to make, without anybody calling anything -- so one call to `place`
+    can add several plies, and a list built one board per call would silently slip out of
+    step with the move list.
+    """
+    import random
+    rng = random.Random(seed)
+    game = pure_game(entry_seed=seed, **kwargs)
+
+    boards = [Hasher.Entering_Board()]
+
+    def catch_up():
+        while len(boards) <= len(game.moves):
+            boards.append(game.board)
+
+    catch_up()
+    while game.phase == "entering":
+        options = G.entering_options(game.board, game.entry_side, game.entry_piece)
+        G.place(game, rng.choice(options), side=game.entry_side)
+        catch_up()
+    for _ in range(plies):
+        if game.phase != "playing":
+            break
+        contr = game.turn % 2
+        legal = G.legal_moves(game.board, contr, game.ko_set())
+        G.play_move(game, rng.choice(legal) if legal else None, side=contr)
+        catch_up()
+
+    return game, boards
+
+
+def test_prefix_replay_agrees_with_the_game_that_was_played():
+    """The board at ply n, rebuilt from the moves, is the board the game stood in at ply n."""
+    game, boards = played_out_with_boards()
+    spots, walked = G.positions(game.moves)
+
+    assert len(spots) == len(game.moves) + 1 == len(boards)
+    for spot, actual in zip(spots, boards):
+        assert spot.board == actual, "ply %d" % spot.ply
+    assert walked.board == game.board
+
+
+def test_positions_covers_the_entering_phase_too():
+    """A placement is a ply like any other, and the opening gets a viewer for free."""
+    game, _boards = played_out_with_boards(plies=0)
+    spots, _walked = G.positions(game.moves)
+
+    # The first position is the empty board play begins from, and the twelve after it are
+    # the placements -- so something must have arrived by the end of them.
+    assert spots[0].board == Hasher.Entering_Board()
+    assert spots[12].board != Hasher.Entering_Board()
+    assert spots[1].last_move, "a placement should highlight the square it landed on"
+
+
+def test_the_positions_endpoint_serves_a_stored_game(client, game):
+    state = play_to_move_phase(client, game)
+    res = client.get(f"/api/games/{state['id']}/positions")
+    assert res.status_code == 200, res.text
+    body = res.json()
+
+    assert body["ply"] == len(state["moves"])
+    assert body["moves"] == state["moves"]
+    assert len(body["positions"]) == body["ply"] + 1
+    # The last position is the one the live game is showing, in the same shape.
+    assert body["positions"][-1]["board"] == state["board"]
+
+
+def test_a_resignation_survives_into_the_review(client, game):
+    """The moves cannot describe it, so the endpoint must report the stored game's ending."""
+    state = play_to_move_phase(client, game)
+    client.post(f"/api/games/{state['id']}/resign")
+
+    body = client.get(f"/api/games/{state['id']}/positions").json()
+    assert body["termination"] == "resign"
+    assert body["result"] == "red"
+
+
+def test_positions_is_public_but_a_missing_game_is_still_absent(client, game):
+    """Anyone with the link may watch, so anyone with the link may review."""
+    bare = TestClient(app)
+    with bare as c:
+        assert c.get(f"/api/games/{game['id']}/positions").status_code == 200
+        assert c.get("/api/games/%s/positions" % ("0" * 32)).status_code == 404
+
+
+# -- uploading a record ------------------------------------------------------
+
+def test_a_downloaded_record_can_be_uploaded_and_reviewed(client):
+    """The round trip the download button exists for."""
+    game, boards = played_out_with_boards()
+    record = N.encode_game(game.moves, notes=["a game that was played"])
+
+    res = client.post("/api/review", json={"record": record})
+    assert res.status_code == 200, res.text
+    body = res.json()
+
+    assert body["moves"] == game.moves
+    assert len(body["positions"]) == len(boards)
+    assert body["positions"][-1]["board"] == G.board_to_json(game.board)
+
+
+def test_the_header_is_ignored_on_the_way_back_in(client):
+    game, _boards = played_out_with_boards()
+    with_header = N.encode_game(game.moves, notes=["2026-07-30  blue wins"])
+    without = " ".join(game.moves)
+
+    a = client.post("/api/review", json={"record": with_header}).json()
+    b = client.post("/api/review", json={"record": without}).json()
+    assert a == b
+
+
+def test_an_over_long_record_is_refused_in_words(client):
+    """Not a bare 413. A person who uploaded a file is owed the number to compare it to."""
+    record = " ".join(["--"] * (2000))
+    res = client.post("/api/review", json={"record": record})
+
+    assert res.status_code == 413
+    detail = res.json()["detail"]
+    assert any(ch.isdigit() for ch in detail), detail
+    # Whichever refusal fires -- the endpoint's ply cap or the middleware's byte count --
+    # it has to name the limit rather than merely assert one.
+    assert "review" in detail or "bytes" in detail, detail
+
+
+def test_a_record_just_inside_the_cap_still_reaches_the_replay(client):
+    """The two refusals must not leave a gap that is refused for the wrong reason."""
+    from royals_web.main import REVIEW_MAX_PLIES
+    assert REVIEW_MAX_PLIES > G.MAX_PLIES / 8, "the cap has drifted below real games"
+
+    # Well-formed notation, not a playable game: this must fail on the replay, which is
+    # proof it got past both size checks rather than being turned away at the door.
+    record = " ".join(["Jd3f5"] * (REVIEW_MAX_PLIES - 1))
+    res = client.post("/api/review", json={"record": record})
+    assert res.status_code == 422, res.status_code
+    assert "not playable" in res.json()["detail"]
+
+
+@pytest.mark.parametrize("record, expect", [
+    ("Jd3f5 Zq9q9", "ply 2"),                      # not notation at all
+    ("@Rd3 @Rd3", "not playable"),                 # notation, but nobody played it
+    ("Jd3f5", "not playable"),                     # a move before anything is on the board
+])
+def test_a_corrupted_record_fails_rather_than_replaying_into_a_wrong_position(
+        client, record, expect):
+    res = client.post("/api/review", json={"record": record})
+    assert res.status_code == 422, res.text
+    assert expect in res.json()["detail"], res.json()["detail"]
+
+
+def test_reviewing_creates_nothing(client):
+    """It is stateless, and a stranger must not be able to fill the store through it."""
+    game, _boards = played_out_with_boards()
+    before = len(store)
+    for _ in range(3):
+        assert client.post("/api/review",
+                           json={"record": " ".join(game.moves)}).status_code == 200
+    assert len(store) == before
+
+
+def test_reviewing_is_rate_limited_more_tightly_than_reading(client, game, monkeypatch):
+    """It is the most expensive thing an unauthenticated caller can ask for."""
+    from royals_web import main as M
+    assert M.REVIEW_LIMIT < M.API_LIMIT
+
+    monkeypatch.setattr(M, "REVIEW_LIMIT", 2)
+    seen = [client.get(f"/api/games/{game['id']}/positions").status_code
+            for _ in range(4)]
+    assert 429 in seen, seen
+    # The blanket limit is untouched, so ordinary reading still works.
+    assert client.get(f"/api/games/{game['id']}").status_code == 200
+
+
+def test_the_page_agrees_with_the_server_about_how_long_a_record_may_be():
+    """app.js checks the length before uploading, so it has to hold the same number.
+
+    Mirroring a constant across a wire boundary is normal; letting the two drift is not.
+    The symptom would be quiet and bad in either direction -- a page that refuses files
+    the server would have taken, or one that uploads files it will be refused for.
+    """
+    import re
+    from royals_web.main import REVIEW_MAX_PLIES, STATIC_DIR
+
+    source = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    found = re.search(r"const REVIEW_MAX_PLIES = (\d+);", source)
+    assert found, "app.js no longer declares REVIEW_MAX_PLIES"
+    assert int(found.group(1)) == REVIEW_MAX_PLIES
+
+
+def test_the_file_the_browser_writes_is_one_the_engine_reads():
+    """app.js builds the record itself, so this pins the exact shape it builds.
+
+    It is deliberately not a second implementation of the format -- the body is
+    `moves.join(" ")`, which is the string persist.py already stores, and everything above
+    it is comments that decode_game throws away. This asserts that, so that the claim stops
+    being a comment and starts being checked.
+    """
+    game, _boards = played_out_with_boards()
+
+    # Exactly what recordText() in app.js produces, assembled the same way.
+    browser = "\n".join(["# Royals 1",
+                         "# 2026-07-30  against the computer at depth 3  unfinished  "
+                         "%d plies" % len(game.moves),
+                         " ".join(game.moves),
+                         ""])
+    assert N.decode_game(browser) == game.moves
+
+    # And wrapping the body, which is the only other thing app.js does to it, changes
+    # nothing about what comes back.
+    wrapped = "\n".join(["# Royals 1"] + [" ".join(game.moves[i:i + 10])
+                                          for i in range(0, len(game.moves), 10)])
+    assert N.decode_game(wrapped) == game.moves
+
+
+# ---------------------------------------------------------------------------
+# The number a reviewer is shown
+# ---------------------------------------------------------------------------
+
+def test_positions_carry_the_move_number_and_not_only_the_ply(client, game):
+    """A game's seventh move is its nineteenth ply, and the page must not have to guess."""
+    from royals_engine import record as R
+
+    state = play_to_move_phase(client, game)
+    body = client.get(f"/api/games/{state['id']}/positions").json()
+    steps = body["enterSteps"]
+
+    assert steps == len(R.ENTER_STEPS)
+    assert (body["positions"][0]["phase"], body["positions"][0]["turn"]) == ("entering", 0)
+    for spot, sent in zip(body["positions"][1:], range(len(body["positions"]) - 1)):
+        assert (spot["phase"], spot["turn"]) == R.turn_of_ply(sent)
+
+    # The boundary, said plainly: the last placement, then the first move.
+    assert body["positions"][steps]["turn"] == steps
+    assert body["positions"][steps]["phase"] == "entering"
+    assert body["positions"][steps + 1] ["turn"] == 1
+    assert body["positions"][steps + 1]["phase"] == "playing"
+
+
+def test_a_live_state_says_how_long_the_entering_phase_is(client, game):
+    """The move list numbers itself from this. Sent rather than a 12 written into app.js."""
+    from royals_engine import record as R
+    assert game["enterSteps"] == len(R.ENTER_STEPS)
+
+    state = play_to_move_phase(client, game)
+    assert state["enterSteps"] == len(R.ENTER_STEPS), "and it survives the phase changing"
+
+
+def test_the_page_numbers_the_move_list_from_what_the_server_sends(client):
+    """app.js must derive the boundary rather than carry its own copy of it."""
+    from royals_web.main import STATIC_DIR
+
+    source = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert "enterSteps" in source, "app.js no longer reads the entering length"
+    # The failure this guards is a hardcoded 12 creeping back in beside the numbering.
+    numbering = source[source.index("function plyMarker"):]
+    numbering = numbering[:numbering.index("\n}")]
+    assert "12" not in numbering, numbering
