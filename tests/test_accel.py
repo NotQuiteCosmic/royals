@@ -35,13 +35,13 @@ needs_accel = pytest.mark.skipif(
 
 def entered_board():
     """A mid-game position, reached the way regress.py reaches one."""
-    AI.setEntryNoise(0.5, 7)
     board = Hasher.Entering_Board()
-    for contr, piece in Engine.enteringSequence():
+    for index, (contr, piece) in enumerate(Engine.enteringSequence()):
         is_spy = (piece == Hasher.SPY)
         if not Engine.enteringOptions(board, contr, is_spy):
             continue
-        board = Engine.dropPiece(board, AI.chooseEntry(board, contr, piece, is_spy), contr, piece)
+        square = Engine.randomEntry(board, contr, is_spy, Engine.entryRng(7, index))
+        board = Engine.dropPiece(board, square, contr, piece)
     return board
 
 

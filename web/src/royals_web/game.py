@@ -236,8 +236,18 @@ class Game:
 
     @property
     def side_to_move(self):
+        """Whose *decision* it is, which in the entering phase is not whose piece it is.
+
+        Reversed entering means you lay out your opponent's army, so the side acting on
+        `entry_side`'s piece is the other one. Putting the flip here rather than at each call
+        site is what makes it reach everything at once: `awaits` gates whose requests are
+        accepted, `ai_to_move` decides whether the server may go on by itself, and the
+        client's `awaitingYou` is derived from the same answer. Any of those left reading
+        `entry_side` directly would let the wrong player place, or hang waiting for a side
+        that is not being asked.
+        """
         if self.phase == "entering":
-            return self.entry_side
+            return Engine.enteringChooser(self.entry_side)
         if self.phase == "playing":
             return self.turn % 2
         return None
@@ -406,9 +416,15 @@ def place(game, square, side=None):
     if game.phase != "entering":
         raise IllegalMove("the entering phase is over")
 
+    # `contr` owns the piece; `chooser` is the player entitled to pick its square. Under
+    # reversed entering those are opposite sides, so the permission check and the legality
+    # check ask about different players -- the seat making the request must be the chooser,
+    # while what counts as a legal square is still a fact about the owner's own army.
     contr, piece = game.entry_side, game.entry_piece
-    if side is not None and side != contr:
-        raise IllegalMove("it is %s's turn to enter" % SIDE_NAMES[contr])
+    chooser = Engine.enteringChooser(contr)
+    if side is not None and side != chooser:
+        raise IllegalMove("it is %s's turn to place a %s piece"
+                          % (SIDE_NAMES[chooser], SIDE_NAMES[contr]))
 
     if square not in entering_options(game.board, contr, piece):
         raise IllegalMove("a %s may not be entered on %s"
@@ -441,7 +457,7 @@ def fill_entering(game):
         square = Engine.randomEntry(game.board, game.entry_side,
                                     game.entry_piece == Hasher.SPY,
                                     Engine.entryRng(game.entry_seed, game.enter_index))
-        place(game, square, side=game.entry_side)
+        place(game, square, side=Engine.enteringChooser(game.entry_side))
 
     return game
 
@@ -487,9 +503,10 @@ def play_move(game, move, side=None):
         if game.passes > 1:
             _finish(game, None, "double_pass")
             return game
-        if _out_of_plies(game):
+        _advance_turn(game)
+        if game.finished:
             return game
-        game.turn += 1
+        _out_of_plies(game)
         return game
 
     if move not in legal:
@@ -509,18 +526,35 @@ def play_move(game, move, side=None):
     game._record_ko(new_board)
     game.touch()
 
-    end, winner = Hasher.Check_For_Winner(new_board)
-    if end:
-        # winner is indexed [blue, red]
-        side_won = BLUE if winner[BLUE] else RED
-        _finish(game, side_won, "gather")
+    # The win is settled at the start of the next turn, not here -- see _advance_turn. A
+    # gather made by this move gives the opponent one reply first.
+    _advance_turn(game)
+    if game.finished:
         return game
 
-    if _out_of_plies(game):
-        return game
-
-    game.turn += 1
+    _out_of_plies(game)
     return game
+
+
+def _advance_turn(game):
+    """Hand the turn over, and settle the delayed win on the way.
+
+    Gathering does not end the game any more -- surviving a reply does. The rule is stated as
+    a property of the position rather than as an extra turn: **you have won if, at the start
+    of your own turn, your spy, four pawns and royal are still on one square.** So the start
+    of a turn is the only moment it can be decided, and every path that ends a ply has to come
+    through here or a win simply never gets noticed.
+
+    The stack does not have to be on the square it was gathered on. A push that shoves it
+    somewhere else leaves six on a square and is not an answer; the answers are a lone spy's
+    shattering push, or landing on it with six of your own.
+    """
+    game.turn += 1
+
+    winner = Hasher.Check_For_Winner(game.board)[1]
+    mover = game.turn % 2
+    if winner[mover]:
+        _finish(game, mover, "gather")
 
 
 def _out_of_plies(game):
@@ -656,7 +690,7 @@ def _walk(game, stored, on_ply=None):
                 # decisions anybody made.
                 if token != N.PASS:
                     _piece, square = N.decode_entry(token)
-                    place(game, square, side=game.entry_side)
+                    place(game, square, side=Engine.enteringChooser(game.entry_side))
             elif game.phase == "playing":
                 play_move(game, None if token == N.PASS else N.decode_move(token),
                           side=game.turn % 2)
@@ -855,7 +889,12 @@ def to_json(game, viewer_side=None, include_legal=True):
     if game.phase == "entering":
         state["entering"] = {
             "piece": PIECE_NAMES[game.entry_piece],
+            # `side` is whose piece it is -- the colour to draw. `chooser` is who is picking
+            # the square for it, which under reversed entering is the other one. Both are
+            # sent because the page needs to say "you are placing red's royal", and a client
+            # that inferred one from the other would be encoding the rule a second time.
             "side": game.entry_side,
+            "chooser": Engine.enteringChooser(game.entry_side),
             "step": game.enter_index + 1,
             "total": len(ENTER_STEPS),
             "options": [N.square_to_alg(s)

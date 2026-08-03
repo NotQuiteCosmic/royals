@@ -286,7 +286,7 @@ def test_pass_is_accepted_when_every_move_breaks_ko():
     game = pure_game(difficulty="novice", entry_seed=1)
     while game.phase == "entering":
         options = G.entering_options(game.board, game.entry_side, game.entry_piece)
-        G.place(game, options[0], side=game.entry_side)
+        G.place(game, options[0], side=Engine.enteringChooser(game.entry_side))
 
     contr = game.turn % 2
     for m in AI.listAllMoves(game.board, contr):
@@ -301,7 +301,7 @@ def test_a_move_that_repeats_a_position_is_rejected():
     game = pure_game(difficulty="novice", entry_seed=7)
     while game.phase == "entering":
         options = G.entering_options(game.board, game.entry_side, game.entry_piece)
-        G.place(game, options[0], side=game.entry_side)
+        G.place(game, options[0], side=Engine.enteringChooser(game.entry_side))
 
     contr = game.turn % 2
     move = AI.listAllMoves(game.board, contr)[0]
@@ -327,7 +327,7 @@ def test_two_interleaved_games_do_not_poison_each_others_ko():
         g = pure_game(difficulty="novice", entry_seed=seed)
         while g.phase == "entering":
             options = G.entering_options(g.board, g.entry_side, g.entry_piece)
-            G.place(g, options[0], side=g.entry_side)
+            G.place(g, options[0], side=Engine.enteringChooser(g.entry_side))
         return g
 
     def solo(seed, turns):
@@ -365,7 +365,7 @@ def test_validation_touches_no_engine_globals():
     game = pure_game(difficulty="novice", entry_seed=3)
     while game.phase == "entering":
         options = G.entering_options(game.board, game.entry_side, game.entry_piece)
-        G.place(game, options[0], side=game.entry_side)
+        G.place(game, options[0], side=Engine.enteringChooser(game.entry_side))
 
     Engine.koTrack.clear()
     Engine.koTrack.add(game.board)     # a hostile global that must not matter
@@ -500,9 +500,16 @@ def seat_of(state):
 
 
 def enter_all(client, state, headers_for):
-    """Both players place their pieces, first legal option each time."""
+    """Both players place pieces, first legal option each time.
+
+    Not "their own pieces": under reversed entering each side lays out the other's army, so
+    the seat to send this request from is the *chooser*, not the side the piece belongs to.
+    Keying off `entering.side` instead asks the wrong player, who is correctly told nothing
+    is being asked of them -- and the giveaway is an empty `options` list rather than a
+    refusal.
+    """
     while state["phase"] == "entering":
-        headers = headers_for[state["entering"]["side"]]
+        headers = headers_for[state["entering"]["chooser"]]
         fresh = client.get(f"/api/games/{state['id']}", headers=headers).json()
         square = fresh["entering"]["options"][0]
         res = client.post(f"/api/games/{state['id']}/enter",
@@ -878,7 +885,7 @@ def played_out(seed=2, plies=20, **kwargs):
     game = pure_game(entry_seed=seed, **kwargs)
     while game.phase == "entering":
         options = G.entering_options(game.board, game.entry_side, game.entry_piece)
-        G.place(game, rng.choice(options), side=game.entry_side)
+        G.place(game, rng.choice(options), side=Engine.enteringChooser(game.entry_side))
     for _ in range(plies):
         if game.phase != "playing":
             break
@@ -1022,6 +1029,81 @@ def test_the_store_reloads_a_game_it_has_evicted(db):
     assert back.ko_boards == first.ko_boards
 
 
+####### The cache in front of the row #######
+# A cache that never asks whether the row moved is a cache that can only be right by
+# arrangement -- which is what "this server must be one process" means, and why that sentence
+# is in persist.py rather than in a deployment note nobody reads. These four hold the
+# arrangement to something checkable.
+
+def test_two_stores_over_one_database_see_each_others_writes(db):
+    """The split-brain, made small. Two stores are two processes, or one process and the
+    sweeper, or a restart that left a warm cache behind."""
+    from royals_web.store import GameStore
+    from royals_web import game as W
+
+    one, two = GameStore(db=db), GameStore(db=db)
+
+    game = played_out(seed=3, plies=6)
+    one.put(game)
+    assert two.get(game.id) is not None, "the second store reads the row"
+
+    # something happens through the first store
+    before = two.get(game.id).version
+    W.resign(game, side=W.BLUE)
+    one.put(game)
+
+    after = two.get(game.id)
+    assert after.version > before, "the second store served a game the row had moved past"
+    assert after.result is not None
+
+
+def test_a_row_deleted_underneath_stops_being_served(db):
+    from royals_web.store import GameStore
+    s = GameStore(db=db)
+
+    game = played_out(seed=4, plies=4)
+    s.put(game)
+    assert s.get(game.id) is not None
+
+    db.delete(game.id)
+    assert s.get(game.id) is None, "a swept game was still being served from memory"
+
+
+def test_an_in_memory_store_is_untouched_by_any_of_this(db):
+    """No database, no revalidation, no cost -- the desktop-shaped case where the store is
+    the only copy there is."""
+    from royals_web.store import GameStore
+    s = GameStore()                     # no db
+
+    game = played_out(seed=5, plies=4)
+    s.put(game)
+    assert s.get(game.id) is game, "an in-memory store must hand back the same object"
+    assert s.get("nothing-like-this") is None
+
+
+def test_a_poll_costs_one_version_read_and_no_replay(db):
+    """The poll is the busiest thing this server does when nothing is happening, so what a
+    cache hit costs is the idle load. One integer read; never a replay."""
+    from royals_web.store import GameStore
+    s = GameStore(db=db)
+
+    game = played_out(seed=6, plies=6)
+    s.put(game)
+
+    calls = {"version_of": 0, "load": 0}
+    real_version, real_load = db.version_of, db.load
+    db.version_of = lambda gid: (calls.__setitem__("version_of", calls["version_of"] + 1),
+                                 real_version(gid))[1]
+    db.load = lambda gid: (calls.__setitem__("load", calls["load"] + 1), real_load(gid))[1]
+    try:
+        for _ in range(5):
+            assert s.get(game.id) is not None
+    finally:
+        db.version_of, db.load = real_version, real_load
+
+    assert calls == {"version_of": 5, "load": 0}, calls
+
+
 def test_the_sweep_deletes_only_what_is_long_dead(db):
     import time as _time
     fresh, stale = played_out(seed=7, plies=4), played_out(seed=8, plies=4)
@@ -1033,6 +1115,68 @@ def test_the_sweep_deletes_only_what_is_long_dead(db):
     assert db.sweep() == 1
     assert db.load(stale.id) is None
     assert db.load(fresh.id) is not None
+
+
+def test_a_move_survives_the_computer_being_too_busy_to_answer_it(tmp_path):
+    """A 503 from a full AI pool must not cost the player the move they just made.
+
+    The move used to be played into the game object -- which *is* the cached object -- and
+    persisted only after `_advance` returned. When `_advance` raised, the row never heard
+    about it, and whether the move survived depended on which of the cache and the row some
+    later reader consulted.
+
+    The reason no existing test caught it: every one of them reads back through the same cache
+    that is wrong. This clears the cache first, so the answer can only come from the row.
+    """
+    import os
+    from royals_web.ai_pool import AIBusy
+    from royals_web.store import store as live
+
+    os.environ["ROYALS_DB"] = str(tmp_path / "busy.db")
+    try:
+        with TestClient(app) as c:
+            made = c.post("/api/games", json={"mode": "human", "side": 0}).json()
+            gid, blue = made["state"]["id"], {"X-Royals-Seat": made["seatToken"]}
+            joined = c.post(f"/api/games/{gid}/join",
+                            json={"invite": made["inviteToken"]}).json()
+            red = {"X-Royals-Seat": joined["seatToken"]}
+            state = enter_all(c, joined["state"], {0: blue, 1: red})
+            mover = {0: blue, 1: red}[state["sideToMove"]]
+
+            before = c.get(f"/api/games/{gid}", headers=mover).json()
+            m = c.get(f"/api/games/{gid}/moves",
+                      params={"origin": before["origins"][0]}, headers=mover
+                      ).json()["moves"][0]
+            body = {"kind": m["kind"], "origin": m["origin"], "pris": m.get("pris", False)}
+            body["dir" if m["kind"] == "break" else "target"] = \
+                m["dir"] if m["kind"] == "break" else m["target"]
+
+            # A human game never reaches the pool, so make _advance fail regardless: what is
+            # being tested is the ordering around it, not who provoked it.
+            import royals_web.main as M
+            real = M._advance
+
+            async def busy(game):
+                raise AIBusy("the pool is full")
+
+            M._advance = busy
+            try:
+                played = c.post(f"/api/games/{gid}/move", json=body, headers=mover)
+            finally:
+                M._advance = real
+
+            assert played.status_code == 503, played.text
+
+            # The cache is not the record. Ask the row.
+            live._games.clear()
+            after = c.get(f"/api/games/{gid}", headers=mover).json()
+            assert after["ply"] == before["ply"] + 1, \
+                "the move was played, answered with a 503, and lost"
+            assert after["moves"][-1] == c.get(f"/api/games/{gid}",
+                                               headers=mover).json()["moves"][-1]
+    finally:
+        os.environ.pop("ROYALS_DB", None)
+        live._games.clear()
 
 
 def test_a_game_played_over_http_survives_a_restart(tmp_path):
@@ -1501,7 +1645,7 @@ def test_a_game_cannot_run_forever(monkeypatch):
     game = pure_game(entry_seed=5)
     while game.phase == "entering":
         options = G.entering_options(game.board, game.entry_side, game.entry_piece)
-        G.place(game, rng.choice(options), side=game.entry_side)
+        G.place(game, rng.choice(options), side=Engine.enteringChooser(game.entry_side))
 
     for _ in range(200):
         if game.phase != "playing":
@@ -1735,7 +1879,7 @@ def played_out_with_boards(seed=2, plies=20, **kwargs):
     catch_up()
     while game.phase == "entering":
         options = G.entering_options(game.board, game.entry_side, game.entry_piece)
-        G.place(game, rng.choice(options), side=game.entry_side)
+        G.place(game, rng.choice(options), side=Engine.enteringChooser(game.entry_side))
         catch_up()
     for _ in range(plies):
         if game.phase != "playing":
@@ -1795,11 +1939,16 @@ def test_a_resignation_survives_into_the_review(client, game):
 
 
 def test_positions_is_public_but_a_missing_game_is_still_absent(client, game):
-    """Anyone with the link may watch, so anyone with the link may review."""
-    bare = TestClient(app)
-    with bare as c:
-        assert c.get(f"/api/games/{game['id']}/positions").status_code == 200
-        assert c.get("/api/games/%s/positions" % ("0" * 32)).status_code == 404
+    """Anyone with the link may watch, so anyone with the link may review.
+
+    Proved by dropping the seat token from the client that has one, rather than by opening a
+    second app. A second TestClient runs a second lifespan over the *same* module-level store,
+    which attaches a second in-memory database -- so what that used to prove was that a warm
+    cache outlives the database it was filled from, which is now correctly refused.
+    """
+    del client.headers["X-Royals-Seat"]
+    assert client.get(f"/api/games/{game['id']}/positions").status_code == 200
+    assert client.get("/api/games/%s/positions" % ("0" * 32)).status_code == 404
 
 
 # -- uploading a record ------------------------------------------------------

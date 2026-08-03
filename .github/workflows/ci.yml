@@ -156,6 +156,37 @@ jobs:
   # Behaviour rather than bytes, deliberately. Diffing the artifact against a fresh build would
   # be simpler and would fail the day the runner's rustc moves, for a module that plays exactly
   # the same game -- a check nobody can act on, which is a check that gets switched off.
+  # The Rust engine's own tests, which until now had never run here at all.
+  #
+  # Rust appeared in this workflow only as `maturin build` and `cargo build`: the port was
+  # held to `golden_moves.txt` and to the wasm parity check, and both of those are worth more
+  # than a unit test -- but neither runs the forty-one assertions the crate makes about
+  # itself, and a crate whose tests only run when somebody remembers is a crate whose tests
+  # decay. Building and not testing is the gap; this closes it.
+  #
+  # **`--features wasm` is not decoration.** Seven of the forty-one live in `src/wasm.rs`
+  # behind that feature, so a bare `cargo test` compiles neither them nor the module they
+  # test -- including the one pinning the move-kind order that `static/engine.js` decodes
+  # with. They build for the host perfectly well; the feature gate is about what gets shipped
+  # in the module, not about what can be tested. So both runs, and the plain one first,
+  # because it is the configuration the wheel is built in.
+  rust:
+    name: rust engine tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: The crate as the wheel builds it
+        run: cargo test --release
+        working-directory: engine-rs
+
+      - name: And the browser module's own tests, which the above never compiles
+        run: cargo test --release --features wasm
+        working-directory: engine-rs
+
   browser:
     name: browser engine
     runs-on: ubuntu-latest

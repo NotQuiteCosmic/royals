@@ -244,6 +244,19 @@ class Database:
                 row)
             self._conn.commit()
 
+    def version_of(self, game_id):
+        """What the row says its version is, or None if there is no row.
+
+        One indexed read of one integer, and deliberately not a `load`: this is what lets the
+        cache in front of this database ask "has the row moved under me?" on every read
+        without replaying a move list to find out. `store.GameStore.get` calls it on the poll
+        path, which is the busiest thing this server does when nothing is happening, so the
+        cost of answering has to stay a primary-key lookup.
+        """
+        with self._lock:
+            row = self._query("SELECT version FROM games WHERE id = ?", (game_id,), one=True)
+        return None if row is None else row[0]
+
     def load(self, game_id):
         with self._lock:
             row = self._query("SELECT * FROM games WHERE id = ?", (game_id,), one=True)

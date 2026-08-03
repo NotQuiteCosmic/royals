@@ -58,6 +58,7 @@
 #
 #     cat golden_enter.txt golden_moves.txt | diff - <(git show HEAD:tests/golden.txt)
 
+import os
 import sys
 import random
 
@@ -90,7 +91,36 @@ def moveText(move):
     return Hasher.IndexToAlg(origin - 1) + " " + what + (" +pris" if pris else "")
 
 
+# The boards golden_moves.txt starts from are READ, not computed, and that is the point of
+# this function rather than a saving.
+#
+# sweepMoves is the cross-language rules contract, and it used to begin each seed by running
+# AI.chooseEntry -- the entering search, which is Perlin noise over floats and is the one part
+# of this codebase a port is explicitly told not to reproduce. That made the file which exists
+# to prove *move generation* unchanged move whenever the entering *heuristic* changed, for
+# reasons that have nothing to do with a single rule of movement. Two different questions were
+# sharing an answer, which is exactly the confusion golden_enter.txt was split out to end; the
+# split was just never finished on this side.
+#
+# port_fixtures.json already records these boards, because royals-golden.rs reads `start` out
+# of it rather than entering a game itself (see the fixtures section below). Reading the same
+# numbers here is what makes the two implementations agree by construction rather than by
+# coincidence -- previously Python computed its start and Rust read a recording of it, and
+# nothing checked that they had not drifted apart.
+#
+# Seeds outside MOVE_SEEDS still enter for themselves: sweepGames uses 5 and 23, and its sweep
+# is golden_search.txt, which is expected to churn. Freezing those would buy nothing.
 def enteredBoard(seed, intensity = 0.5):
+    if seed in MOVE_SEEDS: return frozenStart(seed)
+    return computeEnteredBoard(seed, intensity)
+
+
+def computeEnteredBoard(seed, intensity = 0.5):
+    """Enter a full board by running the entering search -- what enteredBoard used to be.
+
+    Still the only way the recorded boards can be produced in the first place, so this is
+    what `regress.py fixtures` reaches for when it needs to mint a new one.
+    """
     AI.setEntryNoise(intensity, seed)
     board = Hasher.Entering_Board()
     for contr, piece in Engine.enteringSequence():
@@ -98,6 +128,36 @@ def enteredBoard(seed, intensity = 0.5):
         if not Engine.enteringOptions(board, contr, isSpy): continue
         board = Engine.dropPiece(board, AI.chooseEntry(board, contr, piece, isSpy), contr, piece)
     return board
+
+
+_frozenStarts = None
+
+
+def frozenStart(seed):
+    """The recorded starting board for one of MOVE_SEEDS, out of port_fixtures.json.
+
+    A hard error rather than a fallback when the file is missing or short of a seed. Quietly
+    entering a game instead would hand sweepMoves a different position and move
+    golden_moves.txt -- which is the one failure this whole arrangement exists to prevent, and
+    it would look like a rules regression rather than a missing file.
+    """
+    global _frozenStarts
+
+    if _frozenStarts is None:
+        import json
+        try:
+            with open(fixturePath()) as f:
+                walks = json.load(f)["walks"]
+        except FileNotFoundError:
+            raise SystemExit(
+                "regress: %s is missing, and golden_moves.txt starts from the boards it\n"
+                "records. Restore it from git rather than regenerating, unless you mean to\n"
+                "change where the move sweep starts." % (fixturePath(),))
+        _frozenStarts = {w["seed"]: tuple(w["start"]) for w in walks}
+
+    if seed not in _frozenStarts:
+        raise SystemExit("regress: port_fixtures.json records no walk for seed %d" % (seed,))
+    return _frozenStarts[seed]
 
 
 def sweepEntering(emit):
@@ -218,6 +278,16 @@ FIXTURE_PATH = "fixtures/port_fixtures.json"
 MOVE_SEEDS = (3, 11, 57)
 
 
+def fixturePath():
+    """Beside this file, not beside the caller.
+
+    enteredBoard reads this now, and it is reached from pytest at the repo root as well as
+    from `python3 regress.py` in tests/. A relative path resolves against the working
+    directory, so the two would look in different places and one of them would find nothing.
+    """
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), FIXTURE_PATH)
+
+
 def walkChoices(seed):
     """The move indices sweepMoves plays for one seed, and the board it starts from.
 
@@ -225,6 +295,12 @@ def walkChoices(seed):
     rather than a refactor of sweepMoves: golden_moves.txt must not move, and the surest
     way to guarantee that is not to touch the code that writes it. The self-check in
     dumpFixtures is what keeps the two from drifting apart.
+
+    `start` now comes back out of the fixture rather than being entered afresh, so a fixture
+    dump rewrites the same board it read. That is deliberate: regenerating fixtures is for
+    picking up a change in move *generation*, and it should not quietly move the position the
+    rules contract starts from as a side effect. Minting a genuinely new start means calling
+    computeEnteredBoard here on purpose, and expecting golden_moves.txt to move when you do.
     """
     rng = random.Random(seed)
     board = enteredBoard(seed)
@@ -255,7 +331,6 @@ def walkChoices(seed):
 def dumpFixtures():
     import hashlib
     import json
-    import os
 
     walks = []
     for seed in MOVE_SEEDS:
@@ -283,8 +358,8 @@ def dumpFixtures():
         "walks": walks,
     }
 
-    os.makedirs(os.path.dirname(FIXTURE_PATH), exist_ok=True)
-    with open(FIXTURE_PATH, "w") as f:
+    os.makedirs(os.path.dirname(fixturePath()), exist_ok=True)
+    with open(fixturePath(), "w") as f:
         json.dump(fixtures, f, indent=1, sort_keys=True)
         f.write("\n")
 

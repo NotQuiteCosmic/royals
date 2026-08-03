@@ -43,7 +43,15 @@ class GameStore:
         self._db = db
 
     def attach(self, db):
-        """Point at a database. Called once at startup; before it, this is memory only."""
+        """Point at a database. Called once at startup; before it, this is memory only.
+
+        The cache goes with it. Games held in memory were read from, or written to, whatever
+        database was attached before -- against a different one they are claims about rows
+        nobody here has seen, and `get` would either serve them forever (it has no way to
+        check) or drop them as ghosts on the first read (it now does). Neither is a thing to
+        leave to chance, and at real startup the cache is empty, so this costs nothing.
+        """
+        self._games.clear()
         self._db = db
         return self
 
@@ -57,9 +65,41 @@ class GameStore:
         return game
 
     def get(self, game_id):
+        """The game, from memory if it is there and still current, from the row otherwise.
+
+        **"Still current" is a question this used to skip.** A hit returned the cached object
+        without ever asking the database whether the row had moved -- which is fine exactly as
+        long as nothing else can write, and is precisely why `persist.py` says this server has
+        to be one process. It also made a lost write silent rather than loud: a request that
+        mutated the cached game and then failed before persisting left the two disagreeing,
+        and whichever a later reader consulted was the answer it got.
+
+        The check costs one indexed integer read per hit -- `version_of`, not `load`, so
+        nothing is replayed to find out. `version` is bumped by every mutation (`Game.touch`),
+        including the ones no ply can see, so it is the right thing to compare.
+
+        The row being *behind* the cache is not a reason to reload: that is a write in flight
+        or one that failed, and the cache holds the newer of the two. Only a row that has
+        moved *ahead* means somebody else got there first.
+        """
         entry = self._games.get(game_id)
         if entry is not None:
             game, _ = entry
+
+            if self._db is not None:
+                stored = self._db.version_of(game_id)
+                if stored is None:
+                    # The row is gone. Serving the cached copy would be serving a ghost --
+                    # a game that has been swept or deleted, which is not a game any more.
+                    self._games.pop(game_id, None)
+                    return None
+                if stored > game.version:
+                    self._games.pop(game_id, None)
+                    game = self._db.load(game_id)
+                    if game is not None:
+                        self._cache(game)
+                    return game
+
             self._games[game_id] = (game, time.monotonic())
             self._games.move_to_end(game_id)
             return game

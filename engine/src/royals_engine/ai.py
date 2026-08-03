@@ -597,10 +597,26 @@ def minimax(cBoard, contr, rootContr, alpha, beta, depthTrack, pvMove = None, at
     global calcCount
     calcCount += 1
 
-    gameEnd, winner = Hasher.Check_For_Winner(cBoard)
-    if gameEnd:
+    # A gather is not a win until it has survived a reply. The rule is stated as a property of
+    # the position rather than as an extra turn -- **you have won if, at the start of your own
+    # turn, your spy, four pawns and royal are still on one square** -- which is exactly the
+    # same thing and needs no flag and no counter to carry between plies.
+    #
+    # So this node is terminal only when the side to move is the side that has gathered: they
+    # got there, the opponent had their answer, and it did not come. A gather by the side that
+    # just moved is not terminal at all, because `contr` is precisely the player who still has
+    # a reply to find -- so the search plays on and finds it, which is the whole point of the
+    # rule. In practice the reply that exists is a lone spy's push, which shatters what it
+    # hits; nothing else can touch a full stack, since a break needs the enemy's own spy in it
+    # and landing on a weight-six square needs six of your own.
+    #
+    # Check_For_Winner is untouched and stays a pure detector of "there is a completed stack".
+    # That is deliberate: regress.py's move sweep calls it and breaks on it, so leaving the
+    # detector alone is what keeps golden_moves.txt byte-identical through a rules change.
+    winner = Hasher.Check_For_Winner(cBoard)[1]
+    if winner[contr]:
         # scaling by the depth left makes a win now beat the same win three moves out
-        if winner[rootContr]: return [WIN_SCORE * (depthTrack + 1), None]
+        if contr == rootContr: return [WIN_SCORE * (depthTrack + 1), None]
         return [-WIN_SCORE * (depthTrack + 1), None]
 
     if depthTrack == 0: return [fullCheck(cBoard, rootContr), None]
@@ -1061,15 +1077,28 @@ def enteringRemaining(spaces):
 # The squares worth looking at for one placement, best first, with the board each one
 # leads to. Returns [score, square, board, spaces] rows.
 def entryShortlist(cBoard, spaces, contr, piece, isSpy, width):
+    # `contr` owns the piece; under reversed entering the opponent is the one choosing, and
+    # every row is scored and ordered from their point of view. entryDiff(s, a) is exactly
+    # -entryDiff(s, 1 - a), so scoring the chooser and keeping the descending sort spells
+    # "worst for the owner first" without a second sort order to keep straight.
+    #
+    # The candidate squares still come from enteringOptions asked about the OWNER: what is
+    # legal has not changed, only who is picking from it.
+    chooser = Engine.enteringChooser(contr)
+
     scored = []
     for square in Engine.enteringOptions(cBoard, contr, isSpy, spaces):
         after = Engine.dropPiece(cBoard, square, contr, piece)
         afterSpaces = Hasher.Parse_Board(after)
-        scored.append([entryDiff(afterSpaces, contr), square, after, afterSpaces])
+        scored.append([entryDiff(afterSpaces, chooser), square, after, afterSpaces])
 
+    # Reach flips with the rest of it. A side placing its own pieces wanted the square with
+    # the most jumps out of it; a side placing its opponent's wants the one with the fewest,
+    # so the tie-break sorts ascending now.
+    #
     # square number last and only to settle what is otherwise a coin toss -- sorting on it
     # any earlier is what made the old version march down the a file
-    scored.sort(key=lambda row: (-row[0], -JUMPREACH[row[1]], row[1]))
+    scored.sort(key=lambda row: (-row[0], JUMPREACH[row[1]], row[1]))
     return scored[:width]
 
 
@@ -1086,7 +1115,12 @@ def enterSearch(cBoard, spaces, steps, index, rootContr, alpha, beta, depth):
     if not shortlist:
         return enterSearch(cBoard, spaces, steps, index + 1, rootContr, alpha, beta, depth)
 
-    maximizing = (contr == rootContr)
+    # `contr` owns the piece being placed at this step, but under reversed entering the
+    # decision is the other side's -- so a node is a max node when the CHOOSER is the side
+    # this search is being run for, not when the owner is. Getting this wrong inverts the
+    # whole search quietly: it still returns a legal square, just the one the opponent would
+    # most like to have.
+    maximizing = (Engine.enteringChooser(contr) == rootContr)
     best = None
 
     for row in shortlist:
@@ -1103,8 +1137,14 @@ def enterSearch(cBoard, spaces, steps, index, rootContr, alpha, beta, depth):
 
 
 # Picks where to enter a piece. Returns None if nowhere is legal.
+#
+# **`contr` is the side the piece belongs to, not the side deciding.** Under reversed entering
+# those are opposites, and keeping the argument as the owner is what lets every caller stay
+# exactly as it was: enteringSequence still hands out [owner, piece] steps, and the record
+# still derives a ply's side from its index. The flip happens here, once.
 def chooseEntry(cBoard, contr, piece, isSpy, depth = ENTRY_DEPTH):
     spaces = Hasher.Parse_Board(cBoard)
+    chooser = Engine.enteringChooser(contr)
 
     shortlist = entryShortlist(cBoard, spaces, contr, piece, isSpy, ENTRY_WIDTH)
     if not shortlist: return None
@@ -1122,7 +1162,8 @@ def chooseEntry(cBoard, contr, piece, isSpy, depth = ENTRY_DEPTH):
     alpha = -math.inf
 
     for row in shortlist:
-        score = enterSearch(row[2], row[3], steps, start + 1, contr, alpha, math.inf, depth - 1)
+        # rooted at the chooser, so the score being maximised is the harm done to the owner
+        score = enterSearch(row[2], row[3], steps, start + 1, chooser, alpha, math.inf, depth - 1)
 
         if bestScore is None or score > bestScore:
             bestScore = score

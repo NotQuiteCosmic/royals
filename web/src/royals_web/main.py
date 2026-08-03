@@ -446,7 +446,10 @@ async def _advance(game):
             if square is None:
                 # _seek_entry_step already established there is somewhere to go.
                 raise HTTPException(500, "the computer failed to place a piece")
-            G.place(game, square, side=game.entry_side)
+            # choose_entry is asked about the OWNER, because that is whose piece it is and
+            # whose legality applies; the seat entitled to place it is the other side. Both
+            # arguments are game.entry_side-derived and they are not the same value.
+            G.place(game, square, side=G.Engine.enteringChooser(game.entry_side))
             continue
 
         contr = game.turn % 2
@@ -460,6 +463,36 @@ async def _advance(game):
         # takeTurn answers None when every move it has breaks ko; that is a pass.
         G.play_move(game, move, side=contr)
 
+    return game
+
+
+async def _persist_then_advance(game):
+    """Write the move down, *then* let the computer answer it.
+
+    **The order is the whole point, and getting it wrong cost the player their move.** Every
+    endpoint that changes a game used to play the move, hand the position to `_advance`, and
+    persist afterwards. `G.play_move` mutates the game object, and that object *is* the one in
+    the cache -- so on the ordinary path nobody noticed. On the path where the AI pool is full
+    (`AIBusy`, a 503) or the search overran (`AITimeout`, 504), the `store.put` was never
+    reached: the move was live in memory and absent from the row. Whether it survived depended
+    on which of the two some later reader happened to consult, and a retry met a version that
+    had already moved.
+
+    A person's move is a decision they made and is durable the moment it is legal. The
+    computer's reply is durable when it exists. `create_game` has always done it this way --
+    put, advance, put -- and these are the three endpoints that did not.
+
+    The second write is in a `finally` rather than after the await, and that is the case worth
+    naming: `_advance` can make *several* moves before it fails, since entering is a dozen
+    placements. Persisting only on success would leave the cache holding four placements the
+    row had never heard of, which is the same split-brain one step further in. What the row
+    owes the cache is whatever the cache actually holds.
+    """
+    store.put(game)
+    try:
+        await _advance(game)
+    finally:
+        store.put(game)
     return game
 
 
@@ -591,8 +624,7 @@ async def enter_piece(game_id: str, body: Placement, x_royals_seat: str = SeatHe
             raise HTTPException(409, "it is not your turn")
 
         G.place(game, N.alg_to_square(body.square), side=side)
-        await _advance(game)
-        store.put(game)
+        await _persist_then_advance(game)
         return _state(game, side)
 
 
@@ -633,8 +665,7 @@ async def submit_move(game_id: str, body: MoveIn, x_royals_seat: str = SeatHeade
         move = N.move_from_json(body.model_dump(exclude_none=True,
                                                 exclude={"expectedVersion"}))
         G.play_move(game, move, side=side)
-        await _advance(game)
-        store.put(game)
+        await _persist_then_advance(game)
         return _state(game, side)
 
 
@@ -645,8 +676,7 @@ async def pass_turn(game_id: str, x_royals_seat: str = SeatHeader()):
         if not game.awaits(side):
             raise HTTPException(409, "it is not your turn")
         G.play_move(game, None, side=side)
-        await _advance(game)
-        store.put(game)
+        await _persist_then_advance(game)
         return _state(game, side)
 
 

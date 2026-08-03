@@ -30,14 +30,24 @@ from royals_engine import notation as N
 # Positions to sweep -- the same construction regress.enteredBoard uses
 # ---------------------------------------------------------------------------
 
+# **Not the entering heuristic.** These corpora exist to reach messy positions -- captures,
+# prisoners, spies inside enemy stacks -- and used to build their opening with AI.chooseEntry,
+# which coupled a sweep over the *rules* to whatever the entering *search* happened to prefer.
+# Reversed entering made the cost of that obvious: laying out an opponent's army scatters it,
+# stacks stop forming, and the guards below went from a hundred-odd breaks to none without a
+# single rule having changed. regress.enteredBoard was decoupled for the same reason.
+#
+# Engine.randomEntry with Engine.entryRng is pure, seeded and reproducible, owes nothing to
+# the heuristic, and reaches richer positions than the heuristic ever did -- it is not
+# steering for a tidy gather.
 def entered_board(seed, intensity=0.5):
-    AI.setEntryNoise(intensity, seed)
     board = Hasher.Entering_Board()
-    for contr, piece in Engine.enteringSequence():
+    for index, (contr, piece) in enumerate(Engine.enteringSequence()):
         is_spy = (piece == Hasher.SPY)
         if not Engine.enteringOptions(board, contr, is_spy):
             continue
-        board = Engine.dropPiece(board, AI.chooseEntry(board, contr, piece, is_spy), contr, piece)
+        square = Engine.randomEntry(board, contr, is_spy, Engine.entryRng(seed, index))
+        board = Engine.dropPiece(board, square, contr, piece)
     return board
 
 

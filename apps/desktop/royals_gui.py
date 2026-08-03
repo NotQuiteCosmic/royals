@@ -2188,6 +2188,7 @@ class RoyalsWindow:
         self.enterIndex = 0
         self.entryOptions = []
         self.entryContr = 0
+        self.entryChooser = Engine.enteringChooser(0)
         self.entryPiece = Hasher.ROYAL
         self.turn = 0
         self.contr = 0
@@ -2275,14 +2276,22 @@ class RoyalsWindow:
 
             self.entryOptions = options
             self.entryContr = contr
+            self.entryChooser = Engine.enteringChooser(contr)
             self.entryPiece = piece
 
+            # Two different sides, and everything below has to be clear which it means.
+            # entryContr owns the piece -- it decides what gets drawn, whose legality was
+            # computed, and who the piece belongs to once it lands. entryChooser is the
+            # player picking the square, and so the one whose clicks count and whose seat
+            # decides whether a person or the computer is acting.
             label = sideName(contr) + " " + PIECE_NAMES[piece]
             count = str(self.enterIndex + 1) + " of " + str(len(self.enterSteps))
 
-            if self.humanSides[contr]:
+            if self.humanSides[self.entryChooser]:
                 self.setStatus(label, contr)
-                self.setHint("Click a green square to enter it.  (" + count + ")")
+                self.setHint("Place " + sideName(contr).lower() + "'s " + PIECE_NAMES[piece]
+                             + " — click a green square, and give them the worst you can.  ("
+                             + count + ")")
                 self.redraw()
                 return
 
@@ -2360,6 +2369,21 @@ class RoyalsWindow:
 
     def playStep(self):
         contr = self.turn % 2
+
+        # The delayed win, and this is where it belongs rather than in commit: the rule is
+        # that you have won if, at the start of your own turn, your spy, four pawns and royal
+        # are still on one square. playStep *is* the start of a turn, and it is the one place
+        # both routes into a turn meet -- a move committed, and a side passing for want of a
+        # legal move -- so checking here needs no flag and cannot be reached around.
+        #
+        # Gathering therefore gives the opponent exactly one reply. In practice the only reply
+        # is a lone spy's push, which shatters what it hits; a break needs the enemy's own spy
+        # in the stack, and landing on a weight-six square needs six of your own.
+        winner = Hasher.Check_For_Winner(self.board)[1]
+        if winner[contr]:
+            self.finish("White wins!" if contr == 0 else "Black wins!", contr)
+            return
+
         self.contr = contr
         self.selected = None
         self.moveArray = []
@@ -2465,13 +2489,10 @@ class RoyalsWindow:
         self.passes = 0
         self.turn += 1
 
-        gameEnd, winner = Hasher.Check_For_Winner(board)
-        if gameEnd:
-            if winner == [1, 0]: self.finish("White wins!", 0)
-            elif winner == [0, 1]: self.finish("Black wins!", 1)
-            else: self.finish("A tie.", None)
-            return True
-
+        # No winner check here any more. Gathering does not end the game, so the only moment
+        # that can decide it is the start of the next turn -- which is playStep, one call away
+        # through advance(). Testing it here as well would end the game a reply early and
+        # quietly undo the rule.
         self.advance()
         return True
 
@@ -2858,7 +2879,7 @@ class RoyalsWindow:
 
     def boardClick(self, square):
         if self.phase == "entering":
-            if self.humanSides[self.entryContr]: self.enterClick(square)
+            if self.humanSides[self.entryChooser]: self.enterClick(square)
             return
 
         if self.phase == "play" and self.humanSides[self.contr]:
@@ -2886,7 +2907,7 @@ class RoyalsWindow:
         if self.aiBusy or self.phase in ("over", "review"): return True
 
         if self.phase == "entering":
-            if not self.humanSides[self.entryContr]: return True
+            if not self.humanSides[self.entryChooser]: return True
             return square not in self.entryOptions
 
         if not self.humanSides[self.contr]: return True
@@ -3411,7 +3432,7 @@ class RoyalsWindow:
         dark = (square % 2 == 0)
 
         entryOption = (self.phase == "entering" and square in self.entryOptions
-                       and self.humanSides[self.entryContr])
+                       and self.humanSides[self.entryChooser])
 
         if entryOption:
             fill, hi, lo = (DARK_ENTRY, LIGHT_ENTRY, DARK_LO) if dark \
@@ -3474,30 +3495,52 @@ class RoyalsWindow:
                     chip(c, v, bx, by, k * H_CHIP, R_CHIP, H_CHIP,
                          walls, PIECE_HALO, INK, LINE_W["piece"], tag)
 
-                # The same icons the board always used, the same royal-and-spy-then-pawns
-                # arrangement, painted flat on the lid of the top chip. The height says
-                # how many; the icons still say which, because six chips of the same chip
+                # The icons say which pieces are here, because six chips of the same chip
                 # cannot. Both sides get a pale lid for the reason both sides always got a
                 # pale halo, and the side is carried by the walls underneath instead.
-                upper = []
-                if s[Hasher.SPY]: upper.append(SHAPE_SPY)
-                if s[Hasher.ROYAL]: upper.append(SHAPE_ROYAL)
-                pawns = [SHAPE_DISC] * s[Hasher.PAWNS]
+                #
+                # **They are ordered the way the pile is ordered.** exeBreak is where the
+                # order is written down -- pieces fall prisoners, spy, pawns, royal, bottom
+                # to top -- so the spy is always the base of a side's own stack and the
+                # royal is always its cap. Reading downwards the lid therefore goes royal,
+                # pawns, spy, and what is painted on top of the pile is a side-on view of
+                # what is in it. The spy used to share the upper row with the royal, which
+                # put the bottom of the stack at the top of the icon.
+                rows = []
+                if s[Hasher.ROYAL]: rows.append(("big", [SHAPE_ROYAL]))
+                if s[Hasher.PAWNS]: rows.append(("pawns", [SHAPE_DISC] * s[Hasher.PAWNS]))
+                if s[Hasher.SPY]: rows.append(("big", [SHAPE_SPY]))
 
                 # The sizes are the old ones divided through by a square and then pulled
                 # in until four pawns fit inside the rim of a lid rather than hanging off
                 # it. Flat they could overhang their cell and nothing looked wrong;
                 # standing on an object, an icon over the edge looks like a mistake.
+                #
+                # Which offsets and radii apply depends on how many rows there are and not
+                # on which, since a stack holds any combination of the three. The two-row
+                # figures are left exactly as they were: a royal over its pawns is the
+                # commonest shape on the board, and it should not shift about merely
+                # because a third row has become possible. Three rows are the new case, and
+                # every one of them sits further inside the rim than four pawns did on their
+                # own -- 0.355, 0.313 and 0.355 against R_CHIP's 0.40, where the old pawn
+                # row reached 0.394.
+                # Where the rows sit is a question about how many there are; how big their
+                # icons are is a question about what kind they hold. Keeping those apart is
+                # what makes every combination come out right -- a stack of a royal and a
+                # spy has two rows and no pawns in either, and a table indexed only by row
+                # would hand the spy the small disc radius.
                 lz = n * H_CHIP + 0.001
-                if upper and pawns:
-                    planeRow(c, v, upper, bx, by, lz, 0.0, -0.15, 0.120, 0.048, side, LINE_W["piece"], tag)
-                    planeRow(c, v, pawns, bx, by, lz, 0.0, 0.16, 0.078, 0.026, side, LINE_W["piece"], tag)
-                elif upper:
-                    r = 0.160 if len(upper) == 1 else 0.145
-                    planeRow(c, v, upper, bx, by, lz, 0.0, 0.0, r, 0.065, side, LINE_W["piece"], tag)
-                elif pawns:
-                    r = 0.100 if len(pawns) <= 2 else 0.082
-                    planeRow(c, v, pawns, bx, by, lz, 0.0, 0.0, r, 0.030, side, LINE_W["piece"], tag)
+                OFFSETS = {1: (0.0,), 2: (-0.15, 0.16), 3: (-0.24, 0.0, 0.24)}
+                BIG = {1: (0.160, 0.065), 2: (0.120, 0.048), 3: (0.115, 0.050)}
+                DISC = {1: (None, 0.030), 2: (0.078, 0.026), 3: (0.070, 0.022)}
+
+                for (kind, shapes), dv in zip(rows, OFFSETS[len(rows)]):
+                    r, gap = (DISC if kind == "pawns" else BIG)[len(rows)]
+                    # a lone pawn row has the whole lid, so two of them may be drawn larger
+                    # than four can
+                    if r is None: r = 0.100 if len(shapes) <= 2 else 0.082
+                    planeRow(c, v, shapes, bx, by, lz, 0.0, dv, r, gap, side,
+                             LINE_W["piece"], tag)
 
             # Prisoners belong to the other side, so they are drawn in the other side's
             # shade: what is shown is whose pieces these are, not who holds them. They sit

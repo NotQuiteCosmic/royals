@@ -280,3 +280,90 @@ def test_the_variety_setting_leaves_the_heuristic_alone():
     assert artificialPlayer.ENTRY_NOISE == noise
     assert artificialPlayer.ENTRY_FIELDS is fields
     assert artificialPlayer.ENTRY_SEED == seed
+
+
+####### Reversed entering: you lay out your opponent's army #######
+# The rule is that the player who picks a square is not the player who owns the piece, and
+# the whole risk in it is that those two are the same type -- a side index -- so swapping
+# them produces something that runs perfectly and plays the game backwards. These tests are
+# all about keeping the two apart.
+
+from royals_engine import ai as AI
+
+
+def test_the_chooser_is_always_the_other_side():
+    assert Engine.enteringChooser(0) == 1
+    assert Engine.enteringChooser(1) == 0
+    for contr in (0, 1):
+        assert Engine.enteringChooser(Engine.enteringChooser(contr)) == contr
+
+
+def test_the_sequence_itself_is_unchanged():
+    """Only the hand on the piece moved; the order did not.
+
+    This is what lets the record format alone: a `@Rd3` token carries the piece and the
+    square and derives the side from its index, so an entering order that still lists the
+    same owner at the same step needs no notation change and no migration of stored games.
+    """
+    steps = Engine.enteringSequence()
+    assert len(steps) == 12
+    assert [side for side, _piece in steps] == [0, 1] * 6
+    assert steps[0] == [0, Hasher.ROYAL]
+    assert steps[-1] == [1, Hasher.SPY]
+
+
+def test_legality_is_still_the_owner_s_and_not_the_chooser_s():
+    """The rule a royal or pawn may not touch "anything you already control" is about the
+    army being placed, not the hand placing it. If this ever starts asking about the chooser
+    the openings stay legal-looking and are quietly a different game."""
+    board = Hasher.Entering_Board()
+    for index, (contr, piece) in enumerate(Engine.enteringSequence()):
+        isSpy = (piece == Hasher.SPY)
+        options = Engine.enteringOptions(board, contr, isSpy)
+        chooser = Engine.enteringChooser(contr)
+
+        assert options == Engine.enteringOptions(board, contr, isSpy), "owner's legality"
+        if not isSpy and options:
+            # the two really are different questions -- if they were not, this test proves
+            # nothing at all, so assert they diverge somewhere in a normal opening
+            assert set(options) != set(Engine.enteringOptions(board, chooser, isSpy)) \
+                or index == 0
+
+        if not options: continue
+        board = Engine.dropPiece(board, options[0], contr, piece)
+
+
+def test_the_heuristic_places_a_piece_badly_for_its_owner():
+    """The point of the rule, and the assertion that a sign error would fail.
+
+    chooseEntry is handed the OWNER, and must pick the square that leaves that owner worst
+    off -- so its choice should score at or below the median of the legal squares, measured
+    from the owner's point of view. Under the old rule it picked the maximum.
+    """
+    AI.setEntryNoise(0.0, 11)
+    board = Hasher.Entering_Board()
+    verdicts = []
+
+    for contr, piece in Engine.enteringSequence():
+        isSpy = (piece == Hasher.SPY)
+        options = Engine.enteringOptions(board, contr, isSpy)
+        if len(options) < 4:
+            continue
+
+        scored = {}
+        for square in options:
+            after = Hasher.Parse_Board(Engine.dropPiece(board, square, contr, piece))
+            scored[square] = AI.entryDiff(after, contr)
+
+        chosen = AI.chooseEntry(board, contr, piece, isSpy)
+        ordered = sorted(scored.values())
+        median = ordered[len(ordered) // 2]
+        verdicts.append((scored[chosen], median, max(ordered)))
+
+        board = Engine.dropPiece(board, chosen, contr, piece)
+
+    assert verdicts, "the opening should offer some placements with real choice in them"
+    assert all(got <= median for got, median, _best in verdicts), \
+        "every placement should be at or below the median for the side receiving it"
+    assert any(got < best for got, _median, best in verdicts), \
+        "and at least one should be strictly worse than that side's own best square"

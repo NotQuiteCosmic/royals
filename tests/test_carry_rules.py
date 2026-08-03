@@ -251,17 +251,22 @@ def test_a_carrying_stack_breaks_nothing():
 # usually drops it again before its next move. The sweep runs long games and varies the rng
 # rather than the opening, because that is what reaches carrying positions at all: the same
 # walk at 24 turns finds zero, and at 120 finds a few hundred.
+#
+# Sixteen seeds rather than eight, since the opening became a random one. The heuristic used
+# to hand these walks tightly packed armies that took prisoners early; scattered ones take
+# longer to make contact, and eight seeds fell to 147 carrying moves against a guard of 150.
+# Sixteen reach 511. Widening the sample is the honest repair -- dropping the guard to fit
+# would have kept the file green while quietly testing a third as much.
 
 def positions():
     """Seeded random play, long enough to reach positions where somebody holds a prisoner."""
-    for seed in range(1, 9):
-        AI.setEntryNoise(0.5, seed % 7 + 1)
+    for seed in range(1, 17):
         board = Hasher.Entering_Board()
-        for contr, piece in Engine.enteringSequence():
+        for index, (contr, piece) in enumerate(Engine.enteringSequence()):
             isSpy = (piece == Hasher.SPY)
             if not Engine.enteringOptions(board, contr, isSpy): continue
-            board = Engine.dropPiece(board, AI.chooseEntry(board, contr, piece, isSpy),
-                                     contr, piece)
+            square = Engine.randomEntry(board, contr, isSpy, Engine.entryRng(seed, index))
+            board = Engine.dropPiece(board, square, contr, piece)
 
         rng = random.Random(seed)
         for _turn in range(0, 120):

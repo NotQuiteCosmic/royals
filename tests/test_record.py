@@ -191,7 +191,7 @@ def test_the_move_number_is_the_engines_own_turn_counter():
     game, _seat, _invite = web.new_game(mode="ai", side=web.BLUE, entry_seed=5)
     while game.phase == "entering":
         options = web.entering_options(game.board, game.entry_side, game.entry_piece)
-        web.place(game, options[0], side=game.entry_side)
+        web.place(game, options[0], side=Engine.enteringChooser(game.entry_side))
 
     for _ in range(12):
         if game.phase != "playing":

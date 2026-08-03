@@ -1280,9 +1280,14 @@ function render() {
 
   if (state.phase === "entering") {
     const e = state.entering;
+    // `e.side` owns the piece, `e.chooser` is picking its square, and under reversed entering
+    // those are opposite players. The status names the army being laid out -- and colours
+    // itself to match, so the board and the label agree about whose piece is about to
+    // appear -- while the hint has to say whose it is. "your royal" would be exactly
+    // backwards, which is the one wording mistake a player would act on.
     setStatus(`${cap(SIDE_NAME[e.side])} ${e.piece}`, e.side);
     setHint(state.awaitingYou
-      ? `Click a highlighted square to enter your ${e.piece}.  (${e.step} of ${e.total})`
+      ? `Place ${SIDE_NAME[e.side]}'s ${e.piece} — click a highlighted square, and give them the worst one you can.  (${e.step} of ${e.total})`
       : `${waitingOn()}  (${e.step} of ${e.total})`);
     return;
   }

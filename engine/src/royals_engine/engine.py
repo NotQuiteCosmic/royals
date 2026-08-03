@@ -509,6 +509,26 @@ def enteringSequence():
     return steps
 
 
+# Reversed entering: **the player who picks a square is not the player who owns the piece.**
+# You lay out your opponent's army, trying to leave them as badly placed as the rules allow.
+#
+# A function rather than `1 - contr` written out at each call site, because the interesting
+# thing about this rule is not the arithmetic but which of the two sides a given piece of
+# code means. Every place that has to tell "whose piece is this" apart from "whose decision
+# is this" now says so in its own text.
+#
+# **Legality is untouched, and deliberately.** "A royal or pawn may not enter on a square
+# touching anything you already control" is a fact about the piece's OWNER -- it is their
+# army that must not crowd itself -- so enteringOptions is still asked about the owner and
+# answers exactly as it did before. Only the hand on the piece changes.
+#
+# enteringSequence is untouched too: step i still places the same side's same piece in the
+# same order. That is what keeps the record format working without an edit, since a `@Rd3`
+# token carries the piece and the square and derives the side from the ply index.
+def enteringChooser(contr):
+    return 1 - contr
+
+
 ####### KO #######
 # A move may not put the board back into any position the game has already stood in -- not
 # a window of recent turns but the whole history, from the position entering left behind

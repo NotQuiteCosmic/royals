@@ -306,13 +306,18 @@ if setting == 0:
 				passes = 0
 				turn += 1
 
-				gameEnd, winner = Check_For_Winner(board)
-				if gameEnd:
+				# The delayed win: gathering does not end the game, surviving a reply does.
+				# turn has just moved on, so this asks whether the side whose turn is about
+				# to begin still has six on one square -- which means the opponent's answer
+				# came and went. Both sides gathered is no longer a tie: the side to move is
+				# the one whose stack survived, so it is theirs.
+				winner = Check_For_Winner(board)[1]
+				mover = turn % 2
+				if winner[mover]:
 					DisplayHashBoard(board, lastMove)
 					print("Game Finished!")
-					if winner == [1, 0]: print("Congratulations, " + blueT("Blue"))
-					elif winner == [0, 1]: print("Congratulations, " + redT("Red"))
-					else: print("There was a Tie.")
+					if mover == 0: print("Congratulations, " + blueT("Blue"))
+					else: print("Congratulations, " + redT("Red"))
 					running = False
 
 

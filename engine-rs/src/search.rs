@@ -377,11 +377,21 @@ impl Search {
     ) -> (Score, Option<Move>) {
         self.calc_count += 1;
 
-        let (game_end, winner) = check_for_winner(board);
-        if game_end {
+        // A gather is not a win until it has survived a reply. The rule is stated as a property
+        // of the position rather than as an extra turn -- **you have won if, at the start of
+        // your own turn, your spy, four pawns and royal are still on one square** -- which is
+        // the same thing and needs no flag carried between plies.
+        //
+        // So this node is terminal only when the side to move is the side that has gathered:
+        // they got there, the opponent had their answer, and it did not come. A gather by the
+        // side that just moved is not terminal, because `contr` is precisely the player who
+        // still has a reply to find. Mirrors ai.py's minimax exactly; the two must agree or
+        // golden_search.txt will say so.
+        let (_, winner) = check_for_winner(board);
+        if winner[contr as usize] != 0 {
             // scaling by the depth left makes a win now beat the same win three moves out
             let scale = (depth_track + 1) as Score;
-            if winner[root_contr as usize] != 0 {
+            if contr == root_contr {
                 return (WIN_SCORE * scale, None);
             }
             return (-WIN_SCORE * scale, None);
@@ -699,11 +709,51 @@ mod tests {
 
     /// Blue with the spy and four pawns gathered on d4, and the royal a jump away on e5.
     /// One move from six on a square, which is the win.
+    ///
+    /// The stray red pawn on a1 is load-bearing under the delayed win, and it is easy to
+    /// leave out. Gathering only wins once it has survived the opponent's reply, so a board
+    /// where the opponent has no legal move never reaches the turn that confirms it -- the
+    /// search finds nothing to play, returns the standing evaluation, and the depth scaling
+    /// this test is named for never appears. The pawn is far enough away to be irrelevant to
+    /// the position and near enough to be a move.
     fn one_move_from_winning() -> Board {
         let mut board = EMPTY_BOARD;
         board[24] = build_space(0, 0, 1, 4, 0, 0, 0, 0).unwrap();
         board[32] = build_space(0, 0, 0, 0, 1, 0, 0, 0).unwrap();
+        board[0] = build_space(1, 0, 0, 1, 0, 0, 0, 0).unwrap();
         board
+    }
+
+    /// Blue's six already gathered on d4, with a lone red spy orthogonally beside them on d5.
+    /// Under the delayed win this is not a won game: red is to move, and a lone spy's push
+    /// shatters what it hits, which is the one answer a completed stack has. A break needs
+    /// the enemy's own spy inside the stack and landing on it needs six of your own, so
+    /// nothing else on the board could touch it.
+    fn gathered_with_a_spy_alongside() -> Board {
+        let mut board = EMPTY_BOARD;
+        board[24] = build_space(0, 0, 1, 4, 1, 0, 0, 0).unwrap();
+        board[31] = build_space(1, 0, 1, 0, 0, 0, 0, 0).unwrap();
+        board
+    }
+
+    #[test]
+    fn a_gathered_six_is_not_won_while_a_lone_spy_can_shatter_it() {
+        let board = gathered_with_a_spy_alongside();
+        assert_ne!(
+            check_for_winner(&board).1[0],
+            0,
+            "the fixture should already have blue's six on one square"
+        );
+
+        let mut search = Search::new();
+        let (after, mv, _) = search.take_turn(&board, 1, 3);
+
+        assert!(mv.is_some(), "red has a reply to find");
+        assert_eq!(
+            check_for_winner(&after).1[0],
+            0,
+            "red's spy should have shattered the six rather than letting it stand"
+        );
     }
 
     #[test]

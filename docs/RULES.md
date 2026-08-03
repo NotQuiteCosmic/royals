@@ -59,12 +59,27 @@ The remaining pieces then enter one at a time, players alternating, in this orde
 **Blue enters first at every stage**, which is why red takes the first move once the
 board is full.
 
+> **You do not place your own pieces. You place your opponent's.**
+
+Every square is chosen by the player who does *not* own the piece going onto it, and the
+object is to leave that army as badly arranged as the rules permit — scattered, hemmed in,
+and slow to gather. When blue's royal enters, red picks its square; when red's royal enters,
+blue picks.
+
+What is legal does not change with it. The placement rules below are facts about the army
+being placed and not about the hand placing it, so the squares on offer are exactly the ones
+the piece's owner would have been choosing from. Only the choosing changes sides.
+
 Where you may enter a piece:
 
-- A **royal or a pawn** may not be entered on a square touching anything you already
-  control — your own dragon included. Squares the *enemy* controls are no obstacle; only
-  your own pieces crowd you out.
+- A **royal or a pawn** may not be entered on a square touching anything **its own side**
+  already controls — that side's dragon included. Squares the other side controls are no
+  obstacle; an army only crowds itself.
 - A **spy** ignores that rule entirely and needs only an empty square.
+
+Read those as facts about the piece and not about the player, because since you are placing
+your opponent's army the two are opposites. You are looking for the worst square among the
+ones *their* pieces leave open, not among the ones yours do.
 
 Entering does not wrap around the edges. A square on the `a` file is not adjacent to one
 on the `g` file for the purposes of placement, even though it is for every move that
@@ -78,11 +93,22 @@ picks. The game then opens with the board already full, red to move as always.
 
 ## Winning
 
-> **You win by gathering your spy, all four of your pawns and your royal onto a single
-> square.**
+> **You win if, at the start of your turn, your spy, all four of your pawns and your royal
+> are on a single square.**
 
 Six pieces, one square. The dragon is not part of it and cannot help you carry it — a
 dragon's square holds nothing but the dragon.
+
+**Gathering does not end the game — surviving does.** Assembling the six gives your opponent
+one more turn, and if the stack is still whole when your turn begins, you have won. The stack
+does not have to be on the square you gathered it on; being shoved somewhere else is not an
+answer.
+
+There is only one answer, and it is worth knowing on both sides of it. A break needs a spy in
+the stack and yours holds your own, so your opponent cannot break it; landing on a square that
+weighs six needs six of their own. What can touch it is **a lone spy's push, which shatters
+what it hits**. So the last question of a game is usually whether an enemy spy is standing
+next to the square you mean to finish on.
 
 The assembly order is forced by the movement rules and it is worth understanding early: a
 spy can never jump *onto* anything, and nothing can ever jump *onto* a royal. So the spy
@@ -247,5 +273,7 @@ This page is prose and prose drifts. The authoritative statements are all in cod
 | Who may free | `engine.py` — `canFreePrisoners` |
 | Break range | `engine.py` — `checkBreak` |
 | Entering | `engine.py` — the `Entering` section |
+| Who places whose piece | `engine.py` — `enteringChooser` |
 | Ko | `engine.py` — the `KO` section |
-| Winning | `hasher.py` — `WIN_CODES`, `Check_For_Winner` |
+| A completed stack | `hasher.py` — `WIN_CODES`, `Check_For_Winner` |
+| *When* that wins | the callers, not the detector — `ai.py`'s `minimax`, `royals_web/game.py`'s `_advance_turn`, and each front end's turn loop |

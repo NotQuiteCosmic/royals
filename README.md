@@ -102,8 +102,46 @@ quicker. `sh ~/Royals/uninstall.sh` removes it again along with everything else.
 
 It won't overwrite things it didn't create: if `~/Royals` is already something else, or if
 an `Royals.app` is there that this installer didn't build, it stops and says so rather than
-clearing the way. Run it again any time to update — a checkout with local edits is left
-alone, not overwritten.
+clearing the way.
+
+### Updating it
+
+Run the installer again:
+
+```bash
+sh ~/Royals/install-desktop.sh --no-launch
+```
+
+It fetches, fast-forwards `~/Royals`, and rebuilds the app from it. `--no-launch` makes that a
+quiet update rather than one that opens a window; drop it if you want to play straight away.
+
+It is deliberately timid about your copy. A checkout with local edits is left exactly as it is,
+and so is one whose history has diverged from GitHub — it never rebases, resets or discards, it
+just says so and carries on. If it can't reach GitHub it keeps what is already there.
+
+The one thing it does not update is the compiled engine: the `pip install` it runs has no
+`--upgrade`, so an accelerator you already have stays the version you already have. To move
+that one along:
+
+```bash
+python3 -m pip install --user --upgrade --only-binary :all: royals-accel
+```
+
+**If you are working on the game, rebuild the app instead.** `Royals.app` holds its own copy of
+the source — a sandboxed app is only reliably allowed to read itself — so from your checkout:
+
+```bash
+sh tools/build-royals-app.sh
+```
+
+The app does try to re-copy from the checkout it was built from every time it starts, but macOS
+usually refuses to let it read anything under `~/Documents` and the fallback is silent, so it
+can go on running an old copy indefinitely. `~/Library/Logs/Royals.log` says which happened.
+Rebuilding by hand is the reliable way.
+
+Both commands write `~/Applications/Royals.app`, so they collide: running the installer on a
+machine where you built the app from your own checkout replaces it with the one from `~/Royals`.
+Pass a path to keep them apart — `sh tools/build-royals-app.sh ~/Applications/Royals-dev.app`.
 
 To remove it, `sh ~/Royals/uninstall.sh`, or delete `~/Royals` and `~/Applications/Royals.app`
 by hand. That's all there is.

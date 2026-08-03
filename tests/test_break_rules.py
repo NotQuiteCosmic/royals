@@ -224,20 +224,22 @@ def test_a_lone_jailer_is_an_obstacle_on_the_second_lap_too():
 def positions():
     """The seeded random walk regress.py records, which is where messy boards come from."""
     boards = []
-    for seed in (3, 11, 57):
-        AI.setEntryNoise(0.5, seed)
+    for seed in range(1, 11):
         board = Hasher.Entering_Board()
-        for contr, piece in Engine.enteringSequence():
+        for index, (contr, piece) in enumerate(Engine.enteringSequence()):
             is_spy = (piece == Hasher.SPY)
             if not Engine.enteringOptions(board, contr, is_spy): continue
-            board = Engine.dropPiece(board, AI.chooseEntry(board, contr, piece, is_spy),
-                                     contr, piece)
+            square = Engine.randomEntry(board, contr, is_spy, Engine.entryRng(seed, index))
+            board = Engine.dropPiece(board, square, contr, piece)
 
         rng = random.Random(seed)
         boards.append(board)
-        # forty turns, the length regress.py's sweep runs to. Twenty-four reaches only 91
-        # breaks across the three seeds and forty reaches 127, which is the margin the guard
-        # at the bottom of the sweep tests wants.
+        # Forty turns, the length regress.py's sweep runs to, over ten seeds rather than the
+        # three it uses. Three was enough while the opening came from the entering heuristic,
+        # which packs pieces together; a random opening scatters them, and three seeds reach
+        # only 29 breaks where ten reach 358. The guard at the bottom of the sweep tests
+        # wants a margin over 100, and widening the sample is the way to get it back --
+        # lowering the guard would keep the tests green by agreeing to test less.
         for turn in range(0, 40):
             moves = AI.listAllMoves(board, turn % 2)
             if not moves: break
