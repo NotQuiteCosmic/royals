@@ -1,0 +1,50 @@
+{
+ "colours": {
+  "BLACK": "#2a1e3d",
+  "BLACK_HI": "#4a3a63",
+  "BLACK_LO": "#1a1228",
+  "DARK": "#a96863",
+  "DARK_ENTRY": "#8a5450",
+  "DARK_HI": "#c28b85",
+  "DARK_LAST": "#bd8079",
+  "DARK_LO": "#83504c",
+  "EDGE": "#d9a68e",
+  "EDGE_DK": "#a06b53",
+  "EDGE_LT": "#eec9b6",
+  "INK": "#3b2b4a",
+  "LABEL": "#5a3f63",
+  "LIGHT": "#f0dcc0",
+  "LIGHT_ENTRY": "#cbc49c",
+  "LIGHT_HI": "#fbf1e2",
+  "LIGHT_LAST": "#f8ead0",
+  "LIGHT_LO": "#cdae8a",
+  "PANEL": "#f2e2cd",
+  "PANEL_DK": "#cdb096",
+  "PANEL_LT": "#fbf3e8",
+  "PIECE_HALO": "#fcf5ea",
+  "RULE": "#5c3f52",
+  "RULE_DK": "#8f6a72",
+  "RULE_LT": "#402a3a",
+  "TEXT": "#46304f",
+  "TEXT_DIM": "#7d6376",
+  "TEXT_KEY": "#33223b",
+  "WELL": "#e8d5bd",
+  "WHITE": "#fbf3e6",
+  "WHITE_HI": "#ffffff",
+  "WHITE_LO": "#d8c0a4",
+  "WHITE_RIM": "#8a5a4e"
+ },
+ "gradient": {
+  "bands": 40,
+  "direction": "diagonal",
+  "from": "#3f3a6b",
+  "on": true,
+  "to": "#a292c4"
+ },
+ "lines": {
+  "hair": 1,
+  "mark": 4,
+  "piece": 1
+ },
+ "name": "Monument Valley"
+}

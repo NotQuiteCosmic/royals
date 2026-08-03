@@ -371,9 +371,13 @@ impl Search {
         root_contr: u8,
         mut alpha: Score,
         mut beta: Score,
-        depth_track: i32,
+        mut depth_track: i32,
         mut pv_move: Option<Move>,
         at_root: bool,
+        // How many unresolved-gather extensions this path may still spend. See the leaf check
+        // below. One is all the rule needs; the count exists so a pathological position cannot
+        // walk the extension down forever.
+        mut gather_ext: u8,
     ) -> (Score, Option<Move>) {
         self.calc_count += 1;
 
@@ -397,8 +401,26 @@ impl Search {
             return (-WIN_SCORE * scale, None);
         }
 
+        // An unresolved gather is not a position to stand and evaluate. The terminal test above
+        // deliberately does not fire for a stack the side to move has just been handed --
+        // `contr` is the player who still owes a reply -- but a leaf has no ply left to find it
+        // in, and `evaluate_sides` answers WIN_SCORE flat for six on a square. So the horizon
+        // undoes the rule: at depth N the search sees a gather made on the last ply, calls it
+        // won, and never looks at the lone spy standing next to it whose push scatters the lot.
+        //
+        // One more ply is exactly what the rule asks for and no more, because the rule is "it
+        // has to survive one reply". Extending to 1 makes this leaf behave as an ordinary
+        // depth-1 node, which is not a coincidence and is what lets the result go in the table
+        // as one: a real depth-1 search of this position does the same thing, since its
+        // children are depth-0 nodes where `contr` has flipped and the terminal test fires.
+        //
+        // Mirrors ai.py's minimax exactly; the two must agree or golden_search.txt will say so.
         if depth_track == 0 {
-            return (full_check(board, root_contr), None);
+            if gather_ext == 0 || winner[1 - contr as usize] == 0 {
+                return (full_check(board, root_contr), None);
+            }
+            depth_track = 1;
+            gather_ext -= 1;
         }
 
         // Only interior nodes consult the table, and only below the two checks above. Probing
@@ -523,7 +545,10 @@ impl Search {
             }
 
             let score = self
-                .minimax(&child, 1 - contr, root_contr, alpha, beta, depth_track - 1, None, false)
+                // gather_ext rides down the path, not across the tree: a sibling branch gets
+                // whatever this node was handed, and only the branch that spent one is short.
+                .minimax(&child, 1 - contr, root_contr, alpha, beta, depth_track - 1, None, false,
+                         gather_ext)
                 .0;
 
             let better = match best_score {
@@ -640,7 +665,7 @@ impl Search {
 
         let mut best: (Score, Option<Move>) = (0, None);
         for step in 1..=depth {
-            best = self.minimax(board, contr, contr, -INFINITY, INFINITY, step, best.1, true);
+            best = self.minimax(board, contr, contr, -INFINITY, INFINITY, step, best.1, true, 1);
         }
 
         best

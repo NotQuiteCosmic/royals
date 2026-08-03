@@ -1,0 +1,50 @@
+{
+ "colours": {
+  "BLACK": "#332417",
+  "BLACK_HI": "#54473c",
+  "BLACK_LO": "#000000",
+  "DARK": "#8e7049",
+  "DARK_ENTRY": "#685235",
+  "DARK_HI": "#a58d6e",
+  "DARK_LAST": "#a08766",
+  "DARK_LO": "#55432c",
+  "EDGE": "#cbb190",
+  "EDGE_DK": "#99856c",
+  "EDGE_LT": "#f1eae1",
+  "INK": "#33231a",
+  "LABEL": "#594a3e",
+  "LIGHT": "#e6d5bc",
+  "LIGHT_ENTRY": "#c8b9a4",
+  "LIGHT_HI": "#f8f3ec",
+  "LIGHT_LAST": "#f5eee5",
+  "LIGHT_LO": "#b5a794",
+  "PANEL": "#efe3d0",
+  "PANEL_DK": "#bab1a2",
+  "PANEL_LT": "#f6f0e5",
+  "PIECE_HALO": "#f6eedf",
+  "RULE": "#27221c",
+  "RULE_DK": "#80705b",
+  "RULE_LT": "#100e0b",
+  "TEXT": "#3d2c1e",
+  "TEXT_DIM": "#82776e",
+  "TEXT_KEY": "#241a12",
+  "WELL": "#dcd1bf",
+  "WHITE": "#faf1e2",
+  "WHITE_HI": "#ffffff",
+  "WHITE_LO": "#b4ada3",
+  "WHITE_RIM": "#6c6861"
+ },
+ "gradient": {
+  "bands": 32,
+  "direction": "vertical",
+  "from": "#f0e2cc",
+  "on": true,
+  "to": "#c2a583"
+ },
+ "lines": {
+  "hair": 1,
+  "mark": 4,
+  "piece": 2
+ },
+ "name": "Sepia"
+}

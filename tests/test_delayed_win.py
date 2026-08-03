@@ -8,10 +8,13 @@ keeps testing for a completed stack straight after a move and quietly ends the g
 early. That is what these tests are shaped around.
 
 The only answer a completed six actually has is a lone spy's shattering push. A break needs
-the enemy's own spy standing in the stack, and landing on a weight-six square needs six of
-your own, so nothing else on the board can touch it. Every test here therefore turns on
-whether a spy is beside the gathering square, which is also the whole of the rule's
-strategic content.
+the enemy's own spy standing in the stack; and nothing can land on the six at all, since it
+holds the royal and nothing may land on a royal at any weight -- so matching it with six of
+your own is not an answer either, which the prose here used to say it was. Every test here
+therefore turns on whether a spy is beside the gathering square, which is most of the rule's
+strategic content. The rest of it -- that the shatter also needs the square *behind* the
+stack empty, because a spy has one point of strength and spends it on the square it shoves --
+is in `test_win_horizon.py`, along with the search's handling of a gather made at a leaf.
 
 `Check_For_Winner` is deliberately NOT part of this change. It stays a pure detector of
 "there is a completed stack", which is what lets regress.py's move sweep go on calling it and

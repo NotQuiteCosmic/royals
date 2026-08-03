@@ -105,10 +105,17 @@ does not have to be on the square you gathered it on; being shoved somewhere els
 answer.
 
 There is only one answer, and it is worth knowing on both sides of it. A break needs a spy in
-the stack and yours holds your own, so your opponent cannot break it; landing on a square that
-weighs six needs six of their own. What can touch it is **a lone spy's push, which shatters
-what it hits**. So the last question of a game is usually whether an enemy spy is standing
-next to the square you mean to finish on.
+the stack and yours holds your own, so your opponent cannot break it. Nor can anything land on
+it: a finished stack holds your royal, and nothing may land on a royal at any weight — so
+matching your six with six of their own is not an answer either. What can touch it is **a lone
+spy's push, which shatters what it hits**, and nothing else can.
+
+That push has a condition, and it is the whole of the defence: a spy has one point of strength,
+spends it on the square it shoves, and has nothing left for the next one. **So the shatter needs
+the square directly beyond your stack to be empty.** The last question of a game is therefore
+not only whether an enemy spy is standing next to the square you mean to finish on, but whether
+the square behind you is occupied — by either side. Finishing with your back to a crowd is safe;
+finishing with open board behind you is not.
 
 The assembly order is forced by the movement rules and it is worth understanding early: a
 spy can never jump *onto* anything, and nothing can ever jump *onto* a royal. So the spy

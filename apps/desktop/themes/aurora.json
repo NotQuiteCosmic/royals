@@ -1,0 +1,50 @@
+{
+ "colours": {
+  "BLACK": "#080b17",
+  "BLACK_HI": "#343849",
+  "BLACK_LO": "#000000",
+  "DARK": "#4c5c92",
+  "DARK_ENTRY": "#38436b",
+  "DARK_HI": "#717da8",
+  "DARK_LAST": "#6976a4",
+  "DARK_LO": "#2e3758",
+  "EDGE": "#24304f",
+  "EDGE_DK": "#1b243b",
+  "EDGE_LT": "#c4c7cf",
+  "INK": "#060a14",
+  "LABEL": "#b4ead7",
+  "LIGHT": "#93e8bf",
+  "LIGHT_ENTRY": "#80caa6",
+  "LIGHT_HI": "#e1f9ed",
+  "LIGHT_LAST": "#d4f6e6",
+  "LIGHT_LO": "#74b696",
+  "PANEL": "#131a2e",
+  "PANEL_DK": "#0f1424",
+  "PANEL_LT": "#7e828d",
+  "PIECE_HALO": "#dcf6ec",
+  "RULE": "#07090f",
+  "RULE_DK": "#171e32",
+  "RULE_LT": "#030406",
+  "TEXT": "#a8e6d0",
+  "TEXT_DIM": "#c7efe1",
+  "TEXT_KEY": "#64897c",
+  "WELL": "#11182a",
+  "WHITE": "#dffaef",
+  "WHITE_HI": "#ffffff",
+  "WHITE_LO": "#a0b4ac",
+  "WHITE_RIM": "#606c67"
+ },
+ "gradient": {
+  "bands": 32,
+  "direction": "vertical",
+  "from": "#415f96",
+  "on": true,
+  "to": "#0a0f1e"
+ },
+ "lines": {
+  "hair": 1,
+  "mark": 4,
+  "piece": 2
+ },
+ "name": "Aurora"
+}

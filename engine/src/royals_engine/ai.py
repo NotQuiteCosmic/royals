@@ -593,7 +593,11 @@ def orderMoves(moves, spaces, contr, depthTrack, pvMove):
 #             Deeper nodes are hypothetical: they carry a history of their own that the
 #             game's record knows nothing about, which is why the backup only tested at the
 #             root either.
-def minimax(cBoard, contr, rootContr, alpha, beta, depthTrack, pvMove = None, atRoot = False):
+#   gatherExt -- how many unresolved-gather extensions this path may still spend. See the
+#             leaf check below. One is all the rule needs; the count exists so a pathological
+#             position cannot walk the extension down forever.
+def minimax(cBoard, contr, rootContr, alpha, beta, depthTrack, pvMove = None, atRoot = False,
+            gatherExt = 1):
     global calcCount
     calcCount += 1
 
@@ -619,7 +623,26 @@ def minimax(cBoard, contr, rootContr, alpha, beta, depthTrack, pvMove = None, at
         if contr == rootContr: return [WIN_SCORE * (depthTrack + 1), None]
         return [-WIN_SCORE * (depthTrack + 1), None]
 
-    if depthTrack == 0: return [fullCheck(cBoard, rootContr), None]
+    # An unresolved gather is not a position to stand and evaluate. The terminal test above
+    # deliberately does not fire for a stack the side to move has just been handed -- `contr`
+    # is the player who still owes a reply -- but a leaf has no ply left to find it in, and
+    # `evaluateSides` answers WIN_SCORE flat for six on a square. So the horizon undoes the
+    # rule: at depth N the search sees a gather made on the last ply, calls it won, and never
+    # looks at the lone spy standing next to it whose push scatters the lot.
+    #
+    # One more ply is exactly what the rule asks for and no more, because the rule is "it has
+    # to survive one reply". Extending to 1 makes this leaf behave as an ordinary depth-1
+    # node, which is not a coincidence and is what lets the result go in the table as one:
+    # a real depth-1 search of this position does the same thing, since its children are
+    # depth-0 nodes where `contr` has flipped and the terminal test above fires.
+    #
+    # Costs nothing in the ordinary case -- `winner` is already in hand, and positions with a
+    # completed stack in them are a vanishing fraction of leaves.
+    if depthTrack == 0:
+        if not (gatherExt and winner[1 - contr]):
+            return [fullCheck(cBoard, rootContr), None]
+        depthTrack = 1
+        gatherExt -= 1
 
     # Only interior nodes consult the table, and only below the two checks above. Probing
     # first would let a leaf answer with a stored one-ply search instead of the standing
@@ -715,7 +738,10 @@ def minimax(cBoard, contr, rootContr, alpha, beta, depthTrack, pvMove = None, at
         # a move that returns the game somewhere it has already been isn't one to offer
         if atRoot and Engine.koBreaks(child): continue
 
-        score = minimax(child, int(not contr), rootContr, alpha, beta, depthTrack - 1)[0]
+        # gatherExt rides down the path, not across the tree: a sibling branch gets whatever
+        # this node was handed, and only the branch that actually spent an extension is short.
+        score = minimax(child, int(not contr), rootContr, alpha, beta, depthTrack - 1,
+                        None, False, gatherExt)[0]
 
         if bestScore is None or (score > bestScore if maximizing else score < bestScore):
             bestScore = score

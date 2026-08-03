@@ -287,6 +287,43 @@ move and you would not know which change did it.
 
 *(Implemented in `engine-rs/src/search.rs`, with the evaluator in `eval.rs`.)*
 
+### The delayed win, and the leaf that undoes it
+
+Two halves, and a port that takes only the first has a search that thinks it wins games it
+loses.
+
+**A node is terminal only when the side to move is the side that has gathered.** Not "someone
+has six on a square" — `winner[contr]`, and nothing else. The gatherer got there, the opponent
+had their reply, and it did not come. A gather by the side that *just moved* is not terminal at
+all, because `contr` is precisely the player who still owes the answer.
+
+**And a leaf must not be allowed to stand on an unresolved gather.** At `depthTrack == 0` the
+terminal test above cannot fire for the side that just gathered, so the position falls through
+to the evaluator — which answers `WIN_SCORE` flat for six on a square and has no turn to
+consult. That hands the horizon a win the opponent refutes on the next ply. So:
+
+```
+if depthTrack == 0:
+    if not (gatherExt and winner[1 - contr]): return evaluate
+    depthTrack = 1        # and spend one gatherExt
+```
+
+`gatherExt` starts at **1** at the root and rides *down each path*, not across the tree — a
+sibling branch gets whatever its parent was handed, and only the branch that spent one is
+short. One is all the rule needs, since the rule is "survive one reply"; the counter exists so
+a contrived position cannot walk the extension down forever.
+
+Extending to exactly 1 is what lets the result be filed in the transposition table as an
+ordinary depth-1 entry, and that is not a coincidence: a real depth-1 search of the same
+position does the same work, because its children are depth-0 nodes where `contr` has flipped
+and the terminal test does fire.
+
+**No golden file will catch an error here.** `golden_moves.txt` contains no won position at all
+(its largest `|eval|` is 128,642 against a `WIN_SCORE` of 1,000,000) and `golden_search.txt`'s
+games stop at thirty plies while a win takes about sixty-eight, so the extension never fires in
+either sweep — both stayed byte-identical when it went in. `tests/test_delayed_win.py` and
+`tests/test_win_horizon.py` are the whole of the coverage.
+
 ### Transposition table
 
 Keyed on **`(board, sideToMove, stamp)`** — the board itself, a tuple of 49 codes, **not a

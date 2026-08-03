@@ -271,3 +271,73 @@ def test_the_readout_says_so_when_a_colour_cannot_be_read(window):
     window.refreshAppearance()
     window.root.update()
     assert "Hard to make out" in window.contrastLabel.cget("text")
+
+
+####### Randomize #######
+
+def test_randomize_moves_the_pending_theme_and_nothing_else(window):
+    """Like every other control on this screen it edits `pending`. If it ever applied as well,
+    REVERT would have nothing true to go back to."""
+    window.buildAppearance()
+    before = dict(window.pending["colours"])
+    wearing = royals_gui.PANEL
+
+    window.randomPending()
+    window.root.update()
+
+    assert window.pending["colours"] != before
+    assert window.pending["name"].startswith("Random ")
+    assert royals_gui.PANEL == wearing, "randomizing dressed the window"
+
+
+def test_randomize_leaves_the_controls_describing_what_it_rolled(window):
+    """syncControls is the whole of the wiring, and forgetting it is invisible: the board
+    preview would show the roll while the weight and band controls described the theme
+    before it."""
+    window.buildAppearance()
+    window.randomPending()
+    window.root.update()
+
+    assert window.weightVar.get() == window.weightPreset()
+    assert window.bandsVar.get() == window.pending["gradient"]["bands"]
+    assert window.dirVar.get() == window.pending["gradient"]["direction"]
+    assert bool(window.gradVar.get()) == window.pending["gradient"]["on"]
+
+
+def test_a_rolled_theme_is_never_the_thing_the_readout_warns_about(window):
+    """Twenty presses, because one legible roll proves nothing about the next."""
+    window.buildAppearance()
+    for _ in range(20):
+        window.randomPending()
+        window.root.update()
+        assert "Hard to make out" not in window.contrastLabel.cget("text")
+
+
+####### The preset list #######
+
+def test_every_preset_on_disk_is_listed(window):
+    """It used to show the first eight of whatever it found, which was fine at five themes
+    and silently wrong at seventeen -- the ninth onwards were simply not drawn."""
+    window.buildAppearance()
+    window.root.update()
+
+    listed = [b.cget("text") for b in window.presetList.winfo_children()]
+    assert listed == [name for name, _path in Theme.presets()]
+    assert len(listed) > 8, "the point of the scrolling list is that it outgrew eight"
+
+
+def test_the_preset_list_scrolls_without_making_the_screen_taller(window):
+    """The canvas is a fixed height and the frame inside it is not: that is what lets the
+    list grow without the window growing with it."""
+    window.buildAppearance()
+    window.root.update()
+
+    visible = window.presetView.winfo_reqheight()
+    assert visible == royals_gui.PRESET_ROWS * royals_gui.PRESET_ROW_H
+
+    inner = window.presetList.winfo_reqheight()
+    assert inner > visible, "nothing to scroll -- this test is not testing anything"
+
+    window.presetView.yview_moveto(1.0)
+    window.root.update()
+    assert window.presetView.yview()[1] == pytest.approx(1.0, abs=0.01)

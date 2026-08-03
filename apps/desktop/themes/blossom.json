@@ -1,0 +1,50 @@
+{
+ "colours": {
+  "BLACK": "#382a34",
+  "BLACK_HI": "#584c55",
+  "BLACK_LO": "#000000",
+  "DARK": "#9d848e",
+  "DARK_ENTRY": "#736168",
+  "DARK_HI": "#b19da5",
+  "DARK_LAST": "#ad98a0",
+  "DARK_LO": "#5e4f55",
+  "EDGE": "#ddc3c8",
+  "EDGE_DK": "#a69397",
+  "EDGE_LT": "#f6eff0",
+  "INK": "#3d3438",
+  "LABEL": "#675a60",
+  "LIGHT": "#f3e3e6",
+  "LIGHT_ENTRY": "#d3c6c8",
+  "LIGHT_HI": "#fcf7f8",
+  "LIGHT_LAST": "#faf4f5",
+  "LIGHT_LO": "#bfb2b5",
+  "PANEL": "#f6eff0",
+  "PANEL_DK": "#c0babb",
+  "PANEL_LT": "#faf6f7",
+  "PIECE_HALO": "#f9f4f5",
+  "RULE": "#2b2627",
+  "RULE_DK": "#8c7b7f",
+  "RULE_LT": "#110f10",
+  "TEXT": "#4e3f45",
+  "TEXT_DIM": "#8d8487",
+  "TEXT_KEY": "#2e2629",
+  "WELL": "#e2dcdc",
+  "WHITE": "#fdf8f9",
+  "WHITE_HI": "#ffffff",
+  "WHITE_LO": "#b6b2b3",
+  "WHITE_RIM": "#6d6b6b"
+ },
+ "gradient": {
+  "bands": 32,
+  "direction": "vertical",
+  "from": "#f4e4e7",
+  "on": true,
+  "to": "#c2a7ad"
+ },
+ "lines": {
+  "hair": 1,
+  "mark": 3,
+  "piece": 1
+ },
+ "name": "Blossom"
+}

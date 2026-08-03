@@ -13,8 +13,10 @@ two are held against each other in both directions, which is the whole reason to
 rather than a dictionary of whatever somebody wrote down.
 """
 
+import colorsys
 import json
 import pathlib
+import random
 import re
 import sys
 
@@ -238,3 +240,90 @@ def test_the_config_carries_the_theme_and_not_a_path(tmp_path, monkeypatch):
     raw = json.loads(Theme.configPath().read_text(encoding="utf-8"))
     assert isinstance(raw["theme"], dict)
     assert raw["theme"]["colours"]["DARK"] == Theme.DEFAULT["colours"]["DARK"]
+
+
+####### A theme nobody chose #######
+# The randomize button is a promise that every press gives a board you can play on, and the
+# only way that promise breaks is quietly -- a roll that is merely ugly is the feature, and a
+# roll that is unreadable looks much the same from the code. So the properties are asserted
+# over a few hundred seeded rolls rather than one, which is what caught the two real bugs
+# here: a nudge that walked only one direction left half of them below the floor, and an
+# ordering enforced in HLS lightness let a saturated "dark" square outshine its light one.
+
+ROLLS = range(300)
+
+
+def test_a_roll_is_a_theme():
+    theme = Theme.randomTheme(seed=1)
+    assert Theme.validate(theme) == theme
+    assert set(theme["colours"]) == set(Theme.DEFAULT["colours"])
+
+
+def test_the_same_seed_rolls_the_same_theme():
+    assert Theme.randomTheme(seed=7) == Theme.randomTheme(seed=7)
+    assert Theme.randomTheme(seed=7) != Theme.randomTheme(seed=8)
+
+
+def test_a_roll_names_its_seed_so_it_can_be_found_again():
+    """The same courtesy the entering noise seed gets: a roll worth keeping is one you can
+    ask for by name. A caller supplying its own rng has no seed to name, and says so."""
+    assert Theme.randomTheme(seed=4821)["name"] == "Random 4821"
+    assert Theme.randomTheme(rng=random.Random(1))["name"] == "Random"
+
+
+def test_every_roll_keeps_the_light_squares_lighter_than_the_dark_ones():
+    """In luminance, which is what "looks darker" means. Ordering by the lightness handed to
+    hls_to_rgb is not the same test and does not hold: a saturated yellow at 0.55 outshines a
+    muted blue at 0.72, and one roll in the first five hundred came out exactly that way."""
+    for seed in ROLLS:
+        c = Theme.randomTheme(seed=seed)["colours"]
+        assert Theme.luminance(c["LIGHT"]) > Theme.luminance(c["DARK"]), seed
+
+
+def test_every_roll_puts_the_lighter_end_of_the_gradient_at_the_top():
+    """`from` is the top: drawGradient lays band zero along y = 0."""
+    for seed in ROLLS:
+        gradient = Theme.randomTheme(seed=seed)["gradient"]
+        assert Theme.luminance(gradient["from"]) >= Theme.luminance(gradient["to"]), seed
+
+
+def test_every_roll_is_legible():
+    """The whole point of nudging rather than re-rolling, and the property that regressed to
+    50% of rolls while this was being written."""
+    for seed in ROLLS:
+        c = Theme.randomTheme(seed=seed)["colours"]
+        for a, b in Theme.LEGIBLE_PAIRS:
+            ratio = Theme.contrast(c[a], c[b])
+            assert ratio >= Theme.LEGIBLE_FLOOR - 1e-9, \
+                "seed %d: %s on %s is %.2f to 1" % (seed, a, b, ratio)
+
+
+def test_a_roll_uses_a_named_line_weight():
+    """weightPreset() reports "normal" for any set it does not recognise, so three loose
+    integers would leave the appearance screen's weight selector describing a theme that is
+    not the one loaded."""
+    named = [dict(weights) for weights in Theme.WEIGHT_PRESETS.values()]
+    for seed in ROLLS:
+        assert Theme.randomTheme(seed=seed)["lines"] in named, seed
+
+
+def test_nudging_leaves_a_colour_that_already_reads_alone():
+    assert Theme.nudgeToward("#000000", "#ffffff") == "#000000"
+
+
+def test_nudging_goes_whichever_way_works():
+    """A colour at an extreme cannot move further that way. The first version only walked
+    away from what it was measured against, hit the clamp, and returned something still
+    illegible -- so the test is that a black on a near-black comes back *lighter*."""
+    fixed = Theme.nudgeToward("#000000", "#111111")
+    assert Theme.contrast(fixed, "#111111") >= Theme.LEGIBLE_FLOOR - 1e-9
+    assert Theme.luminance(fixed) > Theme.luminance("#111111")
+
+
+def test_nudging_keeps_the_hue_it_was_given():
+    """Which is the reason this exists instead of re-rolling."""
+    before = "#2b3a6b"
+    after = Theme.nudgeToward(before, "#31406f")
+    assert after != before
+    hue = lambda c: colorsys.rgb_to_hls(*Theme.rgb(c))[0]
+    assert hue(after) == pytest.approx(hue(before), abs=0.02)

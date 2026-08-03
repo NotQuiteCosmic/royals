@@ -1,0 +1,50 @@
+{
+ "colours": {
+  "BLACK": "#1b1a14",
+  "BLACK_HI": "#403f3a",
+  "BLACK_LO": "#000000",
+  "DARK": "#87836f",
+  "DARK_ENTRY": "#636051",
+  "DARK_HI": "#a09c8d",
+  "DARK_LAST": "#9a9786",
+  "DARK_LO": "#514f43",
+  "EDGE": "#ddd8ca",
+  "EDGE_DK": "#a6a398",
+  "EDGE_LT": "#f6f4f1",
+  "INK": "#16150f",
+  "LABEL": "#3c3c37",
+  "LIGHT": "#eae5d8",
+  "LIGHT_ENTRY": "#ccc7bc",
+  "LIGHT_HI": "#f9f8f4",
+  "LIGHT_LAST": "#f7f5f0",
+  "LIGHT_LO": "#b8b4aa",
+  "PANEL": "#f2efe6",
+  "PANEL_DK": "#bdbab3",
+  "PANEL_LT": "#f8f6f1",
+  "PIECE_HALO": "#f7f5ef",
+  "RULE": "#2b2a27",
+  "RULE_DK": "#8c8980",
+  "RULE_LT": "#111110",
+  "TEXT": "#1c1b15",
+  "TEXT_DIM": "#6d6c68",
+  "TEXT_KEY": "#11100c",
+  "WELL": "#dedcd3",
+  "WHITE": "#fbf9f2",
+  "WHITE_HI": "#ffffff",
+  "WHITE_LO": "#b5b3ae",
+  "WHITE_RIM": "#6c6b68"
+ },
+ "gradient": {
+  "bands": 32,
+  "direction": "vertical",
+  "from": "#f5f2ea",
+  "on": true,
+  "to": "#d9d4c4"
+ },
+ "lines": {
+  "hair": 1,
+  "mark": 3,
+  "piece": 1
+ },
+ "name": "Newsprint"
+}

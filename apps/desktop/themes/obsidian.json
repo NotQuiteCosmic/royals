@@ -1,0 +1,50 @@
+{
+ "colours": {
+  "BLACK": "#0a0c10",
+  "BLACK_HI": "#313336",
+  "BLACK_LO": "#000000",
+  "DARK": "#5f6b78",
+  "DARK_ENTRY": "#464e58",
+  "DARK_HI": "#808994",
+  "DARK_LAST": "#79838e",
+  "DARK_LO": "#394048",
+  "EDGE": "#232830",
+  "EDGE_DK": "#1a1e24",
+  "EDGE_LT": "#c3c5c7",
+  "INK": "#05070a",
+  "LABEL": "#d4dce4",
+  "LIGHT": "#98a4b3",
+  "LIGHT_ENTRY": "#848f9c",
+  "LIGHT_HI": "#e2e5ea",
+  "LIGHT_LAST": "#d6dbe1",
+  "LIGHT_LO": "#77818d",
+  "PANEL": "#14161a",
+  "PANEL_DK": "#101114",
+  "PANEL_LT": "#7f8082",
+  "PIECE_HALO": "#dce3eb",
+  "RULE": "#070809",
+  "RULE_DK": "#16191e",
+  "RULE_LT": "#030304",
+  "TEXT": "#cdd6e0",
+  "TEXT_DIM": "#dfe5eb",
+  "TEXT_KEY": "#7a7f85",
+  "WELL": "#121418",
+  "WHITE": "#dfe6ee",
+  "WHITE_HI": "#ffffff",
+  "WHITE_LO": "#a0a6ab",
+  "WHITE_RIM": "#515457"
+ },
+ "gradient": {
+  "bands": 32,
+  "direction": "vertical",
+  "from": "#2f3641",
+  "on": true,
+  "to": "#0a0c10"
+ },
+ "lines": {
+  "hair": 1,
+  "mark": 4,
+  "piece": 2
+ },
+ "name": "Obsidian"
+}

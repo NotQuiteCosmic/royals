@@ -56,8 +56,14 @@ def window(gui):
     import royals_gui
     import theme
 
-    # Whatever the last test was wearing, this one starts in the default look.
+    # Whatever the last test was wearing, this one starts in the default look -- and looking
+    # from the default place. The camera deliberately outlives a game (yaw, pitch and the
+    # projection are all kept when NEW GAME is pressed), which is right for a player and
+    # wrong for a test: it makes one test's last drag or last toggle the next one's starting
+    # state, and the failure surfaces as an assertion in a file that never mentioned cameras.
     royals_gui.applyTheme(theme.DEFAULT)
+    gui.view.persp = False
+    gui.view.setAngles(royals_gui.YAW_DEF, royals_gui.PITCH_DEF)
 
     gui.buildSetup()
     gui.errors = []

@@ -82,6 +82,13 @@ FAST_ENGINE = _accel.active()
 # cannot honestly describe both.
 DEPTH_MAX = 10
 DEPTH_DEFAULT = 7 if FAST_ENGINE else 5
+
+# How much of the preset list is on screen at once, and how tall one of its buttons is. Eight
+# rows because that is what the list showed before it could scroll -- the appearance screen is
+# the same height it has always been, and the themes past the eighth became reachable rather
+# than the window becoming taller. The row height is the small-font button plus its pady.
+PRESET_ROWS = 8
+PRESET_ROW_H = 26
 DEPTH_ADVICE = (
     "7 to 9 recommended — 8 takes about a second a move, 9 about five. 10 is the deepest "
     "there is and thinks for something like twenty seconds a move."
@@ -301,32 +308,41 @@ def engrave(c, x, y, text, font, fill, shadow=None, **kw):
 # up, they are six chips piled on each other and the height says it before the icons
 # do.
 #
-# Everything below is orthographic -- no perspective divide, so every square stays the
-# same size and the board reads as a board rather than as a photograph of one. World
-# units are cells. The playing surface is the plane z = 0, the cabinet hangs below it
-# and the pieces stand above it. Yaw turns the board about its centre, pitch is how far
-# the camera has been lifted off the horizon:
+# World units are cells. The playing surface is the plane z = 0, the cabinet hangs below it
+# and the pieces stand above it. Yaw turns the board about its centre, pitch is how far the
+# camera has been lifted off the horizon:
 #
-#     cx = x cos y - y sin y            sx = ox + S cx
-#     cy = x sin y + y cos y            sy = oy + S (cy sin p - z cos p)
+#     cx = x cos y - y sin y            sx = ox + S k cx
+#     cy = x sin y + y cos y            sy = oy + S k (cy sin p - z cos p)
 #
-# Four things fall out of that, and the whole renderer is built on them:
+# **There are two cameras, and `k` is the whole of the difference between them.** It is 1 in
+# the orthographic view the board has always had, which makes those two lines the two lines
+# they always were. In the perspective view it is `d / (d - depth)`, so a thing near the eye
+# is drawn larger than the same thing far from it, and all three families of parallels
+# converge -- the rows, the columns, and the verticals. Three-point, which is what a real
+# lens does with a camera tilted like this one.
 #
-#   * z appears only in sy, and only as -S cos p. The vertical axis is therefore always
-#     exactly vertical on screen whatever the yaw, so a chip can be an oval, a rectangle
-#     and an oval -- axis-aligned, and exact rather than approximated.
-#   * a circle lying flat projects to an ellipse whose axes are the screen axes, always,
-#     because turning a circle about its own centre does nothing to it. So create_oval
-#     still draws the round pieces and the round destination rings.
-#   * there is a direction in the board's own surface, U = (cos y, -sin y), that projects
-#     to exactly (S, 0) -- along the screen, at full length, at every angle. Anything
-#     laid out along U is genuinely painted flat on the surface and yet never squashed
-#     along its length. That is what lets the old flat icons be reused as they are: put
-#     them in the U,V plane and the projection is nothing but a squash of their height.
-#   * +cy is towards the viewer, so the painter's order is ascending cy. A stack only
-#     ever grows up the screen, which is to say towards the squares behind it, so a far
-#     stack can never cover a near square and drawing square by square, far to near, is
-#     exactly right rather than nearly right.
+# Four things used to fall out of the orthographic form, and the renderer was built on all
+# four. It is worth knowing which of them survived, because they are the reason the drawing
+# code looks the way it does:
+#
+#   * z appeared only in sy, so the vertical axis was exactly vertical on screen and a chip
+#     could be an oval, a rectangle and an oval. **Gone in perspective**: the top of a chip is
+#     nearer the eye than its foot, so it is drawn wider, and a stack away from the middle of
+#     the picture splays outward. `chip` is built in the world and projected now, for both
+#     cameras -- see the note there for why it is not two renderers.
+#   * a circle lying flat projected to an axis-aligned ellipse, so `create_oval` drew the
+#     round pieces and the destination rings. **Gone in perspective**, for the same reason.
+#     Both are rings of world points now. The flat pieces in the legend still take the oval:
+#     they are drawn on a canvas with no camera at all.
+#   * the surface direction U = (cos y, -sin y) projected to exactly (S, 0), which let flat
+#     icons be laid out in pixels. **Gone in perspective** -- a fixed world direction is a
+#     different screen vector at every point, which is what having a vanishing point means --
+#     so the icons are laid out in the world too.
+#   * +cy is towards the viewer, so the painter's order is ascending cy. **This one holds.**
+#     A leaning column could have broken it and does not: over every ordered pair of squares,
+#     at every yaw, no far stack's top ever reaches past a nearer square's foot. It is
+#     asserted rather than argued in tests/test_projection.py.
 
 # The cabinet, in cells: the border is as wide a fraction of a square as it always was.
 E_FRAME = FRAME / float(CELL)
@@ -431,6 +447,14 @@ DRAG_SLOP = 4
 # slightly out of the surface they are supposed to be painted on. It is a lie, and it is
 # the difference between a legible board at fifteen degrees and a row of grey slivers.
 ICON_SQUASH_MIN = 0.45
+
+# How far back the eye sits, in cells, when the board is drawn in perspective. The board is
+# seven cells across, so this is a long lens rather than a wide one, and that is deliberate:
+# at this distance the near rank is about half again the size of the far one -- plenty to read
+# as depth -- while a full stack leans only a few pixels and its lid is two or three per cent
+# wider than its foot. Bringing the eye closer makes the lean dramatic and the near squares
+# trapezoidal, which looks like a fault rather than a camera.
+PERSP_DIST = 14.0
 
 FIT_MARGIN = 10
 ROOT2 = math.sqrt(2.0)
@@ -584,6 +608,15 @@ SHAPE_ROYAL = ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0))
 SHAPE_SPY = ((0.0, -1.0), (1.0, 0.78), (-1.0, 0.78))
 SHAPE_DISC = None
 
+# The corners a disc has to be written down as after all, for the one caller that cannot use
+# `create_oval`: an icon painted on the lid of a chip, which under perspective is no longer an
+# axis-aligned ellipse. The legend and the flat pieces still take the oval -- it really is the
+# better drawing, and nothing about them has a vanishing point.
+ICON_SIDES = 16
+SHAPE_RING = tuple((math.cos(i * 2.0 * math.pi / ICON_SIDES),
+                    math.sin(i * 2.0 * math.pi / ICON_SIDES))
+                   for i in range(ICON_SIDES))
+
 
 # One shape, at a point, with its two radii given apart so it can be squashed. rx == ry
 # is the flat case and is what the legend and the old board ask for.
@@ -626,15 +659,38 @@ def iconRow(c, items, x, y, r, gap, side, w=2):
 # window, because there are two of them: the live one the board is drawn through, and a
 # fixed one the legend uses to draw its illustrative chips at an angle that never moves.
 class View:
+    # `persp` and `dist` have to be declared here or they cannot be set at all -- __slots__
+    # is not documentation, it is the whole set of attributes an instance may have, and the
+    # failure is an AttributeError in the constructor rather than anywhere useful.
     __slots__ = ("yaw", "pitch", "scale", "ox", "oy",
-                 "sinY", "cosY", "sinP", "cosP", "squash", "detail")
+                 "sinY", "cosY", "sinP", "cosP", "squash", "detail",
+                 "persp", "dist")
 
     def __init__(self, yaw=YAW_DEF, pitch=PITCH_DEF, scale=60.0, ox=0.0, oy=0.0):
         self.scale = scale
         self.ox = ox
         self.oy = oy
         self.detail = True
+        self.persp = False
+        self.dist = PERSP_DIST
         self.setAngles(yaw, pitch)
+
+    # How much nearer things are magnified, at one point. 1.0 always, in the mode the board
+    # has always been drawn in -- which is what makes perspective additive rather than a
+    # replacement: every formula below multiplies by this and is unchanged when it is one.
+    #
+    # `z` counts, and that is the difference between this and the two-point construction. A
+    # factor computed from the ground position alone would keep every stack's screen x fixed
+    # and so keep verticals parallel; letting height into it gives the vertical axis a
+    # vanishing point of its own, which is the third point.
+    def factorAt(self, x, y, z=0.0):
+        if not self.persp: return 1.0
+        # The eye sits `dist` cells along the view axis from the board's centre, so this is
+        # its distance to the point. Floored rather than trusted: the board's own depth never
+        # comes within eight cells of the eye at any pitch, but a caller asking about a point
+        # far off the board should get a very large number and not a division by zero.
+        away = self.dist - self.depth(x, y, z)
+        return self.dist / (away if away > 0.25 else 0.25)
 
     def setAngles(self, yaw, pitch):
         self.yaw = yaw % (2.0 * math.pi)
@@ -651,28 +707,82 @@ class View:
     # square-on, but it changes as the board turns, and a board that breathes in and out
     # under the hand while being rotated is far more distracting than a wider margin. It
     # also means the board can never be caught spilling off the canvas mid-turn.
-    def fit(self, w, h):
+    # The extremes of the projected cabinet, per unit of scale, as (half-width, top, bottom).
+    # Every corner of the bounding box is tried rather than the two that are obviously
+    # furthest, because which corner wins changes with the pitch: depth is `cy cos p +
+    # z sin p`, so at a shallow angle the near edge is the magnified one and at a steep angle
+    # it is the tall one. Picking analytically got the steep case wrong.
+    #
+    # Worked in the view's own coordinates, so the answer does not depend on which way the
+    # board is turned -- the board would otherwise breathe in and out under the hand while
+    # being rotated, which the fit has always gone out of its way to avoid.
+    #
+    # In orthographic every factor is one and this reduces exactly to what it always was:
+    # `bottom - top` is `2 reach sin p + (H_MAX + SLAB_T) cos p`.
+    def _bounds(self):
         reach = ROOT2 * E_HALF
-        wide = (w - 2 * FIT_MARGIN) / (2.0 * reach)
-        tall = (h - 2 * FIT_MARGIN) / (2.0 * reach * self.sinP
-                                       + (H_MAX + SLAB_T) * self.cosP)
+        wide, ys = 0.0, []
+        for cy in (-reach, reach):
+            for z in (-SLAB_T, H_MAX):
+                k = self.factorAt(*self._edge(cy, z))
+                wide = max(wide, reach * k)
+                ys.append((cy * self.sinP - z * self.cosP) * k)
+        return wide, min(ys), max(ys)
+
+    # A board position that sits `cy` cells along the view's own depth axis, so `_bounds`
+    # can ask about the near and far edges without caring which way the board is turned.
+    def _edge(self, cy, z):
+        return (cy * self.sinY, cy * self.cosY, z)
+
+    # Which way the eye lies from a point on the board, for the one question that has to know:
+    # whether a wall of the cabinet faces the camera or away from it.
+    #
+    # Orthographic has no eye -- every ray is parallel -- so the answer is the view direction
+    # itself, which is what this always used to be written as inline. In perspective the eye is
+    # a place, `dist` cells back along that same direction, and a wall on the far side of the
+    # board is seen at a visibly different angle from one on the near side.
+    def towardsEye(self, x, y):
+        if not self.persp:
+            return (self.sinY, self.cosY)
+        return (self.dist * self.sinY * self.cosP - x,
+                self.dist * self.cosY * self.cosP - y)
+
+    def fit(self, w, h):
+        side, top, bottom = self._bounds()
+        wide = (w - 2 * FIT_MARGIN) / (2.0 * side)
+        tall = (h - 2 * FIT_MARGIN) / (bottom - top)
         self.scale = max(8.0, min(wide, tall))
         self.ox = w / 2.0
-        used = self.scale * (2.0 * reach * self.sinP + (H_MAX + SLAB_T) * self.cosP)
-        self.oy = (h - used) / 2.0 + self.scale * (reach * self.sinP + H_MAX * self.cosP)
+        used = self.scale * (bottom - top)
+        self.oy = (h - used) / 2.0 - self.scale * top
 
     def project(self, x, y, z=0.0):
         cx = x * self.cosY - y * self.sinY
         cy = x * self.sinY + y * self.cosY
-        return (self.ox + self.scale * cx,
-                self.oy + self.scale * (cy * self.sinP - z * self.cosP))
+        k = self.factorAt(x, y, z)
+        return (self.ox + self.scale * cx * k,
+                self.oy + self.scale * (cy * self.sinP - z * self.cosP) * k)
 
-    # Straight back out again, onto the playing surface. Exact, because the surface is
-    # the one plane the projection can be inverted on without knowing anything else, and
-    # sin(pitch) is never smaller than sin(15 degrees) so it is always safe to divide by.
+    # Straight back out again, onto the playing surface. Still exact, and still without
+    # iterating, because the surface is the plane z = 0 -- which is what makes the whole
+    # thing tractable: the height term drops out of the magnification, so the unknown
+    # appears linearly and the divide can be solved for.
+    #
+    #     v = cy sin p . k,  k = d / (d - cy cos p)   =>   cy = v d / (d sin p + v cos p)
+    #
+    # sin(pitch) is never smaller than sin(15 degrees), and d is a good deal larger than
+    # anything on the board, so neither denominator can vanish.
     def ground(self, sx, sy):
-        cx = (sx - self.ox) / self.scale
-        cy = (sy - self.oy) / (self.scale * self.sinP)
+        u = (sx - self.ox) / self.scale
+        v = (sy - self.oy) / self.scale
+
+        if self.persp:
+            cy = v * self.dist / (self.dist * self.sinP + v * self.cosP)
+            cx = u * (self.dist - cy * self.cosP) / self.dist
+        else:
+            cx = u
+            cy = v / self.sinP
+
         return (cx * self.cosY + cy * self.sinY,
                 -cx * self.sinY + cy * self.cosY)
 
@@ -702,14 +812,6 @@ class View:
             flat.append(sx)
             flat.append(sy)
         return flat
-
-    # The bounding box of a circle lying flat -- always square-on to the screen, whatever
-    # the yaw, since turning a circle about its centre leaves it where it was.
-    def disc(self, x, y, z, r):
-        sx, sy = self.project(x, y, z)
-        rx = r * self.scale
-        ry = r * self.scale * self.sinP
-        return (sx - rx, sy - ry, sx + rx, sy + ry)
 
     # The scale for things painted on the surface: full length across the screen, squashed
     # down it, and never squashed past the floor.
@@ -861,41 +963,111 @@ def planeArrow(c, view, legs, dx, dy, z, s, b, head, fill, edge, halo, casing,
             c.create_line(bar, fill=edge, width=LINE_W["piece"], tags=tags)
 
 
-# A piece. The axis of a cylinder is always straight up the screen however the board is
-# turned, so this needs no polygons at all: the bottom rim, the wall, and the lid. The
-# wall is banded rather than shaded because there is no alpha here and never was -- the
-# three hard stripes are the same trick the bevels play, and at this size the eye reads
-# them as a curve.
+# How many sides a chip's ring is drawn with, and how many while the board is being turned.
+#
+# A cylinder has no corners, so this is the one place on the board that approximates rather
+# than states. At a chip's usual radius of about twenty-four pixels, twenty-four sides leave
+# the flats a fifth of a pixel inside the true curve -- narrower than the line drawn round
+# them, and well under what a screen can show.
+CHIP_SIDES = 24
+CHIP_SIDES_FAST = 10
+
+# Where the wall stops being lit and starts being shadowed, as a fraction of the way across
+# the chip. The bands are the same three the flat version used; what has changed is that the
+# boundary is found from each strip's own facing rather than from a screen x.
+CHIP_BAND = 0.35
+
+
+# A piece.
+#
+# This used to be three canvas primitives and no polygons at all -- an oval, three
+# rectangles, an arc -- and it was allowed to be, because under an orthographic camera the
+# axis of a cylinder is exactly vertical on screen, its lid is exactly as wide as its foot,
+# and a circle lying flat projects to an axis-aligned ellipse. **Perspective takes all three
+# away at once.** The lid is nearer the eye than the foot and so comes out wider, the wall is
+# a trapezoid, and the silhouette leans. None of `create_oval`, `create_rectangle` or
+# `create_arc` can draw any of that.
+#
+# So the chip is built in the world and projected, which is what `obelisk` below has always
+# done and says so at length. One implementation serves both cameras rather than a fast path
+# for one and a correct path for the other: two renderers of the same object drift, and the
+# only thing that would keep them honest is the eye of whoever last looked at both.
+#
+# The wall is still banded rather than shaded, for the reason it always was -- there is no
+# alpha here -- but a band is now a run of strips that face the light the same way, emitted
+# as one polygon. Six items a chip against the old eight.
 def chip(c, view, x, y, z0, r, h, walls, topFill, topEdge, w=2, tags=None):
     wallMid, wallHi, wallLo, wallEdge = walls
     tags = tags or ()
-    px, base = view.project(x, y, z0)
-    lid = base - h * view.scale * view.cosP
-    rx = r * view.scale
-    ry = r * view.scale * view.sinP
 
-    c.create_oval(px - rx, base - ry, px + rx, base + ry,
-                  fill=wallMid, outline="", tags=tags)
+    n = CHIP_SIDES if view.detail else CHIP_SIDES_FAST
+    step = 2.0 * math.pi / n
+    angles = [i * step for i in range(n)]
 
-    if view.detail:
-        band = rx * 0.35
-        c.create_rectangle(px - rx, lid, px - band, base, fill=wallHi, outline="", tags=tags)
-        c.create_rectangle(px - band, lid, px + band, base, fill=wallMid, outline="", tags=tags)
-        c.create_rectangle(px + band, lid, px + rx, base, fill=wallLo, outline="", tags=tags)
-    else:
-        c.create_rectangle(px - rx, lid, px + rx, base, fill=wallMid, outline="", tags=tags)
+    foot, lid = [], []
+    for t in angles:
+        rx, ry = x + r * math.cos(t), y + r * math.sin(t)
+        foot.append(view.project(rx, ry, z0))
+        lid.append(view.project(rx, ry, z0 + h))
 
-    # the silhouette: the two sides of the wall, and the half of the foot that shows below
-    # it. An arc rather than the whole ellipse, because the other half is inside the chip.
-    hair = LINE_W["hair"]
-    c.create_line(px - rx, lid, px - rx, base, fill=wallEdge, width=hair, tags=tags)
-    c.create_line(px + rx, lid, px + rx, base, fill=wallEdge, width=hair, tags=tags)
-    c.create_arc(px - rx, base - ry, px + rx, base + ry, start=180, extent=180,
-                 style="arc", outline=wallEdge, width=hair, tags=tags)
+    def flat(pts):
+        out = []
+        for sx, sy in pts:
+            out.append(sx)
+            out.append(sy)
+        return out
 
-    c.create_oval(px - rx, lid - ry, px + rx, lid + ry,
-                  fill=topFill, outline=topEdge, width=w, tags=tags)
-    return lid
+    # The base, so the wall has something to stand on wherever it is narrower than the lid.
+    c.create_polygon(flat(foot), fill=wallMid, outline="", tags=tags)
+
+    # The wall, one polygon per run of strips sharing a shade. Only the strips turned towards
+    # the eye are drawn: the far half of a cylinder's wall is behind the near half, and
+    # drawing it would put the back of the piece over the front of it.
+    #
+    # `towards` is the board direction that runs into the screen, so a strip whose outward
+    # normal leans that way is facing away and is skipped. The run is walked from a strip
+    # that is already facing away, which is what keeps it from starting in the middle of the
+    # visible arc and wrapping round the end of the list.
+    start = 0
+    for i in range(n):
+        tm = (i + 0.5) * step
+        if math.cos(tm) * view.sinY + math.sin(tm) * view.cosY <= 0.0:
+            start = i
+            break
+
+    runs = []
+    current = None
+    for k in range(n):
+        i = (start + k) % n
+        tm = (i + 0.5) * step
+
+        if math.cos(tm) * view.sinY + math.sin(tm) * view.cosY <= 0.0:
+            current = None                      # facing away: the run ends here
+            continue
+
+        if view.detail:
+            across = math.cos(tm + view.yaw)
+            shade = wallHi if across < -CHIP_BAND else (
+                    wallLo if across > CHIP_BAND else wallMid)
+        else:
+            shade = wallMid
+
+        if current is None or current[0] != shade:
+            current = [shade, [i]]
+            runs.append(current)
+        else:
+            current[1].append(i)
+
+    for shade, segs in runs:
+        edges = segs + [(segs[-1] + 1) % n]     # the far edge of the last strip in the run
+        band = [foot[i] for i in edges] + [lid[i] for i in reversed(edges)]
+        c.create_polygon(flat(band), fill=shade, outline="", tags=tags)
+
+    # the silhouette, and then the lid over the top of it
+    hull = screenHull([(round(sx, 4), round(sy, 4)) for sx, sy in foot + lid])
+    c.create_polygon(flat(hull), fill="", outline=wallEdge, width=LINE_W["hair"], tags=tags)
+    c.create_polygon(flat(lid), fill=topFill, outline=topEdge, width=w, tags=tags)
+    return sum(p[1] for p in lid) / float(n)
 
 
 # The outline of a convex solid, from the corners it is made of. Every point of the solid
@@ -1015,17 +1187,52 @@ def obelisk(c, view, x, y, z0, r, h, walls, w=2, tags=None):
 
 ####### the icons, lying flat on whatever they are painted on #######
 # `ax,ay,az` is the world point the group is anchored to, and `du,dv` are offsets from it
-# measured in the surface's own two directions. Along U the projection does nothing at
-# all, so a row laid out that way runs straight across the screen at full size at every
-# angle; only V shortens, and only the shapes themselves squash. That is the whole of the
-# work -- there is no rotation and no shear to do, and the icons are the same icons.
+# measured in the surface's own two directions.
+#
+# These used to be laid out in pixels: project the anchor once, then place everything else
+# as a screen offset, because under an orthographic camera the surface direction U projects
+# to exactly (S, 0) at every angle and V to exactly (0, S sin p). Perspective ends that --
+# the same world direction projects to a different screen vector at every point, which is
+# what a vanishing point *is* -- so the offsets are worked in the world now and projected
+# with everything else.
+#
+# Two deliberate distortions survive the move, because they are about legibility rather than
+# geometry and were in the old pixel arithmetic:
+#
+#   * `iconGrow` swells an icon as the board flattens, so what is lost in height is partly
+#     given back in width.
+#   * the squash *floor*: below about twenty-seven degrees of pitch an icon stops
+#     foreshortening honestly, or it would be a line. Expressed here as a stretch along V of
+#     `squash / sin p`, which the projection then squashes by `sin p` -- landing on exactly
+#     the `squash` the pixel version used, and leaving the old board unchanged.
+
+# World points for a figure lying on the surface, given as offsets in the surface's own two
+# directions. `stretch` carries the same squash floor the icons have: a mark that is meant to
+# be read as a ring has to stay ring-shaped when the board is nearly edge-on, and honest
+# foreshortening would make it a line.
+def surfacePoints(view, ax, ay, offsets, stretch=True):
+    s = view.squash / view.sinP if stretch else 1.0
+    out = []
+    for du, dv in offsets:
+        cv = dv * s
+        out.append((ax + du * view.cosY + cv * view.sinY,
+                    ay - du * view.sinY + cv * view.cosY))
+    return out
+
 
 def planeShape(c, view, shape, ax, ay, az, du, dv, r, fill, edge, w=2, tags=None):
-    px, py = view.project(ax, ay, az)
-    sx, sy = view.planeScale()
     grow = view.iconGrow()
-    return shapeAt(c, shape, px + du * sx, py + dv * sy,
-                   r * sx * grow, r * sy * grow, fill, edge, w, tags)
+    stretch = view.squash / view.sinP
+
+    def at(u, v):
+        cu = du + u * r * grow
+        cv = (dv + v * r * grow) * stretch
+        return (ax + cu * view.cosY + cv * view.sinY,
+                ay - cu * view.sinY + cv * view.cosY)
+
+    pts = SHAPE_RING if shape is SHAPE_DISC else shape
+    return c.create_polygon(view.poly([at(u, v) for u, v in pts], az),
+                            fill=fill, outline=edge, width=w, tags=tags or ())
 
 
 # `halo` is what the flat pieces always laid down under themselves so that neither side
@@ -1584,8 +1791,36 @@ class RoyalsWindow:
     def buildPresetBox(self, parent):
         box = self.carvedBox(parent, "PRESETS")
 
-        self.presetList = tk.Frame(box, bg=PANEL)
-        self.presetList.pack(fill="x")
+        # The one scrolling region in this window, and it exists because the list outgrew the
+        # panel rather than because scrolling was wanted. It used to be a plain frame showing
+        # the first eight themes it found -- which was fine at five and silently wrong at
+        # seventeen, since the ninth onwards simply were not drawn and nothing said so.
+        #
+        # A canvas with the buttons inside it, at a height that holds about eight rows, so the
+        # screen is exactly as tall as it was before and every theme is reachable. A native
+        # tk.Scrollbar is not used for the reason none of the other controls here are native:
+        # it would arrive in the system's colours and wear none of the theme being edited.
+        self.presetView = tk.Canvas(box, bg=PANEL, highlightthickness=0, bd=0,
+                                    height=PRESET_ROWS * PRESET_ROW_H)
+        self.presetView.pack(fill="x")
+
+        self.presetList = tk.Frame(self.presetView, bg=PANEL)
+        self.presetWindow = self.presetView.create_window(0, 0, window=self.presetList,
+                                                          anchor="nw")
+
+        # The canvas has no idea how tall its contents are until they exist, and they are
+        # rebuilt whenever a theme is saved -- so the scrollable extent is recomputed from the
+        # frame itself every time it changes size, rather than worked out once here.
+        self.presetList.bind("<Configure>", self.resizePresets)
+        self.presetView.bind("<Configure>", self.resizePresets)
+
+        # Wheel events are three different things depending on the platform: one <MouseWheel>
+        # carrying a delta on macOS and Windows, and two separate buttons on X11.
+        for widget in (self.presetView, self.presetList):
+            widget.bind("<MouseWheel>", self.scrollPresets)
+            widget.bind("<Button-4>", self.scrollPresets)
+            widget.bind("<Button-5>", self.scrollPresets)
+
         self.fillPresets()
 
         row = tk.Frame(box, bg=PANEL)
@@ -1601,6 +1836,8 @@ class RoyalsWindow:
                     font=FONT["small"]).pack(side="left", padx=(8, 0))
         StoneButton(row2, "DEFAULT", self.defaultPending,
                     font=FONT["small"]).pack(side="left", padx=(8, 0))
+        StoneButton(row2, "RANDOMIZE", self.randomPending,
+                    font=FONT["small"]).pack(side="left", padx=(8, 0))
 
         tk.Label(box, text="APPLY dresses the window and remembers the theme for next time. "
                            "Nothing above has touched it until then.",
@@ -1610,6 +1847,22 @@ class RoyalsWindow:
         StoneButton(box, "BACK", self.buildSetup, font=FONT["small"]).pack(anchor="w",
                                                                            pady=(12, 0))
 
+    def resizePresets(self, event=None):
+        """Keep the scrollable extent and the inner width in step with the contents."""
+        self.presetView.configure(scrollregion=self.presetView.bbox("all"))
+        # the buttons pack to the frame's width, and the frame is inside a canvas that would
+        # otherwise leave it at its requested width rather than the box's
+        self.presetView.itemconfigure(self.presetWindow, width=self.presetView.winfo_width())
+
+    def scrollPresets(self, event):
+        if event.num == 5 or getattr(event, "delta", 0) < 0: step = 1
+        elif event.num == 4 or getattr(event, "delta", 0) > 0: step = -1
+        else: return
+        # nothing to scroll is not an error, and rubber-banding a short list looks broken
+        first, last = self.presetView.yview()
+        if first <= 0.0 and last >= 1.0: return
+        self.presetView.yview_scroll(step, "units")
+
     def fillPresets(self):
         for child in self.presetList.winfo_children(): child.destroy()
 
@@ -1617,11 +1870,26 @@ class RoyalsWindow:
         if not found:
             tk.Label(self.presetList, text="No theme files found.", bg=PANEL, fg=TEXT_DIM,
                      font=FONT["small"], anchor="w").pack(fill="x")
+            self.presetView.yview_moveto(0.0)
+            self.resizePresets()
             return
 
-        for name, path in found[:8]:
-            StoneButton(self.presetList, name, lambda p=path: self.loadPreset(p),
-                        font=FONT["small"]).pack(fill="x", pady=1)
+        # No cap. Everything on disk is listed, and the canvas above is what keeps that from
+        # making the screen taller than the display.
+        for name, path in found:
+            button = StoneButton(self.presetList, name, lambda p=path: self.loadPreset(p),
+                                 font=FONT["small"])
+            button.pack(fill="x", pady=1)
+            # a button under the pointer swallows the wheel unless it forwards it, and the
+            # list is almost entirely buttons -- so without this the wheel works only in the
+            # thin gaps between them
+            for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                button.bind(sequence, self.scrollPresets)
+
+        # back to the top: the list was just rebuilt and a scroll offset into the old one
+        # means nothing
+        self.presetView.yview_moveto(0.0)
+        self.resizePresets()
 
     ####### editing #######
 
@@ -1836,6 +2104,22 @@ class RoyalsWindow:
         self.pending = Theme.validate(Theme.DEFAULT)
         self.syncControls()
 
+    def randomPending(self):
+        """A whole theme drawn at random, and still one you can play on.
+
+        Everything about what a roll may look like lives in Theme.randomTheme -- which side of
+        the panel the lettering falls on, that the dark squares stay darker than the light
+        ones, that the sky is lighter at the top, and the nudge that pulls a roll back over
+        the legibility floor without discarding its hues. None of that is a decision this
+        screen makes, which is why the button is two lines: the palette rules belong with the
+        palette, where they can be tested on a machine with no display.
+
+        Nothing is applied by pressing it. Like every other control here it moves `pending`,
+        so REVERT still goes back to the theme the window is actually wearing.
+        """
+        self.pending = Theme.randomTheme()
+        self.syncControls()
+
     def applyPending(self):
         try:
             applyTheme(self.pending)
@@ -1941,6 +2225,18 @@ class RoyalsWindow:
         self.freeCheck.setEnabled(False)
         self.freeCheck.pack(fill="x", pady=1)
 
+        # How the board is drawn, rather than how it is played, which is why it is never
+        # disabled: the two above are about the move being made and go grey when there is no
+        # move to make. This one is always live.
+        #
+        # The setting lives on the View beside the yaw and the pitch, and keeps their company
+        # in every way -- it survives a new game, and it is forgotten when the window closes.
+        # A board is looked at from wherever you last left it, and remembering that across
+        # launches has never been something this window does.
+        self.perspVar = tk.IntVar(value=1 if self.view.persp else 0)
+        self.perspCheck = StoneChoice(panel, "Draw it in perspective", self.perspVar,
+                                      command=self.onProjection)
+        self.perspCheck.pack(fill="x", pady=(6, 1))
 
         self.buildLegend(panel)
 
@@ -3056,6 +3352,15 @@ class RoyalsWindow:
     def onPrisToggle(self):
         if self.selected is not None: self.refreshMoves()
 
+    # Swapping the camera changes how much room the board needs, so it is refitted before it
+    # is redrawn -- the same pair `onResize` and the drag both do. Nothing else in the window
+    # has to know: every drawing function asks the view where a point goes and none of them
+    # asks how it decided.
+    def onProjection(self):
+        self.view.persp = bool(self.perspVar.get())
+        self.view.fit(self.viewW, self.viewH)
+        self.requestRedraw()
+
     def playHuman(self, kind, square):
         origin = self.selected
         if kind == "jump":
@@ -3341,7 +3646,13 @@ class RoyalsWindow:
             x0, y0 = corners[i]
             x1, y1 = corners[(i + 1) % 4]
             nx, ny = (y1 - y0), -(x1 - x0)
-            if nx * v.sinY + ny * v.cosY <= 0: continue
+            # Facing away from the eye, so it would only draw over the top surface. Tested
+            # against the line from the wall to the eye rather than against the view axis:
+            # under perspective those differ, and the difference is largest at exactly the
+            # corner walls this is deciding about.
+            mx, my = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
+            ex, ey = v.towardsEye(mx, my)
+            if nx * ex + ny * ey <= 0: continue
             wall = v.poly([(x0, y0), (x1, y1)], 0.0) + v.poly([(x1, y1), (x0, y0)], -SLAB_T)
             c.create_polygon(wall, fill=EDGE_DK, outline=RULE_DK, width=LINE_W["hair"])
 
@@ -3386,10 +3697,13 @@ class RoyalsWindow:
         c = self.canvas
         m = 3.5 + E_FRAME / 2.0
 
-        def turn(dx, dy):
-            sx = dx * v.cosY - dy * v.sinY
-            sy = (dx * v.sinY + dy * v.cosY) * v.sinP
-            deg = math.degrees(math.atan2(-sy, sx))
+        # The angle a letter is set at, taken from the strip's direction *at that letter*
+        # rather than once for the whole strip. Under an orthographic camera those are the
+        # same number -- a fixed world direction projects to a fixed screen one -- and under
+        # perspective they are not, which is precisely what a vanishing point means: the far
+        # end of a strip runs at a visibly different angle from the near end.
+        def turn(here, there):
+            deg = math.degrees(math.atan2(-(there[1] - here[1]), there[0] - here[0]))
             if deg > 90.0: deg -= 180.0
             elif deg <= -90.0: deg += 180.0
             return deg
@@ -3404,10 +3718,13 @@ class RoyalsWindow:
             # how near the camera this strip is; ties are the two side strips seen
             # square-on, and they are wanted
             if (cx * v.sinY + cy * v.cosY >= 0.0) != near: continue
-            angle = turn(dx, dy) % 360.0
             for k in range(7):
                 step = k - 3.0
                 px, py = v.project(cx + dx * step, cy + dy * step, 0.0)
+                # a short step along the strip from here, which is the strip's direction as
+                # the screen has it at this letter
+                ahead = v.project(cx + dx * (step + 0.5), cy + dy * (step + 0.5), 0.0)
+                angle = turn((px, py), ahead) % 360.0
                 # on a pale surface it is the highlight under a letter that makes it read
                 # as stamped in, where on a dark one it was the shadow over it
                 engrave(c, px, py, text[k], FONT["coord"], LABEL, EDGE_LT, angle=angle)
@@ -3586,13 +3903,13 @@ class RoyalsWindow:
 
     def drawPrisoners(self, v, wx, wy, side, s, tag):
         c = self.canvas
-        px, py = v.project(wx, wy, 0.001)
-        sx, sy = v.planeScale()
-
-        # a fixed grey rather than one of the square's own shades, so the slot is visible
-        # whichever colour square it is cut into
-        plate(c, px - 0.34 * sx, py + 0.245 * sy, px + 0.34 * sx, py + 0.415 * sy,
-              PANEL_DK, PIECE_HALO, INK, 1, False)
+        # A fixed grey rather than one of the square's own shades, so the slot is visible
+        # whichever colour square it is cut into. `polyPlate` rather than `plate`, because a
+        # rectangle cut into the board is a rectangle on the *board* -- an axis-aligned screen
+        # one only looked right while the camera could not turn it.
+        slot = surfacePoints(v, wx, wy, ((-0.34, 0.245), (0.34, 0.245),
+                                         (0.34, 0.415), (-0.34, 0.415)))
+        polyPlate(c, v, slot, 0.001, PANEL_DK, PIECE_HALO, INK, False, tag)
 
         caught = []
         if s[Hasher.CAPSPY]: caught.append(SHAPE_SPY)
@@ -3626,14 +3943,15 @@ class RoyalsWindow:
                              dash=(7, 5) if v.detail else (), tags=tag)
             return
 
-        # the rings hold the icons' squash floor rather than the honest one, so that a
-        # ring is still recognisably a ring when the board is lying nearly flat
-        px, py = v.project(wx, wy, z)
-        sx, sy = v.planeScale()
-        rx, ry = 0.43 * sx, 0.43 * sy
-        c.create_oval(px - rx, py - ry, px + rx, py + ry,
-                      fill="", outline=tone, width=LINE_W["mark"],
-                      dash=(7, 5) if (kind == "push" and v.detail) else (), tags=tag)
+        # The rings hold the icons' squash floor rather than the honest one, so that a ring
+        # is still recognisably a ring when the board is lying nearly flat. Drawn as a ring
+        # of world points rather than an oval: a circle on the board is only an axis-aligned
+        # ellipse while the camera is orthographic, and these have to work in both.
+        ring = surfacePoints(v, wx, wy,
+                             [(0.43 * u, 0.43 * t) for u, t in SHAPE_RING])
+        c.create_polygon(v.poly(ring, z),
+                         fill="", outline=tone, width=LINE_W["mark"],
+                         dash=(7, 5) if (kind == "push" and v.detail) else (), tags=tag)
 
     ################################################################################
     ####### THINGS DRAWN ALONG A RUN OF SQUARES ####################################

@@ -24,6 +24,7 @@ ones a player invents in the appearance screen.
 import colorsys
 import json
 import pathlib
+import random
 import re
 
 
@@ -204,6 +205,162 @@ def derive(role, colour):
         return out
 
     raise ThemeError("no such role: %r" % (role,))
+
+
+# ---------------------------------------------------------------------------
+# A theme nobody chose
+# ---------------------------------------------------------------------------
+# The three pairs the appearance screen measures and warns below, and so the three a rolled
+# theme has to clear if the button is to be worth pressing. Named here rather than only in the
+# screen because the generator below has to answer to them, and a floor written down twice is
+# a floor that will move in one place.
+#
+# royals_gui keeps its own copy alongside the sentence it shows for each -- "A black piece on
+# a dark square" -- because those are words on a screen and this file paints nothing.
+LEGIBLE_PAIRS = (("TEXT", "PANEL"), ("BLACK", "DARK"), ("WHITE_RIM", "LIGHT"))
+
+LEGIBLE_FLOOR = 3.0
+
+# Lightness and saturation a rolled colour may take, per role. **Hue is not in here, and that
+# is the point** -- hue is always free, which is what makes a roll a surprise. What is
+# constrained is value, because value is what legibility is made of.
+#
+# LIGHT, DARK, BLACK and TEXT are absent: each is drawn against something else rather than
+# from a fixed band, which is where three of the four orderings below come from.
+RANDOM_BANDS = {
+    "background":  ("PANEL", (0.10, 0.94), (0.02, 0.45)),
+    "cabinet":     ("EDGE",  (0.12, 0.92), (0.02, 0.60)),
+    "ink":         ("INK",   (0.03, 0.26), (0.00, 0.60)),
+    "whitePieces": ("WHITE", (0.80, 0.98), (0.00, 0.35)),
+}
+
+
+def nudgeToward(colour, against, target = LEGIBLE_FLOOR):
+    """Slide a colour's lightness until it can be told from another, keeping hue and saturation.
+
+    The alternative was throwing the roll away and drawing again, and this is the better half
+    of that trade: re-rolling discards the thing that made the roll interesting, where moving
+    one colour's value keeps every hue the roll chose and changes only how light it is.
+
+    **Both directions are tried and the shorter move wins**, which is not an optimisation. A
+    first version walked only away from `against` -- darker if it was already darker -- and a
+    colour sitting at an extreme cannot go further that way, so it walked into the clamp and
+    returned something still illegible. Over five hundred rolls that version left half of them
+    below the floor. Going either way always has an answer, because a colour pushed far enough
+    toward black or toward white clears 3.0 against anything.
+    """
+    if contrast(colour, against) >= target: return colour
+
+    hue, light, sat = colorsys.rgb_to_hls(*rgb(colour))
+    best = None
+    for step in range(1, 101):
+        for wanted in (light - 0.01 * step, light + 0.01 * step):
+            if not 0.0 <= wanted <= 1.0: continue
+            candidate = hexOf(*colorsys.hls_to_rgb(hue, wanted, sat))
+            if contrast(candidate, against) >= target:
+                return candidate
+        best = candidate
+    return best or colour
+
+
+def pushBelow(colour, ceiling):
+    """Darken a colour until it really is darker than another.
+
+    **Lightness and luminance are not the same quantity**, and this is where that bites. A
+    saturated yellow at HLS lightness 0.55 outshines a muted blue at 0.72, so ordering two
+    colours by the number handed to `hls_to_rgb` orders them by the wrong thing -- one roll in
+    the first five hundred came out with a "dark" square visibly brighter than its light one.
+    The rule a player actually means is that the dark squares look darker, and looking darker
+    is luminance, so that is what is settled here.
+
+    Terminates because black has luminance zero: something is always darker.
+    """
+    hue, light, sat = colorsys.rgb_to_hls(*rgb(colour))
+    while luminance(colour) >= luminance(ceiling) and light > 0.0:
+        light = max(0.0, light - 0.02)
+        colour = hexOf(*colorsys.hls_to_rgb(hue, light, sat))
+    return colour
+
+
+def randomTheme(rng = None, seed = None):
+    """A whole theme drawn at random, and legible anyway.
+
+    The rng is a parameter rather than seeded in here, for the reason Engine.randomEntry takes
+    one: no module-level RNG state, and one definition of how a seed becomes a theme instead of
+    two that drift. Called with neither, it draws its own seed and puts it in the name, so a
+    roll worth keeping can be found again -- the same courtesy the entering noise seed gets.
+    """
+    if rng is None:
+        if seed is None: seed = random.randrange(1 << 30)
+        rng = random.Random(seed)
+    elif seed is None:
+        seed = None                      # a caller's own rng: there is no seed to name
+
+    colours = {}
+
+    def put(role, base, light, sat):
+        colour = hexOf(*colorsys.hls_to_rgb(rng.random(),
+                                            max(0.0, min(1.0, light)),
+                                            max(0.0, min(1.0, sat))))
+        colours[base] = colour
+        colours.update(derive(role, colour))
+
+    # Three orderings, all arranged here rather than repaired afterwards. Generating into them
+    # is what keeps the nudge below to a small adjustment instead of the whole job: measured
+    # over five hundred rolls, arranging these took the themes needing no nudge at all from
+    # one in five to nearly one in two, and halved how far the rest had to move.
+    lightL = rng.uniform(0.72, 0.93)
+    darkL = min(rng.uniform(0.32, 0.55), lightL - 0.25)   # somewhat dark, and below the light
+    put("boardLight", "LIGHT", lightL, rng.uniform(0.03, 0.55))
+    put("boardDark", "DARK", darkL, rng.uniform(0.03, 0.62))
+
+    # and then in the quantity that decides what "darker" looks like, whatever the hues did
+    if luminance(colours["DARK"]) >= luminance(colours["LIGHT"]):
+        colours["DARK"] = pushBelow(colours["DARK"], colours["LIGHT"])
+        colours.update(derive("boardDark", colours["DARK"]))
+        darkL = colorsys.rgb_to_hls(*rgb(colours["DARK"]))[1]
+
+    # A dark piece needs room underneath its square or it is a silhouette on a silhouette.
+    put("blackPieces", "BLACK", min(rng.uniform(0.04, 0.22), darkL - 0.18), rng.uniform(0.0, 0.5))
+
+    for role, (base, (lo, hi), (slo, shi)) in RANDOM_BANDS.items():
+        put(role, base, rng.uniform(lo, hi), rng.uniform(slo, shi))
+
+    # Lettering goes on the far side of the panel's own value. Any hue still, just not the same
+    # lightness -- these two collided on three rolls in five before this line existed.
+    panelLight = colorsys.rgb_to_hls(*rgb(colours["PANEL"]))[1]
+    put("text", "TEXT",
+        rng.uniform(0.05, 0.32) if panelLight > 0.5 else rng.uniform(0.68, 0.95),
+        rng.uniform(0.0, 0.5))
+
+    for a, b in LEGIBLE_PAIRS:
+        colours[a] = nudgeToward(colours[a], colours[b])
+
+    # The top of a gradient is its `from`: drawGradient lays band zero along y=0. Sorted by
+    # luminance rather than drawn in order, so the rule holds whichever way the two land.
+    ends = sorted((hexOf(*colorsys.hls_to_rgb(rng.random(), rng.uniform(0.55, 0.95),
+                                              rng.uniform(0.05, 0.6))),
+                   hexOf(*colorsys.hls_to_rgb(rng.random(), rng.uniform(0.08, 0.5),
+                                              rng.uniform(0.05, 0.6)))),
+                  key=luminance, reverse=True)
+
+    return validate({
+        "name": "Random" if seed is None else "Random %d" % (seed,),
+        "colours": colours,
+        # One of the three named weights rather than three loose numbers: weightPreset()
+        # reports "normal" for any set it does not recognise, so a random triple would leave
+        # the appearance screen's weight selector showing a lie about what is applied.
+        "lines": dict(WEIGHT_PRESETS[rng.choice(sorted(WEIGHT_PRESETS))]),
+        "gradient": {
+            "on": rng.random() < 0.5,
+            "from": ends[0],
+            "to": ends[1],
+            "direction": rng.choice(DIRECTIONS),
+            # not BANDS_MIN: two bands is a hard split across the board rather than a wash,
+            # and reads as something broken rather than as something chosen
+            "bands": rng.randint(8, BANDS_MAX),
+        },
+    })
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,50 @@
+{
+ "colours": {
+  "BLACK": "#14051f",
+  "BLACK_HI": "#3a2d43",
+  "BLACK_LO": "#000000",
+  "DARK": "#6f57c9",
+  "DARK_ENTRY": "#514093",
+  "DARK_HI": "#8d79d4",
+  "DARK_LAST": "#8672d2",
+  "DARK_LO": "#433479",
+  "EDGE": "#2a2140",
+  "EDGE_DK": "#201930",
+  "EDGE_LT": "#c5c3cb",
+  "INK": "#05040a",
+  "LABEL": "#c0f8ff",
+  "LIGHT": "#a6f0ff",
+  "LIGHT_ENTRY": "#90d1de",
+  "LIGHT_HI": "#e6fbff",
+  "LIGHT_LAST": "#dcf9ff",
+  "LIGHT_LO": "#82bdc8",
+  "PANEL": "#12101c",
+  "PANEL_DK": "#0e0c16",
+  "PANEL_LT": "#7e7d83",
+  "PIECE_HALO": "#e7fbfb",
+  "RULE": "#08060c",
+  "RULE_DK": "#1b1529",
+  "RULE_LT": "#030305",
+  "TEXT": "#b6f7ff",
+  "TEXT_DIM": "#d0faff",
+  "TEXT_KEY": "#6c9398",
+  "WELL": "#110f1a",
+  "WHITE": "#eaffff",
+  "WHITE_HI": "#ffffff",
+  "WHITE_LO": "#a8b7b7",
+  "WHITE_RIM": "#656e6e"
+ },
+ "gradient": {
+  "bands": 32,
+  "direction": "diagonal",
+  "from": "#4a2f8f",
+  "on": true,
+  "to": "#0a0616"
+ },
+ "lines": {
+  "hair": 2,
+  "mark": 6,
+  "piece": 3
+ },
+ "name": "Neon"
+}

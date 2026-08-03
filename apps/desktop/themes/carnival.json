@@ -1,0 +1,50 @@
+{
+ "colours": {
+  "BLACK": "#17173a",
+  "BLACK_HI": "#3c3c5a",
+  "BLACK_LO": "#000000",
+  "DARK": "#2f6fd0",
+  "DARK_ENTRY": "#225198",
+  "DARK_HI": "#5a8dda",
+  "DARK_LAST": "#5186d8",
+  "DARK_LO": "#1c437d",
+  "EDGE": "#e03e3e",
+  "EDGE_DK": "#a92f2f",
+  "EDGE_LT": "#f7cbcb",
+  "INK": "#14141c",
+  "LABEL": "#3c3c47",
+  "LIGHT": "#ffe27a",
+  "LIGHT_ENTRY": "#dec56a",
+  "LIGHT_HI": "#fff7da",
+  "LIGHT_LAST": "#fff4cb",
+  "LIGHT_LO": "#c8b260",
+  "PANEL": "#f5f0e0",
+  "PANEL_DK": "#bfbbaf",
+  "PANEL_LT": "#faf7ee",
+  "PIECE_HALO": "#fbf9f1",
+  "RULE": "#2b0c0c",
+  "RULE_DK": "#8e2727",
+  "RULE_LT": "#110505",
+  "TEXT": "#1c1c28",
+  "TEXT_DIM": "#6d6d75",
+  "TEXT_KEY": "#111118",
+  "WELL": "#e1dcce",
+  "WHITE": "#fffdf5",
+  "WHITE_HI": "#ffffff",
+  "WHITE_LO": "#b7b6b0",
+  "WHITE_RIM": "#6e6d6a"
+ },
+ "gradient": {
+  "bands": 32,
+  "direction": "diagonal",
+  "from": "#ffd84d",
+  "on": true,
+  "to": "#d63a3a"
+ },
+ "lines": {
+  "hair": 2,
+  "mark": 6,
+  "piece": 3
+ },
+ "name": "Carnival"
+}

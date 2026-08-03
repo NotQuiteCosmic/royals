@@ -1,0 +1,50 @@
+{
+ "colours": {
+  "BLACK": "#43304a",
+  "BLACK_HI": "#615167",
+  "BLACK_LO": "#000000",
+  "DARK": "#b07f9c",
+  "DARK_ENTRY": "#815d72",
+  "DARK_HI": "#c099b0",
+  "DARK_LAST": "#bd94ac",
+  "DARK_LO": "#6a4c5e",
+  "EDGE": "#e9c6d4",
+  "EDGE_DK": "#af95a0",
+  "EDGE_LT": "#f9f0f3",
+  "INK": "#4a3a44",
+  "LABEL": "#735c6b",
+  "LIGHT": "#f6e6ec",
+  "LIGHT_ENTRY": "#d6c8cd",
+  "LIGHT_HI": "#fcf8fa",
+  "LIGHT_LAST": "#fbf5f8",
+  "LIGHT_LO": "#c1b5b9",
+  "PANEL": "#f7eef2",
+  "PANEL_DK": "#c1babd",
+  "PANEL_LT": "#fbf6f8",
+  "PIECE_HALO": "#f9f3f6",
+  "RULE": "#2d2629",
+  "RULE_DK": "#937d86",
+  "RULE_LT": "#120f10",
+  "TEXT": "#5c4152",
+  "TEXT_DIM": "#968590",
+  "TEXT_KEY": "#372731",
+  "WELL": "#e3dbde",
+  "WHITE": "#fdf7fa",
+  "WHITE_HI": "#ffffff",
+  "WHITE_LO": "#b6b2b4",
+  "WHITE_RIM": "#6d6a6c"
+ },
+ "gradient": {
+  "bands": 32,
+  "direction": "vertical",
+  "from": "#f6e2ec",
+  "on": true,
+  "to": "#c9a2bb"
+ },
+ "lines": {
+  "hair": 1,
+  "mark": 3,
+  "piece": 1
+ },
+ "name": "Macaron"
+}

@@ -1,0 +1,50 @@
+{
+ "colours": {
+  "BLACK": "#06161c",
+  "BLACK_HI": "#2e3b41",
+  "BLACK_LO": "#000000",
+  "DARK": "#37727c",
+  "DARK_ENTRY": "#28535b",
+  "DARK_HI": "#608f97",
+  "DARK_LAST": "#578991",
+  "DARK_LO": "#21454b",
+  "EDGE": "#17323a",
+  "EDGE_DK": "#11262c",
+  "EDGE_LT": "#c0c8ca",
+  "INK": "#040c10",
+  "LABEL": "#c8e6e4",
+  "LIGHT": "#7fb3b8",
+  "LIGHT_ENTRY": "#6f9ca0",
+  "LIGHT_HI": "#dbeaeb",
+  "LIGHT_LAST": "#cde1e3",
+  "LIGHT_LO": "#648d91",
+  "PANEL": "#0e1c22",
+  "PANEL_DK": "#0b161b",
+  "PANEL_LT": "#7c8386",
+  "PIECE_HALO": "#d5edeb",
+  "RULE": "#040a0b",
+  "RULE_DK": "#0f2025",
+  "RULE_LT": "#020405",
+  "TEXT": "#bfe2e0",
+  "TEXT_DIM": "#d6eceb",
+  "TEXT_KEY": "#728785",
+  "WELL": "#0d1a1f",
+  "WHITE": "#d8f0ee",
+  "WHITE_HI": "#ffffff",
+  "WHITE_LO": "#9badab",
+  "WHITE_RIM": "#515a5a"
+ },
+ "gradient": {
+  "bands": 32,
+  "direction": "vertical",
+  "from": "#20474f",
+  "on": true,
+  "to": "#050f14"
+ },
+ "lines": {
+  "hair": 1,
+  "mark": 4,
+  "piece": 2
+ },
+ "name": "Deep Sea"
+}

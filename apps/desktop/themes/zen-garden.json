@@ -1,0 +1,50 @@
+{
+ "colours": {
+  "BLACK": "#2b3327",
+  "BLACK_HI": "#4d544a",
+  "BLACK_LO": "#000000",
+  "DARK": "#74845f",
+  "DARK_ENTRY": "#556146",
+  "DARK_HI": "#909d80",
+  "DARK_LAST": "#8b9879",
+  "DARK_LO": "#464f39",
+  "EDGE": "#b9b49f",
+  "EDGE_DK": "#8b8878",
+  "EDGE_LT": "#ecebe5",
+  "INK": "#2b3028",
+  "LABEL": "#50564d",
+  "LIGHT": "#ded7c2",
+  "LIGHT_ENTRY": "#c1bba9",
+  "LIGHT_HI": "#f6f4ee",
+  "LIGHT_LAST": "#f2efe7",
+  "LIGHT_LO": "#aea998",
+  "PANEL": "#e8e3d4",
+  "PANEL_DK": "#b5b1a5",
+  "PANEL_LT": "#f2f0e8",
+  "PIECE_HALO": "#f2efe5",
+  "RULE": "#24231f",
+  "RULE_DK": "#757265",
+  "RULE_LT": "#0e0e0c",
+  "TEXT": "#333a2f",
+  "TEXT_DIM": "#7c8079",
+  "TEXT_KEY": "#1e231c",
+  "WELL": "#d5d1c3",
+  "WHITE": "#f6f3e8",
+  "WHITE_HI": "#ffffff",
+  "WHITE_LO": "#b1afa7",
+  "WHITE_RIM": "#6a6964"
+ },
+ "gradient": {
+  "bands": 32,
+  "direction": "vertical",
+  "from": "#ebe6d8",
+  "on": true,
+  "to": "#c3bda6"
+ },
+ "lines": {
+  "hair": 1,
+  "mark": 3,
+  "piece": 1
+ },
+ "name": "Zen Garden"
+}

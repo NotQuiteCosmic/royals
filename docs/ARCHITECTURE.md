@@ -312,6 +312,32 @@ miniature is therefore the real drawing code with different arguments, rather th
 impression of it. Gradients are board-canvas only and drawn as bands — the canvas has no
 gradient primitive and no alpha, and the side panel is a `tk.Frame` rather than a canvas.
 
+### Two cameras
+
+The board can be drawn orthographically — the view it has always had, where a square is the
+same size wherever it sits — or in three-point perspective, which is what a real lens does
+with a camera tilted the way this one is: the rows converge, the columns converge, and so do
+the verticals. A checkbox in the game panel switches it, and the choice lives on the `View`
+beside the yaw and the pitch, so it outlives a game and not the session.
+
+`View.project` differs between the two by a single factor `k = d / (d - depth)`, which is 1 in
+orthographic. Everything else follows from where that factor is allowed to look. Because it
+sees the height as well as the ground position, the vertical axis gets a vanishing point of
+its own — and that is what costs: under the old camera a chip's lid was exactly as wide as its
+foot and exactly above it, so a piece could be an oval, a rectangle and an oval. It cannot be
+now, and `chip`, the lid icons, the destination rings and the prisoner slot are all built in
+the world and projected, on the pattern `obelisk` always used.
+
+**One renderer serves both cameras**, rather than a fast path for the old one. Two renderers
+of the same object drift, and nothing would catch it but the eye of whoever last looked at
+both. What keeps the change honest instead is `tests/test_projection.py`, which pins the
+orthographic arithmetic against the formula written in the design comment, and pins the
+world-space icons against the pixel arithmetic they replaced — both to the last place.
+
+The painter's order survives untouched: squares are still drawn far to near and each draws its
+own stack. A leaning column could have broken that and does not, which is asserted over every
+ordered pair of squares at every yaw rather than argued.
+
 ## The web layer
 
 FastAPI, in `web/src/royals_web/`:
@@ -536,6 +562,9 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for the workflow. In short:
   flight" a fact rather than a race. Needs a display too.
 - **`tests/test_desktop_appearance.py`** — the appearance screen, and chiefly that the
   miniature draws the theme being edited rather than the one in use. Needs a display.
+- **`tests/test_projection.py`** — the two cameras. Mostly display-free, because a `View` is
+  eleven floats and some trigonometry, so the geometry half runs on a headless runner and
+  only the board-drawing half skips. It is the first test the projection has ever had.
 - **`tests/test_theme.py`** — the theme schema, and the one test that earns the file: the
   colour names in `theme.DEFAULT` and the constants in `royals_gui.py` are held against each
   other in both directions. Needs no display, so it runs where the three above skip.

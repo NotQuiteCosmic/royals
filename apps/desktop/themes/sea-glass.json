@@ -1,0 +1,50 @@
+{
+ "colours": {
+  "BLACK": "#24403f",
+  "BLACK_HI": "#475f5e",
+  "BLACK_LO": "#000000",
+  "DARK": "#6f9c94",
+  "DARK_ENTRY": "#51726c",
+  "DARK_HI": "#8db0aa",
+  "DARK_LAST": "#86aca5",
+  "DARK_LO": "#435e59",
+  "EDGE": "#b9d6cf",
+  "EDGE_DK": "#8ba19c",
+  "EDGE_LT": "#ecf4f2",
+  "INK": "#2f4440",
+  "LABEL": "#526a65",
+  "LIGHT": "#e4efec",
+  "LIGHT_ENTRY": "#c6d0cd",
+  "LIGHT_HI": "#f7fafa",
+  "LIGHT_LAST": "#f4f9f8",
+  "LIGHT_LO": "#b3bcb9",
+  "PANEL": "#eef4f2",
+  "PANEL_DK": "#babebd",
+  "PANEL_LT": "#f6f9f8",
+  "PIECE_HALO": "#f4f9f7",
+  "RULE": "#242928",
+  "RULE_DK": "#758783",
+  "RULE_LT": "#0e1110",
+  "TEXT": "#35514b",
+  "TEXT_DIM": "#7d8f8b",
+  "TEXT_KEY": "#20302d",
+  "WELL": "#dbe0de",
+  "WHITE": "#f8fdfb",
+  "WHITE_HI": "#ffffff",
+  "WHITE_LO": "#b2b6b5",
+  "WHITE_RIM": "#6b6d6c"
+ },
+ "gradient": {
+  "bands": 32,
+  "direction": "vertical",
+  "from": "#e2efec",
+  "on": true,
+  "to": "#9dc4bd"
+ },
+ "lines": {
+  "hair": 1,
+  "mark": 3,
+  "piece": 1
+ },
+ "name": "Sea Glass"
+}
