@@ -38,22 +38,10 @@ from royals_engine import record as R
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "apps" / "desktop"))
 
 
-@pytest.fixture
-def window():
-    """A real RoyalsWindow, or a skip where there is no display to put one on."""
-    try:
-        root = tk.Tk()
-    except tk.TclError as exc:
-        pytest.skip("no display for tkinter: %s" % (exc,))
-
-    root.withdraw()
-    import royals_gui
-
-    win = royals_gui.RoyalsWindow(root)
-    try:
-        yield win
-    finally:
-        root.destroy()
+# `window` comes from tests/conftest.py, and is shared with the other two files that drive
+# the real window. It used to be built here, a fresh Tk() per test, which worked only because
+# this file never pumps the event loop -- see the note in conftest.py for what happens to a
+# second root that does.
 
 
 def play_two_handed(win, plies=40):

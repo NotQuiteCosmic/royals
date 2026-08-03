@@ -289,6 +289,29 @@ when it was asked for: `pollAI` drops an answer whose generation has moved, and 
 is simply never delivered to a game it was not computed for. `tests/test_desktop_lifecycle.py`
 is what holds that.
 
+### What the desktop is painted with
+
+The palette is thirty-three module constants at the top of `royals_gui.py`, and
+`apps/desktop/theme.py` is the same thirty-three as a schema, so a look can be written to a
+file and handed round. `applyTheme` assigns into those names — which is exactly as complete as
+threading a palette object through three thousand lines, because every colour here is read by
+a plain global lookup at the moment it is drawn, and it costs one function instead of every
+call site. What that function has to know is the two places a colour is *captured* rather than
+looked up: `CHIP_WALL`, a table built from colours, which is rebuilt; and `_MIXED`, keyed by
+the colour values themselves, which is merely cleared.
+
+Nothing repaints on apply. The board takes a new palette on its next `redraw()`, since that
+clears the canvas and reads every colour again; the widgets take it when their builder next
+runs, since a tk option is copied into the widget at construction — and both screen builders
+already start by destroying their frame, so "rebuild the screen" was a mechanism this app
+had before it had themes.
+
+The appearance screen previews a theme it has not applied to anything, which works because
+`polyPlate`, `chip` and `obelisk` take every colour as an argument and read no globals. The
+miniature is therefore the real drawing code with different arguments, rather than an
+impression of it. Gradients are board-canvas only and drawn as bands — the canvas has no
+gradient primitive and no alpha, and the side panel is a `tk.Frame` rather than a canvas.
+
 ## The web layer
 
 FastAPI, in `web/src/royals_web/`:
@@ -509,8 +532,17 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for the workflow. In short:
   tkinter window and then replayed two ways. Needs a display, and skips without one.
 - **`tests/test_desktop_lifecycle.py`** — what a game the player walked away from can still
   do to the next one. Every other test of the window plays one game in it; these need two,
-  and a running event loop, so they hold one root for the whole file and block the engine on
-  an Event to make "a search is in flight" a fact rather than a race. Needs a display too.
+  and a running event loop, so they block the engine on an Event to make "a search is in
+  flight" a fact rather than a race. Needs a display too.
+- **`tests/test_desktop_appearance.py`** — the appearance screen, and chiefly that the
+  miniature draws the theme being edited rather than the one in use. Needs a display.
+- **`tests/test_theme.py`** — the theme schema, and the one test that earns the file: the
+  colour names in `theme.DEFAULT` and the constants in `royals_gui.py` are held against each
+  other in both directions. Needs no display, so it runs where the three above skip.
+- **`tests/conftest.py`** — one `Tk()` for the whole session, shared by all three display
+  files. Not tidiness: on macOS a *second* root's `update()` blocks inside Tk once a game
+  screen has been built on it, which made the suite hang or not depending on which file
+  pytest reached first.
 - **`tests/test_web_api.py`** — the REST surface, against FastAPI's `TestClient`.
 - **`tests/test_break_rules.py`** — what a break may fall onto, and freeing.
 - **`tests/test_flights.py`** — `moveFlights` against the executors.

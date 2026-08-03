@@ -1,0 +1,50 @@
+{
+ "colours": {
+  "BLACK": "#241b12",
+  "BLACK_HI": "#58422c",
+  "BLACK_LO": "#130e0a",
+  "DARK": "#5c7758",
+  "DARK_ENTRY": "#465b43",
+  "DARK_HI": "#7c9b77",
+  "DARK_LAST": "#74956f",
+  "DARK_LO": "#3c4d39",
+  "EDGE": "#6b5138",
+  "EDGE_DK": "#261d14",
+  "EDGE_LT": "#94704d",
+  "INK": "#0d0d0c",
+  "LABEL": "#3a3833",
+  "LIGHT": "#cfd8c4",
+  "LIGHT_ENTRY": "#b3c1a2",
+  "LIGHT_HI": "#e8ece3",
+  "LIGHT_LAST": "#e4e9de",
+  "LIGHT_LO": "#a1b38b",
+  "PANEL": "#d9d2c4",
+  "PANEL_DK": "#b2a487",
+  "PANEL_LT": "#e3ded3",
+  "PIECE_HALO": "#f2ecdd",
+  "RULE": "#000000",
+  "RULE_DK": "#050302",
+  "RULE_LT": "#000000",
+  "TEXT": "#161614",
+  "TEXT_DIM": "#6f6a62",
+  "TEXT_KEY": "#0d0d0c",
+  "WELL": "#cbc1ad",
+  "WHITE": "#f4efe2",
+  "WHITE_HI": "#fbf9f4",
+  "WHITE_LO": "#cfb97f",
+  "WHITE_RIM": "#8d7435"
+ },
+ "gradient": {
+  "bands": 24,
+  "direction": "vertical",
+  "from": "#d9d2c4",
+  "on": true,
+  "to": "#a99c86"
+ },
+ "lines": {
+  "hair": 1,
+  "mark": 4,
+  "piece": 2
+ },
+ "name": "Green Baize"
+}

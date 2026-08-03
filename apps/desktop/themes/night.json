@@ -1,0 +1,50 @@
+{
+ "colours": {
+  "BLACK": "#0b0d10",
+  "BLACK_HI": "#2b333e",
+  "BLACK_LO": "#010101",
+  "DARK": "#576275",
+  "DARK_ENTRY": "#424a59",
+  "DARK_HI": "#768399",
+  "DARK_LAST": "#6e7c93",
+  "DARK_LO": "#383f4b",
+  "EDGE": "#2c313a",
+  "EDGE_DK": "#000000",
+  "EDGE_LT": "#474f5d",
+  "INK": "#05070a",
+  "LABEL": "#ffffff",
+  "LIGHT": "#8a95a8",
+  "LIGHT_ENTRY": "#6a788f",
+  "LIGHT_HI": "#a7afbe",
+  "LIGHT_LAST": "#a3abba",
+  "LIGHT_LO": "#5a667a",
+  "PANEL": "#1c1f24",
+  "PANEL_DK": "#000000",
+  "PANEL_LT": "#272b32",
+  "PIECE_HALO": "#e9eef5",
+  "RULE": "#000000",
+  "RULE_DK": "#000000",
+  "RULE_LT": "#000000",
+  "TEXT": "#e6e9ee",
+  "TEXT_DIM": "#ffffff",
+  "TEXT_KEY": "#dce0e7",
+  "WELL": "#0c0d0f",
+  "WHITE": "#eef2f7",
+  "WHITE_HI": "#ffffff",
+  "WHITE_LO": "#92abcb",
+  "WHITE_RIM": "#242a34"
+ },
+ "gradient": {
+  "bands": 32,
+  "direction": "diagonal",
+  "from": "#0e1014",
+  "on": true,
+  "to": "#2b313b"
+ },
+ "lines": {
+  "hair": 2,
+  "mark": 6,
+  "piece": 3
+ },
+ "name": "Night"
+}

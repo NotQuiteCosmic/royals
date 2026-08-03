@@ -51,8 +51,14 @@ import threading
 import tkinter as tk
 from tkinter import ttk
 import tkinter.font as tkfont
+import tkinter.colorchooser as colorchooser
 import tkinter.filedialog as filedialog
 import tkinter.messagebox as messagebox
+
+# The palette, as data. Imported by name rather than star so it is obvious at every call site
+# which side of the line a thing is on: `theme` owns the schema and the files, this module
+# owns the drawing and the names the drawing reads.
+import theme as Theme
 
 # The engine is an installed package now (pip install -e ./engine), so the sys.path fixup
 # that used to sit here is gone. Aliased on import so every call site below reads exactly
@@ -129,8 +135,17 @@ OPEN_H = 740
 # Off-white and black, and the greys that fall between them. Nothing here carries a hue,
 # so everything the colour used to say has to be said another way: the two sides differ by
 # value rather than by tint, and the three kinds of destination differ by shape.
+#
+# **Every name in this block is the schema of a theme file.** `theme.DEFAULT` is these values
+# copied out, and `theme.py`'s first test holds the two against each other -- so a colour
+# added here without a line there fails the build rather than becoming a shade no preset can
+# reach. That is also why seven names that used to sit in this block are gone: `PAPER`,
+# `WHITE_DK`, `BLACK_DK`, `SELECT`, `JUMP`, `PUSH` and `FREE` each appeared exactly once, at
+# their own definition, and a setting that paints nothing is worse than no setting at all.
+# (The destination marks do still differ by shape rather than colour; what they no longer do
+# is read a colour from here. See drawSquare, which picks a tone per square from the square
+# it is drawn on.)
 INK = "#0d0d0c"
-PAPER = "#e9e6de"
 
 ####### the cabinet #######
 EDGE_DK = "#a7a299"
@@ -180,20 +195,23 @@ DARK_LAST = "#7e7a6e"
 LIGHT_ENTRY = "#c6c2b8"
 DARK_ENTRY = "#48453e"
 
-# The two sides. White takes the light pieces and black the dark ones, and each is
-# outlined in the other's shade so both read on both squares.
+# The two sides. White takes the light pieces and black the dark ones.
 WHITE = "#f6f4ef"
-WHITE_DK = "#0d0d0c"
 BLACK = "#0d0d0c"
-BLACK_DK = "#f6f4ef"
 
-SELECT = "#0d0d0c"
-# Destinations can no longer differ by colour, so they differ by shape: a jump is a filled
-# disc, a push an open ring, a freeing push an open square. The legend in the panel says
-# so, since a shape code has to be told where a colour code could just be seen.
-JUMP = "#0d0d0c"
-PUSH = "#0d0d0c"
-FREE = "#0d0d0c"
+# The bands a standing chip's wall is lit in, and the line round its foot. These five used to
+# be hex literals written straight into CHIP_WALL, which meant the wall of a piece -- where
+# most of a standing piece's ink is -- was the one thing on the board no theme could reach.
+# Named here so it can be, and so CHIP_WALL below is assembled from names rather than
+# from values.
+WHITE_HI = "#ffffff"
+WHITE_LO = "#b6b1a7"
+# The fourth of the four, and the one doing real work: it is what keeps a pale chip on a pale
+# square from disappearing. White's rim is a grey; black's is INK, which is to say its own.
+WHITE_RIM = "#6f6a62"
+BLACK_HI = "#38352f"
+BLACK_LO = "#000000"
+
 LABEL = "#3a3833"
 
 PIECE_NAMES = {Hasher.ROYAL: "Royal", Hasher.PAWNS: "Pawn", Hasher.SPY: "Spy"}
@@ -237,14 +255,20 @@ def initFonts():
 # `tags` is here for the one plate that is drawn on the board rather than in the panel and
 # so has to be findable by a click -- the BREAK badge. Panel widgets pass nothing and are
 # unaffected.
+#
+# The lines are drawn at the hairline weight rather than at tk's default of one pixel, which
+# is what they used to take by saying nothing. They are the same thing at the Normal setting
+# and differ at the other two, which is the point: a bevel is a silhouette, and a player who
+# asks for heavier lines is asking for this edge too.
 def bevel(c, x0, y0, x1, y1, depth, hi, lo, raised=True, tags=None):
     top, bottom = (hi, lo) if raised else (lo, hi)
     tags = tags or ()
+    w = LINE_W["hair"]
     for i in range(depth):
-        c.create_line(x0 + i, y0 + i, x1 - i, y0 + i, fill=top, tags=tags)
-        c.create_line(x0 + i, y0 + i, x0 + i, y1 - i, fill=top, tags=tags)
-        c.create_line(x0 + i, y1 - i, x1 - i + 1, y1 - i, fill=bottom, tags=tags)
-        c.create_line(x1 - i, y0 + i, x1 - i, y1 - i, fill=bottom, tags=tags)
+        c.create_line(x0 + i, y0 + i, x1 - i, y0 + i, fill=top, width=w, tags=tags)
+        c.create_line(x0 + i, y0 + i, x0 + i, y1 - i, fill=top, width=w, tags=tags)
+        c.create_line(x0 + i, y1 - i, x1 - i + 1, y1 - i, fill=bottom, width=w, tags=tags)
+        c.create_line(x1 - i, y0 + i, x1 - i, y1 - i, fill=bottom, width=w, tags=tags)
 
 
 # A filled panel with that edge on it.
@@ -255,7 +279,15 @@ def plate(c, x0, y0, x1, y1, fill, hi, lo, depth=2, raised=True, tags=None):
 
 # Text with a hard shadow under it, which is what makes lettering look cut rather than
 # printed. The shadow goes down-right, matching the light the bevels assume.
-def engrave(c, x, y, text, font, fill, shadow=INK, **kw):
+#
+# `shadow=None` rather than `shadow=INK`, and that is not a style preference: a default
+# argument is bound once, when the `def` runs, so `shadow=INK` would have captured the ink
+# colour at import and gone on drawing it after a theme had changed INK. Resolved in the body,
+# it is read when the call happens. Every current call passes a shadow explicitly, so this
+# fixes nothing today -- it disarms a trap that would have gone off the first time somebody
+# left the argument out.
+def engrave(c, x, y, text, font, fill, shadow=None, **kw):
+    if shadow is None: shadow = INK
     c.create_text(x + 1, y + 1, text=text, font=font, fill=shadow, **kw)
     return c.create_text(x, y, text=text, font=font, fill=fill, **kw)
 
@@ -441,11 +473,21 @@ PIECE_HALO = "#f4f1ea"
 # grey banding on a black piece makes it read as a grey piece. These are the piece's own
 # and they stay near black, which is now the whole of how it is told from what it stands on.
 #
+# **Built by a function, and not a literal, because a theme can move any of the five names it
+# reads.** A dict literal here would snapshot them at import and go on painting the old colours
+# after applyTheme had assigned new ones -- the piece walls would be the one part of the board
+# that never changed. Every table below this line that is assembled from colours needs the
+# same treatment, and buildTables is where they all live.
+#
 #          mid       highlight   shadow      rim
-CHIP_WALL = {
-    0: (WHITE, "#ffffff", "#b6b1a7", "#6f6a62"),
-    1: (BLACK, "#38352f", "#000000", INK),
-}
+def chipWalls():
+    return {
+        0: (WHITE, WHITE_HI, WHITE_LO, WHITE_RIM),
+        1: (BLACK, BLACK_HI, BLACK_LO, INK),
+    }
+
+
+CHIP_WALL = chipWalls()
 
 # A shade part way between two of the above, for the faces of a piece that meets the light
 # at some angle other than the three the chip's wall knows about. Memoised: an obelisk
@@ -465,6 +507,61 @@ def mixShade(a, b, t):
             parts.append(int(round(lo + (hi - lo) * key[2])))
         got = _MIXED[key] = "#%02x%02x%02x" % tuple(parts)
     return got
+
+
+####### Wearing a theme #######
+# How heavy a drawn line is. Three weights rather than one, because the difference between
+# them is a difference in kind and not of degree: a hairline is a silhouette, a piece line is
+# an edge meant to be seen, a mark line is something the board is telling you. Scaling one
+# number would make the marks shout before the silhouettes were visible.
+LINE_W = dict(Theme.DEFAULT["lines"])
+
+# The wash behind the board, or {"on": False}. Drawn as bands -- see drawGradient.
+GRADIENT = dict(Theme.DEFAULT["gradient"])
+
+
+def applyTheme(theme):
+    """Wear a theme. Raises Theme.ThemeError, having changed nothing, if it is not one.
+
+    **The palette is module-level names and this assigns into them.** That reads like a
+    shortcut and is in fact the only honest option: every colour in this file is read by a
+    plain global lookup at the moment it is used, so reassigning the name is exactly as
+    complete as threading a palette object through three thousand lines, and does not require
+    touching a single call site. What it costs is this function, which has to know the two
+    places a colour is captured rather than looked up.
+
+    Both are here. `CHIP_WALL` is a table assembled *from* colours, so it is rebuilt rather
+    than reassigned. `_MIXED` is keyed by the colour values themselves, so it is already
+    correct across a swap -- it is cleared to stop it growing a set of entries per theme the
+    player tries, not for correctness.
+
+    What this does not do is repaint anything. The board takes a new palette on its next
+    redraw, because redraw() clears the canvas and reads every colour again; the widgets take
+    it when their builder next runs, because a tk option is copied into the widget at
+    construction. Both of those are the caller's business, and the caller is the appearance
+    screen, which rebuilds itself.
+    """
+    theme = Theme.validate(theme)
+
+    globals().update(theme["colours"])
+    LINE_W.update(theme["lines"])
+    GRADIENT.update(theme["gradient"])
+
+    global CHIP_WALL
+    CHIP_WALL = chipWalls()
+    _MIXED.clear()
+
+    return theme
+
+
+def currentTheme(name="Current"):
+    """The palette as it stands, as a theme -- what the appearance screen starts editing."""
+    return {
+        "name": name,
+        "colours": {key: globals()[key] for key in Theme.DEFAULT["colours"]},
+        "lines": dict(LINE_W),
+        "gradient": dict(GRADIENT),
+    }
 
 
 def pieceFill(side):
@@ -641,7 +738,7 @@ def polyPlate(c, view, pts, z, fill, hi, lo, raised=True, tags=None):
     tags = tags or ()
 
     if not view.detail:
-        c.create_polygon(flat, fill=fill, outline=lo, width=1, tags=tags)
+        c.create_polygon(flat, fill=fill, outline=lo, width=LINE_W["hair"], tags=tags)
         return
 
     c.create_polygon(flat, fill=fill, outline="", tags=tags)
@@ -664,7 +761,7 @@ def polyPlate(c, view, pts, z, fill, hi, lo, raised=True, tags=None):
         # outward normal of this edge, in screen terms
         nx = (y1 - y0) * wind
         ny = -(x1 - x0) * wind
-        c.create_line(x0, y0, x1, y1,
+        c.create_line(x0, y0, x1, y1, width=LINE_W["hair"],
                       fill=top if (nx + ny) < 0 else bottom, tags=tags)
 
 
@@ -761,7 +858,7 @@ def planeArrow(c, view, legs, dx, dy, z, s, b, head, fill, edge, halo, casing,
         if not final:
             bar = view.poly([(ox + dx * u1 + px * b, oy + dy * u1 + py * b),
                              (ox + dx * u1 - px * b, oy + dy * u1 - py * b)], z)
-            c.create_line(bar, fill=edge, width=2, tags=tags)
+            c.create_line(bar, fill=edge, width=LINE_W["piece"], tags=tags)
 
 
 # A piece. The axis of a cylinder is always straight up the screen however the board is
@@ -790,10 +887,11 @@ def chip(c, view, x, y, z0, r, h, walls, topFill, topEdge, w=2, tags=None):
 
     # the silhouette: the two sides of the wall, and the half of the foot that shows below
     # it. An arc rather than the whole ellipse, because the other half is inside the chip.
-    c.create_line(px - rx, lid, px - rx, base, fill=wallEdge, tags=tags)
-    c.create_line(px + rx, lid, px + rx, base, fill=wallEdge, tags=tags)
+    hair = LINE_W["hair"]
+    c.create_line(px - rx, lid, px - rx, base, fill=wallEdge, width=hair, tags=tags)
+    c.create_line(px + rx, lid, px + rx, base, fill=wallEdge, width=hair, tags=tags)
     c.create_arc(px - rx, base - ry, px + rx, base + ry, start=180, extent=180,
-                 style="arc", outline=wallEdge, width=1, tags=tags)
+                 style="arc", outline=wallEdge, width=hair, tags=tags)
 
     c.create_oval(px - rx, lid - ry, px + rx, lid + ry,
                   fill=topFill, outline=topEdge, width=w, tags=tags)
@@ -907,7 +1005,8 @@ def obelisk(c, view, x, y, z0, r, h, walls, w=2, tags=None):
         for sx, sy in pts:
             corners.append(sx)
             corners.append(sy)
-        c.create_polygon(corners, fill=fill, outline=wallEdge, width=1, tags=tags)
+        c.create_polygon(corners, fill=fill, outline=wallEdge, width=LINE_W["hair"],
+                         tags=tags)
 
     if len(shell) >= 3:
         c.create_polygon(flat, fill="", outline=wallEdge, width=w, tags=tags)
@@ -1138,6 +1237,22 @@ class RoyalsWindow:
         # See pollAI for what goes wrong without it.
         self.gameGen = 0
 
+        # What the window is wearing, before anything is built in it -- a widget copies its
+        # colours in when it is made, so the theme has to be on before the first one exists.
+        #
+        # Nothing here may stop the game starting. A configuration file that is missing,
+        # unreadable, or names a theme that has since been deleted or edited into nonsense is
+        # a reason to open in the default look and say so; it is not a reason to fail to open.
+        # The note is kept rather than printed because there is no log to print it into yet.
+        self.themeNote = None
+        try:
+            applyTheme(Theme.readConfig())
+        except FileNotFoundError:
+            pass                # nobody has chosen a theme yet, which is the common case
+        except (Theme.ThemeError, OSError, ValueError) as error:
+            self.themeNote = ("Could not use the saved theme (%s). Showing the default."
+                              % (error,))
+
         self.frame = None
         self.buildSetup()
 
@@ -1173,6 +1288,11 @@ class RoyalsWindow:
         # the setup screen is a column of controls and wants no more room than it asks for
         self.viewReady = False
         self.root.resizable(False, False)
+        # And it wants the floor back. buildGame raises it to 820x620 for the board's sake and
+        # used to be the only thing that ever touched it, so a window that had held one game
+        # kept the board's minimum for the rest of the session -- on a screen with no board on
+        # it. Nothing looked wrong; the window simply would not get smaller again.
+        self.root.minsize(1, 1)
         self.root.geometry("")
 
         self.frame = tk.Frame(self.root, bg=PANEL, padx=30, pady=26)
@@ -1281,6 +1401,8 @@ class RoyalsWindow:
         # A game saved from here, or downloaded from the browser -- they are the same file.
         StoneButton(start, "OPEN A SAVED GAME", self.openGame,
                     font=FONT["small"]).pack(side="left", padx=(12, 0))
+        StoneButton(start, "APPEARANCE", self.buildAppearance,
+                    font=FONT["small"]).pack(side="left", padx=(12, 0))
 
         self.refreshSetup()
 
@@ -1299,6 +1421,434 @@ class RoyalsWindow:
         for b in self.depthButtons: b.setEnabled(playsItself)
         self.noiseScale.setEnabled(liveNoise)
         self.noiseValue.configure(fg=TEXT_KEY if liveNoise else TEXT_DIM)
+
+    ################################################################################
+    ####### APPEARANCE #############################################################
+    ################################################################################
+    # The third screen. Everything a theme carries is edited here, against a miniature of the
+    # board drawn by the same functions the board is drawn by.
+    #
+    # **The preview is drawn from the theme being edited, not from the palette.** That is
+    # possible because polyPlate, chip and obelisk take every colour they use as an argument
+    # and read no globals -- so the miniature can show a theme that has not been applied to
+    # anything, and what it shows is the real drawing code rather than an impression of it.
+    # It is also why the screen can offer REVERT: nothing has happened to the palette until
+    # APPLY is pressed.
+
+    # The squares the miniature shows, as (file, rank) from its own centre, and what stands
+    # on them. Two stacks and a dragon: enough for the light square, the dark square, both
+    # sides' chips, a lid icon and the piece that is drawn a different way entirely.
+    PREVIEW = ((-1, -1, 0, 3), (0, -1, None, 0), (1, -1, 1, 1),
+               (-1, 0, None, 0), (0, 0, 0, 1), (1, 0, None, 0),
+               (-1, 1, 1, 2), (0, 1, None, 0), (1, 1, "dragon", 0))
+
+    def buildAppearance(self):
+        if self.frame: self.frame.destroy()
+
+        # Leaving a game for this screen is leaving it: the generation bump is what stops an
+        # in-flight search landing on a board that is no longer on screen, and review state
+        # has to go for the same reason buildSetup drops it -- the arrow keys are bound to
+        # the root and are live on every screen.
+        self.gameGen += 1
+        self.review = None
+        self.viewReady = False
+
+        # buildGame's floor is never lifted anywhere else, so a window that has held a game
+        # cannot shrink again until something says so. This screen is narrower than a board.
+        self.root.resizable(False, False)
+        self.root.minsize(1, 1)
+        self.root.geometry("")
+
+        # The theme being edited, and the one to go back to. Copied, not referenced: REVERT
+        # has to have something that the swatch buttons cannot have already changed.
+        self.pending = currentTheme()
+        self.reverting = currentTheme()
+
+        self.frame = tk.Frame(self.root, bg=PANEL, padx=26, pady=22)
+        self.frame.pack(fill="both", expand=True)
+
+        head = tk.Frame(self.frame, bg=PANEL)
+        head.pack(fill="x", pady=(0, 14))
+        tk.Label(head, text="APPEARANCE", font=FONT["legend"], fg=RULE_LT,
+                 bg=PANEL, anchor="w").pack(side="left")
+        self.themeName = tk.Label(head, text=self.pending["name"], font=FONT["small"],
+                                  fg=TEXT_DIM, bg=PANEL, anchor="e")
+        self.themeName.pack(side="right")
+
+        # Two columns, and they are frames rather than grid cells because carvedBox packs
+        # itself into whatever it is given. Packing is per-parent, so a column each works
+        # and nothing about carvedBox has to change.
+        columns = tk.Frame(self.frame, bg=PANEL)
+        columns.pack(fill="both", expand=True)
+        left = tk.Frame(columns, bg=PANEL)
+        left.pack(side="left", fill="y", anchor="n")
+        right = tk.Frame(columns, bg=PANEL, padx=18)
+        right.pack(side="left", fill="y", anchor="n")
+
+        self.buildColourBox(left)
+        self.buildGradientBox(left)
+        self.buildLineBox(left)
+        self.buildPreviewBox(right)
+        self.buildPresetBox(right)
+
+        self.refreshAppearance()
+
+    def buildColourBox(self, parent):
+        box = self.carvedBox(parent, "COLOURS")
+        self.swatches = {}
+
+        for role, label, base, _deps in Theme.ROLES:
+            row = tk.Frame(box, bg=PANEL)
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text=label, bg=PANEL, fg=TEXT, font=FONT["body"],
+                     anchor="w", width=16).pack(side="left")
+
+            swatch = tk.Label(row, text="        ", bd=2, relief="sunken",
+                              bg=self.pending["colours"][base])
+            swatch.pack(side="left")
+            swatch.bind("<Button-1>", lambda e, r=role: self.pickColour(r))
+            self.swatches[role] = swatch
+
+            tk.Label(row, text="", bg=PANEL, fg=TEXT_DIM, font=FONT["small"],
+                     width=9, anchor="w").pack(side="left", padx=(8, 0))
+
+        tk.Label(box, text="Each of these carries its own shades with it — a lighter bevel, "
+                           "a dimmer text — which are worked out from the one you pick.",
+                 bg=PANEL, fg=TEXT_DIM, font=FONT["small"], wraplength=300,
+                 justify="left", anchor="w").pack(fill="x", pady=(6, 0))
+
+        # What this window has got wrong twice. Both were colours nobody could read, and
+        # neither was noticed by anyone reading the source, so the number goes on the screen.
+        self.contrastLabel = tk.Label(box, text="", bg=PANEL, fg=TEXT_DIM,
+                                      font=FONT["small"], wraplength=300,
+                                      justify="left", anchor="w")
+        self.contrastLabel.pack(fill="x", pady=(6, 0))
+
+    def buildGradientBox(self, parent):
+        box = self.carvedBox(parent, "BOARD GRADIENT")
+
+        self.gradVar = tk.IntVar(value=1 if self.pending["gradient"]["on"] else 0)
+        StoneChoice(box, "A wash behind the board", self.gradVar,
+                    command=self.onGradientToggle).pack(fill="x", pady=1)
+
+        row = tk.Frame(box, bg=PANEL)
+        row.pack(fill="x", pady=(4, 2))
+        self.gradSwatches = {}
+        for end in ("from", "to"):
+            tk.Label(row, text=end, bg=PANEL, fg=TEXT, font=FONT["body"]).pack(side="left")
+            swatch = tk.Label(row, text="      ", bd=2, relief="sunken",
+                              bg=self.pending["gradient"][end])
+            swatch.pack(side="left", padx=(4, 14))
+            swatch.bind("<Button-1>", lambda e, w=end: self.pickGradient(w))
+            self.gradSwatches[end] = swatch
+
+        self.dirVar = tk.StringVar(value=self.pending["gradient"]["direction"])
+        dirs = tk.Frame(box, bg=PANEL)
+        dirs.pack(fill="x")
+        self.dirButtons = []
+        for name in Theme.DIRECTIONS:
+            b = StoneButton(dirs, name, lambda n=name: self.setDirection(n),
+                            font=FONT["small"])
+            b.pack(side="left", padx=(0, 6))
+            self.dirButtons.append((name, b))
+
+        self.bandsVar = tk.IntVar(value=self.pending["gradient"]["bands"])
+        self.bandsVar.trace_add("write", lambda *a: self.onBands())
+        self.bandsScale = StoneSlider(box, self.bandsVar, width=280,
+                                      low=Theme.BANDS_MIN, high=Theme.BANDS_MAX)
+        self.bandsScale.pack(anchor="w", pady=(6, 0))
+        self.bandsLabel = tk.Label(box, text="", bg=PANEL, fg=TEXT_DIM, font=FONT["small"],
+                                   anchor="w")
+        self.bandsLabel.pack(fill="x")
+
+    def buildLineBox(self, parent):
+        box = self.carvedBox(parent, "LINE")
+
+        self.weightVar = tk.StringVar(value=self.weightPreset())
+        for key in ("fine", "normal", "heavy"):
+            StoneChoice(box, key.capitalize(), self.weightVar, key,
+                        command=self.onWeight).pack(fill="x", pady=1)
+
+        tk.Label(box, text="How heavy the outlines are: the silhouettes round pieces and "
+                           "squares, and the rings that say where a stack may go.",
+                 bg=PANEL, fg=TEXT_DIM, font=FONT["small"], wraplength=300,
+                 justify="left", anchor="w").pack(fill="x", pady=(6, 0))
+
+    def buildPreviewBox(self, parent):
+        box = self.carvedBox(parent, "PREVIEW")
+        self.previewCanvas = tk.Canvas(box, width=280, height=250, bg=PANEL,
+                                       highlightthickness=0)
+        self.previewCanvas.pack()
+        self.previewView = View(YAW_DEF, PITCH_DEF, scale=34.0)
+
+    def buildPresetBox(self, parent):
+        box = self.carvedBox(parent, "PRESETS")
+
+        self.presetList = tk.Frame(box, bg=PANEL)
+        self.presetList.pack(fill="x")
+        self.fillPresets()
+
+        row = tk.Frame(box, bg=PANEL)
+        row.pack(fill="x", pady=(10, 0))
+        StoneButton(row, "SAVE AS", self.saveTheme, font=FONT["small"]).pack(side="left")
+        StoneButton(row, "OPEN", self.openTheme,
+                    font=FONT["small"]).pack(side="left", padx=(8, 0))
+
+        row2 = tk.Frame(box, bg=PANEL)
+        row2.pack(fill="x", pady=(8, 0))
+        StoneButton(row2, "APPLY", self.applyPending).pack(side="left")
+        StoneButton(row2, "REVERT", self.revertPending,
+                    font=FONT["small"]).pack(side="left", padx=(8, 0))
+        StoneButton(row2, "DEFAULT", self.defaultPending,
+                    font=FONT["small"]).pack(side="left", padx=(8, 0))
+
+        tk.Label(box, text="APPLY dresses the window and remembers the theme for next time. "
+                           "Nothing above has touched it until then.",
+                 bg=PANEL, fg=TEXT_DIM, font=FONT["small"], wraplength=300,
+                 justify="left", anchor="w").pack(fill="x", pady=(8, 0))
+
+        StoneButton(box, "BACK", self.buildSetup, font=FONT["small"]).pack(anchor="w",
+                                                                           pady=(12, 0))
+
+    def fillPresets(self):
+        for child in self.presetList.winfo_children(): child.destroy()
+
+        found = Theme.presets()
+        if not found:
+            tk.Label(self.presetList, text="No theme files found.", bg=PANEL, fg=TEXT_DIM,
+                     font=FONT["small"], anchor="w").pack(fill="x")
+            return
+
+        for name, path in found[:8]:
+            StoneButton(self.presetList, name, lambda p=path: self.loadPreset(p),
+                        font=FONT["small"]).pack(fill="x", pady=1)
+
+    ####### editing #######
+
+    def weightPreset(self):
+        for key, weights in Theme.WEIGHT_PRESETS.items():
+            if weights == self.pending["lines"]: return key
+        return "normal"
+
+    def pickColour(self, role):
+        for name, label, base, _deps in Theme.ROLES:
+            if name != role: continue
+            chosen = colorchooser.askcolor(color=self.pending["colours"][base],
+                                           title=label, parent=self.root)[1]
+            if not chosen: return
+            self.pending["colours"][base] = chosen.lower()
+            self.pending["colours"].update(Theme.derive(role, chosen.lower()))
+            self.refreshAppearance()
+            return
+
+    def pickGradient(self, end):
+        chosen = colorchooser.askcolor(color=self.pending["gradient"][end],
+                                       title="Gradient " + end, parent=self.root)[1]
+        if not chosen: return
+        self.pending["gradient"][end] = chosen.lower()
+        self.gradVar.set(1)
+        self.refreshAppearance()
+
+    def setDirection(self, name):
+        self.dirVar.set(name)
+        self.pending["gradient"]["direction"] = name
+        self.refreshAppearance()
+
+    def onGradientToggle(self):
+        self.pending["gradient"]["on"] = bool(self.gradVar.get())
+        self.refreshAppearance()
+
+    def onBands(self):
+        self.pending["gradient"]["bands"] = int(self.bandsVar.get())
+        self.refreshAppearance()
+
+    def onWeight(self):
+        self.pending["lines"] = dict(Theme.WEIGHT_PRESETS[self.weightVar.get()])
+        self.refreshAppearance()
+
+    def refreshAppearance(self):
+        """Put the screen and the miniature back in step with the theme being edited."""
+        for role, _label, base, _deps in Theme.ROLES:
+            self.swatches[role].configure(bg=self.pending["colours"][base])
+        for end in ("from", "to"):
+            self.gradSwatches[end].configure(bg=self.pending["gradient"][end])
+
+        live = bool(self.pending["gradient"]["on"])
+        for name, button in self.dirButtons:
+            button.setEnabled(live and name != self.dirVar.get())
+        self.bandsScale.setEnabled(live)
+        self.bandsLabel.configure(
+            text="%d bands" % self.pending["gradient"]["bands"] if live
+                 else "The board sits on a flat colour.")
+
+        # Which three pairs, and why not the obvious one. A white piece's *fill* against a
+        # light square is 1.2 to 1 in the default palette and always has been: a pale chip is
+        # read by the rim drawn round its foot, which is what that rim is for. Measuring the
+        # fill would put a warning on the board this window has shipped with since the start,
+        # and a warning that is always on is a warning nobody reads. So the pale piece is
+        # measured by its rim, and the dark one by its body -- each by the thing that actually
+        # tells it from what it is standing on.
+        colours = self.pending["colours"]
+        pairs = (("Lettering on the panel", colours["TEXT"], colours["PANEL"]),
+                 ("A black piece on a dark square", colours["BLACK"], colours["DARK"]),
+                 ("A white piece's rim on a light square",
+                  colours["WHITE_RIM"], colours["LIGHT"]))
+        worst = min(pairs, key=lambda row: Theme.contrast(row[1], row[2]))
+        ratio = Theme.contrast(worst[1], worst[2])
+        self.contrastLabel.configure(
+            text="%s: %.1f to 1.%s" % (worst[0], ratio,
+                                       "" if ratio >= 3.0 else "  Hard to make out."),
+            fg=TEXT_DIM if ratio >= 3.0 else TEXT)
+
+        self.themeName.configure(text=self.pending["name"])
+        self.drawPreview()
+
+    ####### the miniature #######
+
+    def drawPreview(self):
+        """A corner of a board, drawn from `self.pending` rather than from the palette."""
+        c = self.previewCanvas
+        c.delete("all")
+        v = self.previewView
+        v.detail = True
+
+        t = self.pending["colours"]
+        w = self.pending["lines"]
+
+        width = int(c.cget("width"))
+        height = int(c.cget("height"))
+        gradient = self.pending["gradient"]
+        if gradient["on"]:
+            bands = max(Theme.BANDS_MIN, min(Theme.BANDS_MAX, int(gradient["bands"])))
+            for i in range(bands):
+                shade = mixShade(gradient["from"], gradient["to"],
+                                 i / float(bands - 1) if bands > 1 else 0.0)
+                if gradient["direction"] == "horizontal":
+                    c.create_rectangle(width * i / float(bands), 0,
+                                       width * (i + 1) / float(bands) + 1, height,
+                                       fill=shade, outline="")
+                elif gradient["direction"] == "diagonal":
+                    span = (width + height) * (i + 1) / float(bands)
+                    back = (width + height) * i / float(bands)
+                    c.create_polygon(back, 0, span, 0, 0, span, 0, back,
+                                     fill=shade, outline="")
+                else:
+                    c.create_rectangle(0, height * i / float(bands), width,
+                                       height * (i + 1) / float(bands) + 1,
+                                       fill=shade, outline="")
+        else:
+            c.configure(bg=t["PANEL"])
+
+        v.ox, v.oy = width / 2.0, height / 2.0 + 34.0
+        v.scale = 34.0
+
+        walls = {0: (t["WHITE"], t["WHITE_HI"], t["WHITE_LO"], t["WHITE_RIM"]),
+                 1: (t["BLACK"], t["BLACK_HI"], t["BLACK_LO"], t["INK"])}
+
+        # Far to near, the same rule the board's own pass follows.
+        for wx, wy, side, count in sorted(self.PREVIEW, key=lambda s: v.depth(s[0], s[1])):
+            dark = (wx + wy) % 2 == 0
+            face = (t["DARK"], t["DARK_HI"], t["DARK_LO"]) if dark else \
+                   (t["LIGHT"], t["LIGHT_HI"], t["LIGHT_LO"])
+            polyPlate(c, v, [(wx - 0.5, wy - 0.5), (wx + 0.5, wy - 0.5),
+                             (wx + 0.5, wy + 0.5), (wx - 0.5, wy + 0.5)],
+                      0.0, face[0], face[1], face[2], True)
+
+            if side == "dragon":
+                obelisk(c, v, wx, wy, 0.0, R_DRAGON, H_DRAGON, walls[0], w["piece"])
+                continue
+            if side is None or not count:
+                continue
+
+            for k in range(count):
+                chip(c, v, wx, wy, k * H_CHIP, R_CHIP, H_CHIP, walls[side],
+                     t["PIECE_HALO"], t["INK"], w["piece"])
+
+            lid = count * H_CHIP + 0.001
+            icons = [SHAPE_ROYAL] if count > 2 else [SHAPE_SPY]
+            planeRow(c, v, icons, wx, wy, lid, 0.0, 0.0, 0.130, 0.05,
+                     side, w["piece"])
+
+        # One mark, because a mark is a line and this box is also the line-weight preview.
+        px, py = v.project(0.0, -1.0, 0.0)
+        sx, sy = v.planeScale()
+        c.create_oval(px - 0.43 * sx, py - 0.43 * sy, px + 0.43 * sx, py + 0.43 * sy,
+                      fill="", outline=t["INK"], width=w["mark"], dash=(7, 5))
+
+    ####### presets #######
+
+    def loadPreset(self, path):
+        try:
+            self.pending = Theme.load(path)
+        except (Theme.ThemeError, OSError) as error:
+            messagebox.showerror("Royals", "That theme could not be read.\n\n%s" % (error,),
+                                 parent=self.root)
+            return
+        self.syncControls()
+
+    def openTheme(self):
+        path = filedialog.askopenfilename(
+            parent=self.root, title="Open a theme",
+            filetypes=[("Royals theme", "*.json"), ("All files", "*")])
+        if not path: return
+        self.loadPreset(path)
+
+    def saveTheme(self):
+        path = filedialog.asksaveasfilename(
+            parent=self.root, title="Save this theme", defaultextension=".json",
+            initialdir=str(Theme.themeDir()),
+            filetypes=[("Royals theme", "*.json"), ("All files", "*")],
+            initialfile="royals-theme.json")
+        if not path: return
+
+        try:
+            Theme.themeDir().mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+
+        name = path.replace("\\", "/").rsplit("/", 1)[-1]
+        self.pending["name"] = name[:-5] if name.endswith(".json") else name
+        try:
+            Theme.save(path, self.pending)
+        except (Theme.ThemeError, OSError) as error:
+            messagebox.showerror("Royals", "That theme could not be saved.\n\n%s" % (error,),
+                                 parent=self.root)
+            return
+        self.fillPresets()
+        self.refreshAppearance()
+
+    def syncControls(self):
+        """Put the controls back in step after the whole theme was replaced under them."""
+        self.gradVar.set(1 if self.pending["gradient"]["on"] else 0)
+        self.dirVar.set(self.pending["gradient"]["direction"])
+        self.bandsVar.set(self.pending["gradient"]["bands"])
+        self.weightVar.set(self.weightPreset())
+        self.refreshAppearance()
+
+    def revertPending(self):
+        self.pending = dict(self.reverting)
+        self.pending["colours"] = dict(self.reverting["colours"])
+        self.pending["lines"] = dict(self.reverting["lines"])
+        self.pending["gradient"] = dict(self.reverting["gradient"])
+        self.syncControls()
+
+    def defaultPending(self):
+        self.pending = Theme.validate(Theme.DEFAULT)
+        self.syncControls()
+
+    def applyPending(self):
+        try:
+            applyTheme(self.pending)
+        except Theme.ThemeError as error:
+            messagebox.showerror("Royals", "That theme could not be used.\n\n%s" % (error,),
+                                 parent=self.root)
+            return
+
+        Theme.writeConfig(self.pending)
+        # Rebuilt rather than recoloured: a tk widget copies its colours in when it is made,
+        # so the only way to re-dress this screen is to make it again. It comes back showing
+        # the theme it just applied, which is also what makes APPLY visibly do something.
+        self.buildAppearance()
 
     ################################################################################
     ####### GAME WINDOW ############################################################
@@ -1414,6 +1964,12 @@ class RoyalsWindow:
         self.logText.tag_configure("black", foreground=TEXT)
         self.logText.tag_configure("grey", foreground=TEXT_DIM)
         self.logText.configure(state="disabled")
+
+        # A theme that could not be loaded at startup, said once, in the first place there
+        # has been to say it. Cleared so a player is not told about it every game.
+        if self.themeNote:
+            self.log(self.themeNote, "grey")
+            self.themeNote = None
 
         buttons = tk.Frame(panel, bg=PANEL)
         buttons.pack(fill="x")
@@ -2607,6 +3163,10 @@ class RoyalsWindow:
         v.detail = not self.dragging
         spaces = Hasher.Parse_Board(self.board)
 
+        # First, so everything else is drawn over it -- canvas items stack in the order they
+        # were made, and this one is the ground.
+        self.drawGradient(c, v)
+
         self.drawCabinet(v)
 
         # Far to near, and that is the whole of the hidden surface problem here. A stack
@@ -2695,6 +3255,55 @@ class RoyalsWindow:
         x, y, w, h = self.BADGE_X, self.BADGE_Y, self.BADGE_W, self.BADGE_H
         return x <= sx <= x + w and y <= sy <= y + h
 
+    # The wash the board stands on, when a theme asks for one.
+    #
+    # **Bands, because the canvas has no gradient and no alpha.** Everything else in this file
+    # works around that by choosing a different flat colour rather than laying a wash over
+    # one; here there is nothing underneath to choose against, so a wash is N flat rectangles
+    # with the fill stepped between two ends. Twenty-four is enough that the steps are not
+    # visible at the sizes this window opens at.
+    #
+    # It collapses to a single rectangle while the board is being dragged, on the same switch
+    # -- `v.detail` -- that already thins the chips and the tiles. A gradient is the one thing
+    # here whose cost is paid per frame rather than per piece: the board draws around two
+    # thousand items already, and turning it should not also be repainting sixty-four
+    # rectangles behind them.
+    #
+    # A theme with the gradient off leaves the canvas showing its own background colour, which
+    # is set from PANEL when the game screen is built. That costs nothing at all and is why
+    # `on` defaults to false.
+    def drawGradient(self, c, v):
+        if not GRADIENT.get("on"): return
+
+        w = max(1, c.winfo_width())
+        h = max(1, c.winfo_height())
+        start, end = GRADIENT["from"], GRADIENT["to"]
+
+        if not v.detail:
+            c.create_rectangle(0, 0, w, h, fill=mixShade(start, end, 0.5), outline="")
+            return
+
+        bands = max(Theme.BANDS_MIN, min(Theme.BANDS_MAX, int(GRADIENT["bands"])))
+        direction = GRADIENT["direction"]
+
+        # Diagonal has no rectangle that draws it, so it is done as a run of parallelograms
+        # sheared across the canvas -- each one wide enough to cover the corner it reaches.
+        for i in range(bands):
+            shade = mixShade(start, end, i / float(bands - 1) if bands > 1 else 0.0)
+            if direction == "horizontal":
+                x0 = w * i / float(bands)
+                c.create_rectangle(x0, 0, w * (i + 1) / float(bands) + 1, h,
+                                   fill=shade, outline="")
+            elif direction == "diagonal":
+                span = (w + h) * (i + 1) / float(bands)
+                back = (w + h) * i / float(bands)
+                c.create_polygon(back, 0, span, 0, 0, span, 0, back,
+                                 fill=shade, outline="")
+            else:
+                y0 = h * i / float(bands)
+                c.create_rectangle(0, y0, w, h * (i + 1) / float(bands) + 1,
+                                   fill=shade, outline="")
+
     # The board as a thing with a thickness: a slab, the carved border laid on top of it,
     # the black rule round the playfield and the field sunk behind that. Flat, the border
     # was one rectangle with the playfield punched out of it. Turned, it has to be four
@@ -2713,7 +3322,7 @@ class RoyalsWindow:
             nx, ny = (y1 - y0), -(x1 - x0)
             if nx * v.sinY + ny * v.cosY <= 0: continue
             wall = v.poly([(x0, y0), (x1, y1)], 0.0) + v.poly([(x1, y1), (x0, y0)], -SLAB_T)
-            c.create_polygon(wall, fill=EDGE_DK, outline=RULE_DK, width=1)
+            c.create_polygon(wall, fill=EDGE_DK, outline=RULE_DK, width=LINE_W["hair"])
 
         # the border, as the four strips left over once the playfield is taken out
         for a, b, d, e2 in (((-e, -e), (e, -e), (f, -f), (-f, -f)),
@@ -2739,7 +3348,7 @@ class RoyalsWindow:
             for sx in (-p, p):
                 for sy in (-p, p):
                     chip(c, v, sx, sy, 0.0, STUD_R, STUD_H,
-                         (INK, EDGE_DK, RULE_LT, INK), EDGE_DK, INK, 1)
+                         (INK, EDGE_DK, RULE_LT, INK), EDGE_DK, INK, LINE_W["hair"])
 
         self.drawCoords(v, False)
 
@@ -2854,7 +3463,7 @@ class RoyalsWindow:
                 # It carries no icon, and it is the one piece on the board with no pale lid
                 # -- there is nothing to tell apart on this square, because a dragon is all
                 # there ever is on it.
-                obelisk(c, v, bx, by, 0.0, R_DRAGON, H_DRAGON, walls, 2, tag)
+                obelisk(c, v, bx, by, 0.0, R_DRAGON, H_DRAGON, walls, LINE_W["piece"], tag)
             else:
                 # One chip per piece, all the same chip, piled up -- the same width the
                 # whole way up, so the pile is one column and not a stepped one. What
@@ -2863,7 +3472,7 @@ class RoyalsWindow:
                 n = s[Hasher.SPY] + s[Hasher.PAWNS] + s[Hasher.ROYAL]
                 for k in range(n):
                     chip(c, v, bx, by, k * H_CHIP, R_CHIP, H_CHIP,
-                         walls, PIECE_HALO, INK, 2, tag)
+                         walls, PIECE_HALO, INK, LINE_W["piece"], tag)
 
                 # The same icons the board always used, the same royal-and-spy-then-pawns
                 # arrangement, painted flat on the lid of the top chip. The height says
@@ -2881,14 +3490,14 @@ class RoyalsWindow:
                 # standing on an object, an icon over the edge looks like a mistake.
                 lz = n * H_CHIP + 0.001
                 if upper and pawns:
-                    planeRow(c, v, upper, bx, by, lz, 0.0, -0.15, 0.120, 0.048, side, 2, tag)
-                    planeRow(c, v, pawns, bx, by, lz, 0.0, 0.16, 0.078, 0.026, side, 2, tag)
+                    planeRow(c, v, upper, bx, by, lz, 0.0, -0.15, 0.120, 0.048, side, LINE_W["piece"], tag)
+                    planeRow(c, v, pawns, bx, by, lz, 0.0, 0.16, 0.078, 0.026, side, LINE_W["piece"], tag)
                 elif upper:
                     r = 0.160 if len(upper) == 1 else 0.145
-                    planeRow(c, v, upper, bx, by, lz, 0.0, 0.0, r, 0.065, side, 2, tag)
+                    planeRow(c, v, upper, bx, by, lz, 0.0, 0.0, r, 0.065, side, LINE_W["piece"], tag)
                 elif pawns:
                     r = 0.100 if len(pawns) <= 2 else 0.082
-                    planeRow(c, v, pawns, bx, by, lz, 0.0, 0.0, r, 0.030, side, 2, tag)
+                    planeRow(c, v, pawns, bx, by, lz, 0.0, 0.0, r, 0.030, side, LINE_W["piece"], tag)
 
             # Prisoners belong to the other side, so they are drawn in the other side's
             # shade: what is shown is whose pieces these are, not who holds them. They sit
@@ -2905,15 +3514,15 @@ class RoyalsWindow:
         if (self.phase == "play" and self.selected is None
                 and self.humanSides[self.contr] and square in self.legalOrigins):
             c.create_polygon(v.poly(self.inset(wx, wy, 0.463), zTile),
-                             fill="", outline=tone, width=2,
+                             fill="", outline=tone, width=LINE_W["piece"],
                              dash=(3, 3) if v.detail else (), tags=tag)
 
         # the chosen square gets a solid double rule, so it never reads as merely available
         if square == self.selected:
             c.create_polygon(v.poly(self.inset(wx, wy, 0.476), zTile),
-                             fill="", outline=counter, width=4, tags=tag)
+                             fill="", outline=counter, width=LINE_W["mark"], tags=tag)
             c.create_polygon(v.poly(self.inset(wx, wy, 0.439), zTile),
-                             fill="", outline=tone, width=2, tags=tag)
+                             fill="", outline=tone, width=LINE_W["piece"], tags=tag)
 
         ####### where it could go #######
         # While the break arrows are out they are the question being asked, and they cross
@@ -2970,7 +3579,7 @@ class RoyalsWindow:
 
         if kind == "free":
             c.create_polygon(v.poly(self.inset(wx, wy, 0.43), z),
-                             fill="", outline=tone, width=4,
+                             fill="", outline=tone, width=LINE_W["mark"],
                              dash=(7, 5) if v.detail else (), tags=tag)
             return
 
@@ -2980,7 +3589,7 @@ class RoyalsWindow:
         sx, sy = v.planeScale()
         rx, ry = 0.43 * sx, 0.43 * sy
         c.create_oval(px - rx, py - ry, px + rx, py + ry,
-                      fill="", outline=tone, width=4,
+                      fill="", outline=tone, width=LINE_W["mark"],
                       dash=(7, 5) if (kind == "push" and v.detail) else (), tags=tag)
 
     ################################################################################

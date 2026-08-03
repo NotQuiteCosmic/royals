@@ -1,0 +1,50 @@
+{
+ "colours": {
+  "BLACK": "#0d0d0c",
+  "BLACK_HI": "#38352f",
+  "BLACK_LO": "#000000",
+  "DARK": "#615e56",
+  "DARK_ENTRY": "#48453e",
+  "DARK_HI": "#847f76",
+  "DARK_LAST": "#7e7a6e",
+  "DARK_LO": "#3b3933",
+  "EDGE": "#dbd7ce",
+  "EDGE_DK": "#a7a299",
+  "EDGE_LT": "#f7f5f0",
+  "INK": "#0d0d0c",
+  "LABEL": "#3a3833",
+  "LIGHT": "#e2ded5",
+  "LIGHT_ENTRY": "#c6c2b8",
+  "LIGHT_HI": "#f8f6f2",
+  "LIGHT_LAST": "#f6f3ec",
+  "LIGHT_LO": "#b4afa5",
+  "PANEL": "#e9e6de",
+  "PANEL_DK": "#b9b4aa",
+  "PANEL_LT": "#f4f2ec",
+  "PIECE_HALO": "#f4f1ea",
+  "RULE": "#2a2a28",
+  "RULE_DK": "#8d8880",
+  "RULE_LT": "#12120f",
+  "TEXT": "#161614",
+  "TEXT_DIM": "#6f6a62",
+  "TEXT_KEY": "#0d0d0c",
+  "WELL": "#d8d4ca",
+  "WHITE": "#f6f4ef",
+  "WHITE_HI": "#ffffff",
+  "WHITE_LO": "#b6b1a7",
+  "WHITE_RIM": "#6f6a62"
+ },
+ "gradient": {
+  "bands": 24,
+  "direction": "vertical",
+  "from": "#e9e6de",
+  "on": false,
+  "to": "#c9c4b8"
+ },
+ "lines": {
+  "hair": 1,
+  "mark": 4,
+  "piece": 2
+ },
+ "name": "Default"
+}

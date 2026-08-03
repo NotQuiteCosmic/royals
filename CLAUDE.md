@@ -46,17 +46,19 @@ python3 engine-rs/tests/wasm_parity.py            # the browser's copy
 ```
 
 Expected green state: `golden_enter.txt` 445 lines, `golden_moves.txt` 13,051 lines,
-`golden_search.txt` 245 lines identical — **from both implementations** — and 304 tests passing
-(23 accel, 24 break rules, 11 desktop lifecycle, 15 desktop record, 28 engine-purity,
-15 entering, 4 flights, 66 notation, 18 record, 100 web API). With `ROYALS_NO_ACCEL=1` it is
-301 passed and 3 skipped; the skips are the tests that need the wheel, and skipping is
-correct — not having it is a supported configuration. `test_desktop_record.py` and
-`test_desktop_lifecycle.py` drive a real tkinter window, so on a headless runner their 26
-skip instead, and that is also correct.
+`golden_search.txt` 245 lines identical — **from both implementations** — and 373 tests passing
+(23 accel, 24 break rules, 19 carry rules, 15 desktop appearance, 11 desktop lifecycle,
+15 desktop record, 28 engine-purity, 15 entering, 4 flights, 66 notation, 18 record,
+35 theme, 100 web API). With `ROYALS_NO_ACCEL=1` it is 370 passed and 3 skipped; the skips
+are the tests that need the wheel, and skipping is
+correct — not having it is a supported configuration. The three `test_desktop_*.py` files
+drive a real tkinter window, so on a headless runner their 41 skip instead, and that is also
+correct. They share one root, from `tests/conftest.py`, and that is not a tidiness measure --
+see the note there.
 
-`cargo test` is 33, and `royals-golden` must emit `golden_moves.txt` byte for byte. A
+`cargo test` is 34, and `royals-golden` must emit `golden_moves.txt` byte for byte. A
 Python-only run proves almost nothing about what a browser or a wheel-equipped machine will do.
-Note what that 33 leaves out: the seven tests in `engine-rs/src/wasm.rs` are behind
+Note what that 34 leaves out: the seven tests in `engine-rs/src/wasm.rs` are behind
 `--features wasm` and a bare `cargo test` never compiles them, including the one asserting the
 move-kind order `static/engine.js` decodes with. `wasm_parity.py` is what actually guards the
 browser.
@@ -72,10 +74,10 @@ cursor is left open makes the next `commit` fail. Everything in `persist.py` goe
 `_run`/`_query`, which close theirs. Don't add a bare `self._conn.execute`.
 
 The web API tests call `pytest.importorskip("fastapi")`, so without `pip install -e ./web`
-they skip silently and the run reports 198 passed and 7 skipped, not 304. Six of those seven
+they skip silently and the run reports 267 passed and 7 skipped, not 373. Six of those seven
 are individual tests; the seventh is the whole of `test_web_api.py`, because a module that
-skips at import is one item however many tests it holds — which is why 99 tests can vanish
-and the total only fall by 105. The six are the cross-checks in `test_record.py` and
+skips at import is one item however many tests it holds — which is why 100 tests can vanish
+and the total only fall by 106. The six are the cross-checks in `test_record.py` and
 `test_desktop_record.py` that hold the engine's record walker — and its move numbering —
 against the server's, and they are the ones most worth noticing the absence of. **Check the
 count, not just the colour.** CI runs them in a separate CPython-only job that installs the
@@ -209,7 +211,7 @@ was arrived at the hard way. Match that. A comment explaining a performance deci
 rule's edge case is in keeping here; a comment restating what the line does is not.
 
 Numbers in prose follow one rule: **exact where the reader is meant to check it, rounded into
-words where it is only conveying scale.** "286 tests, and 186 means you forgot the web package"
+words where it is only conveying scale.** "373 tests, and 267 means you forgot the web package"
 is a check and has to be exact. "thirteen thousand lines", "about thirty-six times faster" are
 rhetoric, and a rounded word is still true two commits later where a digit is not. Every count
 in this file is the first kind, which is why they live here and nowhere else.
@@ -219,10 +221,10 @@ in this file is the first kind, which is why they live here and nowhere else.
 Every figure above comes from something that already runs. From the repo root:
 
 ```bash
-python3 -m pytest tests/ -q                      # the total, and 304 vs 198 above
-ROYALS_NO_ACCEL=1 python3 -m pytest tests/ -q    # the 301 passed / 3 skipped split
+python3 -m pytest tests/ -q                      # the total, and 373 vs 267 above
+ROYALS_NO_ACCEL=1 python3 -m pytest tests/ -q    # the 370 passed / 3 skipped split
 (cd tests && python3 regress.py check all)       # the three golden line counts
-cargo test --manifest-path engine-rs/Cargo.toml  # the 33
+cargo test --manifest-path engine-rs/Cargo.toml  # the 34
 python3 engine-rs/tests/wasm_parity.py           # prints its own question count
 ```
 
@@ -230,7 +232,7 @@ For the per-file breakdown, `python3 -m pytest tests/<file> --collect-only -q` �
 `def test_` undercounts badly, because several files parametrise (`test_accel.py` reads as 11
 and collects 23).
 
-The 198 is the awkward one: it needs a checkout where `./web` was never installed, and no
+The 267 is the awkward one: it needs a checkout where `./web` was never installed, and no
 pytest flag simulates that. A stub on `PYTHONPATH` does reproduce it, but only if you get two
 things right, both of which give a plausible wrong answer rather than an error.
 
@@ -240,7 +242,7 @@ printf 'raise ModuleNotFoundError("No module named %s", name="fastapi")\n' "'fas
   > /tmp/noweb/fastapi.py
 printf 'raise ModuleNotFoundError("No module named %s", name="royals_web")\n' "'royals_web'" \
   > /tmp/noweb/royals_web/__init__.py
-PYTHONPATH=/tmp/noweb python3 -m pytest tests/ -q      # 198 passed, 7 skipped
+PYTHONPATH=/tmp/noweb python3 -m pytest tests/ -q      # 267 passed, 7 skipped
 ```
 
 **It has to be `ModuleNotFoundError`, not `ImportError`.** `importorskip` skips on the former
@@ -249,6 +251,6 @@ loudly instead of being silently skipped. A stub raising plain `ImportError` get
 collection error, not the count.
 
 **Both names have to be hidden.** Blocking `fastapi` alone leaves `royals_web` importable and
-merely broken, and the run reports 190 passed / 1 skipped — the four cross-checks in
+merely broken, and the run reports 223 passed / 1 skipped — the four cross-checks in
 `test_record.py` and `test_desktop_record.py` stay in, so the number looks reasonable and is
 wrong. `pip install -e ./web` puts both there, so a checkout without it has neither.

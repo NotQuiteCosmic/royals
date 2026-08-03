@@ -35,48 +35,10 @@ from royals_engine import record as R
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "apps" / "desktop"))
 
 
-@pytest.fixture(scope="module")
-def gui():
-    """One window for the whole file, or a skip where there is no display to put it on.
-
-    **One `Tk()` per process, and that is not a preference.** Unlike test_desktop_record,
-    which drives the window by calling its handlers, everything here needs the event loop
-    actually running -- a deferred callback that never fires proves nothing either way. And
-    on macOS a *second* root's `update()` blocks inside Tk itself once a game screen has been
-    built on it: no Python callback runs, no exception is raised, the call simply does not
-    return. It was measured rather than guessed -- a counter on redraw/onResize/flushRedraw
-    stays at zero through the whole hang -- so it is below anything this repo can fix, and
-    the way round it is to want only one root.
-
-    Hence module scope and `buildSetup()` between tests: NEW GAME is the reset, which is the
-    thing being tested anyway.
-    """
-    try:
-        root = tk.Tk()
-    except tk.TclError as exc:
-        pytest.skip("no display for tkinter: %s" % (exc,))
-
-    root.withdraw()
-    import royals_gui
-
-    win = royals_gui.RoyalsWindow(root)
-    try:
-        yield win
-    finally:
-        root.destroy()
-
-
-@pytest.fixture
-def window(gui):
-    gui.buildSetup()
-    gui.errors = []
-    # Tk swallows an exception raised inside a callback and prints it, so a test that only
-    # looked at the board would pass while the log filled with TclErrors.
-    gui.root.report_callback_exception = lambda *a: gui.errors.append(a)
-    yield gui
-    # Leave the next test a window with nothing outstanding in it.
-    gui.buildSetup()
-    gui.root.update()
+# `gui` and `window` come from tests/conftest.py now, shared with the other two files that
+# drive the real window. The reasoning that used to live here -- one Tk() per process, because
+# a second root's update() blocks inside Tk itself on macOS -- moved there with them, since it
+# turned out to be a rule about the whole test session rather than about this file.
 
 
 def pump(root, seconds=2.0, until=None):

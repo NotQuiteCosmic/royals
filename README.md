@@ -27,6 +27,8 @@ engine/src/royals_engine/   the game itself — no UI, no dependencies
   _accel.py                 finds the compiled engine, or doesn't, and says which
 
 apps/desktop/royals_gui.py  tkinter window, with a hand-rolled 3D board
+  theme.py                  the palette as data: colours, line weights, a board gradient
+  themes/                   the schemes that ship with it; your own live in ~/.royals/themes
 apps/terminal/main_play.py  the same game in a terminal
   display.py                ANSI board rendering (was in Hasher)
   prompt.py                 the "which square?" prompt (was Engine.getOrigin)

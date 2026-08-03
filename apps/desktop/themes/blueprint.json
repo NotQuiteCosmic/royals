@@ -1,0 +1,50 @@
+{
+ "colours": {
+  "BLACK": "#16324f",
+  "BLACK_HI": "#27598c",
+  "BLACK_LO": "#11263b",
+  "DARK": "#8ea6c4",
+  "DARK_ENTRY": "#6e8db3",
+  "DARK_HI": "#bac9db",
+  "DARK_LAST": "#b1c1d6",
+  "DARK_LO": "#5e80ab",
+  "EDGE": "#c3d0e0",
+  "EDGE_DK": "#7e9abc",
+  "EDGE_LT": "#ecf0f5",
+  "INK": "#16324f",
+  "LABEL": "#255383",
+  "LIGHT": "#dbe4ef",
+  "LIGHT_ENTRY": "#b4c6dd",
+  "LIGHT_HI": "#fefeff",
+  "LIGHT_LAST": "#f9fafc",
+  "LIGHT_LO": "#9ab3d2",
+  "PANEL": "#e8edf3",
+  "PANEL_DK": "#a6bad1",
+  "PANEL_LT": "#f8fafc",
+  "PIECE_HALO": "#f1f6fc",
+  "RULE": "#1a2532",
+  "RULE_DK": "#5c7fab",
+  "RULE_LT": "#090d12",
+  "TEXT": "#16324f",
+  "TEXT_DIM": "#4285ca",
+  "TEXT_KEY": "#122a42",
+  "WELL": "#d0dae6",
+  "WHITE": "#f7fafd",
+  "WHITE_HI": "#ffffff",
+  "WHITE_LO": "#8ab6e2",
+  "WHITE_RIM": "#2d70b3"
+ },
+ "gradient": {
+  "bands": 24,
+  "direction": "vertical",
+  "from": "#e9e6de",
+  "on": false,
+  "to": "#c9c4b8"
+ },
+ "lines": {
+  "hair": 1,
+  "mark": 3,
+  "piece": 1
+ },
+ "name": "Blueprint"
+}
