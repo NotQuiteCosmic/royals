@@ -300,3 +300,97 @@ def test_a_search_that_raises_is_reported_rather_than_left_hanging(window, monke
     assert "the search fell over" in window.logText.get("1.0", "end"), \
         "the failure never reached the log"
     assert window.errors == []
+
+
+####### A side's own depth #######
+# A 0 player game used to hand one depth to whichever side was to move, which made the mode a
+# mirror match by construction -- the same search answering both sides of the same position.
+# `aiDepths` is indexed by `contr`, and the tests below are about the two halves of that: that
+# the number actually reaches the search under the right side's name, and that the equal case
+# stays equal, since every other mode relies on it.
+
+
+def test_both_sides_share_one_depth_unless_asked_otherwise(window):
+    """Black's control holds a value whether or not it is in use, so the check that keeps a
+    0 player game playing as it always has is that the value is *ignored* until it is asked
+    for. Nothing else in the window looks at splitDepthVar."""
+    window.modeVar.set(2); window.entryVar.set(1)
+    window.depthVar.set(1); window.blackDepthVar.set(2)      # set, but the box is not ticked
+    window.startGame(); window.root.update()
+
+    assert window.aiDepths == [1, 1], "black's depth was used without being asked for"
+    assert window.errors == []
+
+
+def test_each_side_searches_to_its_own_depth(window, monkeypatch):
+    """The one that matters. `aiDepths` being right is not the claim -- what is being tested
+    is that the right entry of it reaches `takeTurn`, under the side that is to move."""
+    asked = []
+    real = AI.takeTurn
+
+    def counted(board, contr, depth, *a, **kw):
+        asked.append((contr, depth))
+        # answered shallowly, since which move comes back is not what is being asked
+        return real(board, contr, 1)
+
+    monkeypatch.setattr(AI, "takeTurn", counted)
+
+    # A dealt opening, so play begins as soon as the game does.
+    window.modeVar.set(2); window.entryVar.set(1)
+    window.splitDepthVar.set(1)
+    window.depthVar.set(3); window.blackDepthVar.set(5)
+    window.startGame(); window.root.update()
+
+    # Four searches take about a second even with no compiled engine, since `counted`
+    # answers at depth 1. The budget is enormous next to that on purpose: it is only ever
+    # spent by a test that is going to fail anyway, and a tighter one turns a busy machine
+    # into a red build. This ran out at fifteen seconds exactly once, in a full-suite run
+    # that passed on repeat.
+    pump(window.root, 60.0, until=lambda: len(asked) >= 4)
+
+    assert len(asked) >= 4, "the game never got as far as four searches: %r" % (asked,)
+    assert {contr for contr, _ in asked} == {0, 1}, "only one side ever moved"
+    assert all(depth == (3 if contr == 0 else 5) for contr, depth in asked), \
+        "a side searched to the other one's depth: %r" % (asked,)
+    assert window.errors == []
+
+
+def test_the_split_depth_offer_belongs_to_the_0_player_game(window):
+    """In a 1 player game the second control would be asking how deep the human thinks."""
+    window.modeVar.set(1); window.splitDepthVar.set(1); window.refreshSetup()
+    assert not window.splitDepthCheck.enabled
+    assert not any(b.enabled for b in window.blackDepthButtons)
+
+    window.modeVar.set(2); window.refreshSetup()
+    assert window.splitDepthCheck.enabled
+    assert all(b.enabled for b in window.blackDepthButtons)
+
+    window.splitDepthVar.set(0); window.refreshSetup()
+    assert not any(b.enabled for b in window.blackDepthButtons), \
+        "black's depth stayed live with nothing asking for it"
+
+    # And a 1 player game left ticked still plays the one depth, since startGame reads the
+    # mode rather than trusting the box to have been greyed.
+    window.buildSetup()
+    window.modeVar.set(1); window.sideVar.set(0); window.entryVar.set(1)
+    window.splitDepthVar.set(1)
+    window.depthVar.set(1); window.blackDepthVar.set(2)
+    window.startGame(); window.root.update()
+    assert window.aiDepths == [1, 1]
+
+
+def test_a_handicap_match_says_so_in_the_file_it_saves(window):
+    """The header is the only place a saved game can say how it was produced -- the move list
+    cannot, since a move found at depth 5 looks exactly like one found at depth 2."""
+    window.modeVar.set(2); window.entryVar.set(1); window.depthVar.set(1)
+    window.startGame(); window.root.update()
+    assert "the computer against itself at depth 1" in window.recordNote()
+
+    window.buildSetup()
+    window.modeVar.set(2); window.entryVar.set(1)
+    window.splitDepthVar.set(1)
+    window.depthVar.set(1); window.blackDepthVar.set(2)
+    window.startGame(); window.root.update()
+    assert "white at depth 1 and black at depth 2" in window.recordNote()
+    assert "White searches to depth 1, black to depth 2." \
+        in window.logText.get("1.0", "end"), "the game log never mentioned the handicap"

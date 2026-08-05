@@ -341,3 +341,98 @@ def test_the_preset_list_scrolls_without_making_the_screen_taller(window):
     window.presetView.yview_moveto(1.0)
     window.root.update()
     assert window.presetView.yview()[1] == pytest.approx(1.0, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# The setup screen has to fit on a screen
+# ---------------------------------------------------------------------------
+
+# buildSetup calls resizable(False, False) and never sets an explicit geometry, so the window
+# is exactly as big as its widgets ask for. That is the right behaviour for a column of
+# controls and it has one failure mode: nothing stops the screen growing, and when it grows
+# past the display there is no scrollbar, no clipping and no dragging it bigger -- the bottom
+# is simply unreachable and START GAME may be the thing you cannot reach.
+#
+# It got there. Before the two-column rebuild the screen asked for **644 x 1039** on a 1050
+# tall display, which is off the bottom once a menu bar and a title bar are counted. The
+# ceilings below are deliberately loose: this is here to catch the screen walking off the
+# display again, not to pin a layout to the pixel.
+SETUP_MAX_H = 800
+SETUP_MAX_W = 820
+
+
+def setupSize(window):
+    window.root.update_idletasks()
+    return window.frame.winfo_reqwidth(), window.frame.winfo_reqheight()
+
+
+@pytest.mark.parametrize("mode, name", [(0, "2 player"), (1, "1 player"), (2, "0 player")])
+def test_the_setup_screen_fits_on_a_screen(window, mode, name):
+    window.buildSetup()
+    window.modeVar.set(mode)
+    window.refreshSetup()
+
+    width, height = setupSize(window)
+    assert height <= SETUP_MAX_H, "%s: the menu is %dpx tall and heading off the display" % (
+        name, height)
+    assert width <= SETUP_MAX_W, "%s: the menu is %dpx wide" % (name, width)
+    assert window.errors == []
+
+
+def test_the_tallest_the_setup_screen_gets_is_still_short_enough(window):
+    """0 player with a separate black depth: every group on the screen showing at once."""
+    window.buildSetup()
+    window.modeVar.set(2)
+    window.splitDepthVar.set(1)
+    window.entryVar.set(0)
+    window.refreshSetup()
+
+    _width, height = setupSize(window)
+    assert height <= SETUP_MAX_H, "the fullest the menu gets is %dpx tall" % height
+    assert window.errors == []
+
+
+def test_a_mode_that_cannot_use_a_control_does_not_reserve_room_for_it(window):
+    """Greying keeps a control's space; hiding gives it back. Both happen here, and the
+    point of the second is that the screen is shorter for it -- if these two ever measure
+    the same, the collapsing has silently stopped working."""
+    window.buildSetup()
+
+    window.modeVar.set(2)
+    window.splitDepthVar.set(1)
+    window.refreshSetup()
+    _w, tallest = setupSize(window)
+
+    window.modeVar.set(0)          # two humans: the whole COMPUTER box is beside the point
+    window.refreshSetup()
+    _w, shortest = setupSize(window)
+
+    assert shortest < tallest - 100, (
+        "2 player should be much shorter than 0 player with a split depth, got %d vs %d"
+        % (shortest, tallest))
+    assert window.errors == []
+
+
+def test_the_controls_come_back_when_the_mode_comes_back(window):
+    """pack() re-adds at the end of its parent's order, so a group that is hidden and shown
+    again lands at the bottom unless something puts it back in place. showRows repacks the
+    whole list in order, and this is what says so: the boxes have to read down the column in
+    the same order after a round trip through a mode that hid one of them."""
+    window.buildSetup()
+    window.modeVar.set(1)
+    window.refreshSetup()
+    window.root.update_idletasks()
+    # pack_slaves, not winfo_ismapped: the test root is withdrawn, so nothing on it is ever
+    # mapped and a check that asked would pass on two empty lists without looking at anything.
+    before = [w.cget("text") for w in window.leftColumn.pack_slaves()]
+
+    window.modeVar.set(0)          # hides YOUR SIDE
+    window.refreshSetup()
+    window.modeVar.set(1)          # and brings it back
+    window.refreshSetup()
+    window.root.update_idletasks()
+    after = [w.cget("text") for w in window.leftColumn.pack_slaves()]
+
+    assert after == before, "the boxes came back in a different order"
+    assert "YOUR SIDE" in " ".join(after)
+    assert window.errors == []

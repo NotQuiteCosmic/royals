@@ -312,6 +312,26 @@ miniature is therefore the real drawing code with different arguments, rather th
 impression of it. Gradients are board-canvas only and drawn as bands — the canvas has no
 gradient primitive and no alpha, and the side panel is a `tk.Frame` rather than a canvas.
 
+### Asking the engine
+
+A game can be started with the assistant on, and then whoever is on move can ask for the best
+move at a depth they pick, see it drawn on the board, and take it or leave it. It is offered
+whenever a *person* is on move, which is why a 0-player game never offers it — that falls out
+of the rule rather than being a mode check.
+
+It is the same `takeTurn` the computer opponent plays by, on the same worker thread with the
+same generation guard: a hint asked for and then abandoned by pressing NEW GAME is dropped
+like any other stale search. A suggestion is a drawing until it is accepted; accepting hands it
+to `commit`, so it is ko-checked, recorded and counted exactly as a clicked move is, and there
+is no second way into the game.
+
+Two things worth knowing. The search's tables are process-global, so asking at depth 10 leaves
+the opponent's shallower search with entries from a deeper one — which makes it play slightly
+*better* afterwards, since a transposition entry is an exact evaluation and a deeper one is a
+better one. And the move list cannot tell an assisted move from a played one, because there is
+nothing to tell: it is a legal move either way. That is precisely why `recordNote` puts the
+count in the file's header line.
+
 ### Two cameras
 
 The board can be drawn orthographically — the view it has always had, where a square is the
@@ -562,6 +582,9 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for the workflow. In short:
   flight" a fact rather than a race. Needs a display too.
 - **`tests/test_desktop_appearance.py`** — the appearance screen, and chiefly that the
   miniature draws the theme being edited rather than the one in use. Needs a display.
+- **`tests/test_desktop_assist.py`** — the engine as an assistant: that a suggestion changes
+  nothing until it is taken, that taking it is an ordinary move through `commit`, and that a
+  saved record says how many moves came from it. Needs a display.
 - **`tests/test_projection.py`** — the two cameras. Mostly display-free, because a `View` is
   eleven floats and some trigonometry, so the geometry half runs on a headless runner and
   only the board-drawing half skips. It is the first test the projection has ever had.

@@ -139,9 +139,16 @@ usually refuses to let it read anything under `~/Documents` and the fallback is 
 can go on running an old copy indefinitely. `~/Library/Logs/Royals.log` says which happened.
 Rebuilding by hand is the reliable way.
 
-Both commands write `~/Applications/Royals.app`, so they collide: running the installer on a
-machine where you built the app from your own checkout replaces it with the one from `~/Royals`.
-Pass a path to keep them apart — `sh tools/build-royals-app.sh ~/Applications/Royals-dev.app`.
+Both commands write `~/Applications/Royals.app`, and the installer knows it. Every bundle
+records the checkout it was built from, so an installer run that finds an app built somewhere
+else leaves it alone and says where to rebuild it — it will not quietly swap your own build for
+the public one. Pass a path if you want both at once:
+`sh tools/build-royals-app.sh ~/Applications/Royals-dev.app`.
+
+That check lives in the installer, so it protects you from the version of the installer that
+has it. `~/Royals` only ever fast-forwards GitHub's `master`, so a copy older than this
+paragraph will still replace your build — run `sh install-desktop.sh` from the checkout that
+has this text in it, or update `~/Royals` first.
 
 To remove it, `sh ~/Royals/uninstall.sh`, or delete `~/Royals` and `~/Applications/Royals.app`
 by hand. That's all there is.

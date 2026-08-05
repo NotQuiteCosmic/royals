@@ -46,17 +46,19 @@ python3 engine-rs/tests/wasm_parity.py            # the browser's copy
 ```
 
 Expected green state: `golden_enter.txt` 445 lines, `golden_moves.txt` 13,051 lines,
-`golden_search.txt` 245 lines identical — **from both implementations** — and 439 tests passing
-(23 accel, 24 break rules, 19 carry rules, 7 delayed win, 20 desktop appearance,
-11 desktop lifecycle, 15 desktop record, 28 engine-purity, 19 entering, 4 flights,
-66 notation, 22 projection, 18 record, 45 theme, 105 web API, 13 win horizon). With
-`ROYALS_NO_ACCEL=1` it is 436 passed and 3 skipped; the skips are the tests that need the
+`golden_search.txt` 245 lines identical — **from both implementations** — and 500 tests passing
+(23 accel, 24 break rules, 19 carry rules, 7 delayed win, 26 desktop appearance,
+13 desktop assist, 15 desktop lifecycle, 15 desktop record, 28 engine-purity, 19 entering,
+4 flights, 66 notation, 38 position setup, 22 projection, 18 record, 45 theme, 105 web API,
+13 win horizon). With
+`ROYALS_NO_ACCEL=1` it is 497 passed and 3 skipped; the skips are the tests that need the
 wheel, and skipping is
-correct — not having it is a supported configuration. The three `test_desktop_*.py` files and
-`test_projection.py` drive a real tkinter window, so on a headless runner their 68 skip
-instead, and that is also
-correct. They share one root, from `tests/conftest.py`, and that is not a tidiness measure --
-see the note there.
+correct — not having it is a supported configuration. **87 of them drive a real tkinter
+window** and skip on a headless runner, which is also correct. Counting the files that hold
+them stopped being useful once three of them came to be part display and part not — the
+figure is every test taking the `window` fixture, and
+`python3 -m pytest tests/ --fixtures-per-test` is how to re-count it. They share one root,
+from `tests/conftest.py`, and that is not a tidiness measure -- see the note there.
 
 `cargo test` is 35, and `royals-golden` must emit `golden_moves.txt` byte for byte. A
 Python-only run proves almost nothing about what a browser or a wheel-equipped machine will do.
@@ -78,7 +80,7 @@ cursor is left open makes the next `commit` fail. Everything in `persist.py` goe
 `_run`/`_query`, which close theirs. Don't add a bare `self._conn.execute`.
 
 The web API tests call `pytest.importorskip("fastapi")`, so without `pip install -e ./web`
-they skip silently and the run reports 324 passed and 11 skipped, not 439. Ten of those
+they skip silently and the run reports 385 passed and 11 skipped, not 500. Ten of those
 eleven are individual tests; the eleventh is the whole of `test_web_api.py`, because a module
 that skips at import is one item however many tests it holds — which is why 105 tests can
 vanish and the total only fall by 115. Six of the ten are the cross-checks in
@@ -218,7 +220,7 @@ was arrived at the hard way. Match that. A comment explaining a performance deci
 rule's edge case is in keeping here; a comment restating what the line does is not.
 
 Numbers in prose follow one rule: **exact where the reader is meant to check it, rounded into
-words where it is only conveying scale.** "439 tests, and 324 means you forgot the web package"
+words where it is only conveying scale.** "500 tests, and 385 means you forgot the web package"
 is a check and has to be exact. "thirteen thousand lines", "about thirty-six times faster" are
 rhetoric, and a rounded word is still true two commits later where a digit is not. Every count
 in this file is the first kind, which is why they live here and nowhere else.
@@ -228,8 +230,8 @@ in this file is the first kind, which is why they live here and nowhere else.
 Every figure above comes from something that already runs. From the repo root:
 
 ```bash
-python3 -m pytest tests/ -q                      # the total, and 439 vs 324 above
-ROYALS_NO_ACCEL=1 python3 -m pytest tests/ -q    # the 436 passed / 3 skipped split
+python3 -m pytest tests/ -q                      # the total, and 500 vs 385 above
+ROYALS_NO_ACCEL=1 python3 -m pytest tests/ -q    # the 497 passed / 3 skipped split
 (cd tests && python3 regress.py check all)       # the three golden line counts
 cargo test --manifest-path engine-rs/Cargo.toml  # the 35
 python3 engine-rs/tests/wasm_parity.py           # prints its own question count
@@ -239,7 +241,7 @@ For the per-file breakdown, `python3 -m pytest tests/<file> --collect-only -q` �
 `def test_` undercounts badly, because several files parametrise (`test_accel.py` reads as 11
 and collects 23).
 
-The 324 is the awkward one: it needs a checkout where `./web` was never installed, and no
+The 379 is the awkward one: it needs a checkout where `./web` was never installed, and no
 pytest flag simulates that. A stub on `PYTHONPATH` does reproduce it, but only if you get two
 things right, both of which give a plausible wrong answer rather than an error.
 
@@ -249,7 +251,7 @@ printf 'raise ModuleNotFoundError("No module named %s", name="fastapi")\n' "'fas
   > /tmp/noweb/fastapi.py
 printf 'raise ModuleNotFoundError("No module named %s", name="royals_web")\n' "'royals_web'" \
   > /tmp/noweb/royals_web/__init__.py
-PYTHONPATH=/tmp/noweb python3 -m pytest tests/ -q      # 324 passed, 11 skipped
+PYTHONPATH=/tmp/noweb python3 -m pytest tests/ -q      # 379 passed, 11 skipped
 ```
 
 **It has to be `ModuleNotFoundError`, not `ImportError`.** `importorskip` skips on the former

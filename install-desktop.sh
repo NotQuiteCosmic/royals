@@ -212,15 +212,39 @@ fi
 # other than a previous run of this installer put an app there, don't call it at all.
 # The BUILT marker inside the bundle is what that script leaves behind, and its absence is
 # the only evidence available that the bundle is somebody else's.
+#
+# The marker is not evidence enough by itself, and this is the case it missed. Anyone working
+# on the game runs tools/build-royals-app.sh from their own checkout, and that writes the same
+# marker -- so a bundle carrying weeks of unreleased work looked exactly like one of ours, and
+# a routine update quietly replaced it with whatever the public clone happens to be at. Which
+# on a machine whose work has not been pushed is a rollback, arriving with no warning and no
+# way back but to notice and rebuild.
+#
+# The bundle does say where it came from: its launcher bakes in the checkout it was built from.
+# So the question "is this mine?" has an honest answer, and it is asked here.
 BUILD_APP=0
 APP_NOTE=""
 if [ "$PLATFORM" = macos ]; then
     if [ ! -e "$APP" ]; then
         BUILD_APP=1
-    elif [ -f "$APP/Contents/Resources/game/BUILT" ]; then
-        BUILD_APP=1
-    else
+    elif [ ! -f "$APP/Contents/Resources/game/BUILT" ]; then
         APP_NOTE="$APP exists but was not built by this installer -- leaving it alone"
+    else
+        # A bundle that cannot say where it came from is the case the marker alone was always
+        # deciding, and it is updated as it always was. Refusing those would turn a guard into
+        # an installer that has stopped working.
+        BUILT_FROM=$(sed -n 's/^REPO="\(.*\)"$/\1/p' "$APP/Contents/MacOS/Royals" 2>/dev/null \
+                     | head -1)
+        BUILT_FROM=${BUILT_FROM%/}
+
+        if [ -z "$BUILT_FROM" ] || [ "$BUILT_FROM" = "${ROYALS_HOME%/}" ]; then
+            BUILD_APP=1
+        else
+            APP_NOTE="$APP was built from $BUILT_FROM, not from $ROYALS_HOME -- leaving it
+    alone, since rebuilding it here would replace that copy with this one. To update it:
+
+        sh $BUILT_FROM/tools/build-royals-app.sh"
+        fi
     fi
 fi
 

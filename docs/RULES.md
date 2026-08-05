@@ -265,6 +265,32 @@ Parsing and printing both live in
 [engine/src/royals_engine/notation.py](../engine/src/royals_engine/notation.py), which is
 the only module permitted to know how a move is packed.
 
+### Writing a position down
+
+A game record is its moves, and it always starts from the entering board. A **position** is
+the other thing you may want to write down — an endgame worth studying, a puzzle, a board to
+start a game from — and it has a file of its own:
+
+```
+# Royals position 1
+# blue to finish on d4; red's spy is watching from e4
+turn blue
+d4:0,0,1,4,0,0,0,0|e4:1,0,1,0,0,0,0,0|e5:0,0,0,0,1,0,0,0
+```
+
+One line per board, one square per `|`-separated group, and eight numbers per square:
+`side, dragon, spy, pawns, royal, capturedSpy, capturedPawns, prisonerFlag`. Empty squares
+are left out; an empty board is written `-empty-`. Comments and the header are dropped on
+read, so everything a reader needs is on the two real lines.
+
+The desktop's **SET UP A POSITION** screen reads and writes these, and plays from them. A
+position may be a study rather than a full army — four pieces and no dragons is fine — but a
+board no square could hold, five pawns for one side or two royals on a square, is refused.
+
+A game begun from a position **cannot be saved or reviewed**: a record numbers its plies from
+the twelve entering placements, and a game that never had them has no place in the format.
+Save the position instead.
+
 ---
 
 ## Where the rules actually live
@@ -281,6 +307,7 @@ This page is prose and prose drifts. The authoritative statements are all in cod
 | Break range | `engine.py` — `checkBreak` |
 | Entering | `engine.py` — the `Entering` section |
 | Who places whose piece | `engine.py` — `enteringChooser` |
+| What a position file may hold | `notation.py` — `decode_position`, `validate_board` |
 | Ko | `engine.py` — the `KO` section |
 | A completed stack | `hasher.py` — `WIN_CODES`, `Check_For_Winner` |
 | *When* that wins | the callers, not the detector — `ai.py`'s `minimax`, `royals_web/game.py`'s `_advance_turn`, and each front end's turn loop |

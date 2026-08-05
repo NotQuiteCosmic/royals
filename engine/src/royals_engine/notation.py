@@ -480,3 +480,174 @@ def _check_piece_counts(board):
                     % ("blue" if side == 0 else "red", got, piece, got - limit))
 
     return counts
+
+
+# ---------------------------------------------------------------------------
+# Boards, as text
+# ---------------------------------------------------------------------------
+# The packed form above is for storage; this one is for a person. A position somebody
+# writes by hand -- an endgame study, a bug reduced to four pieces -- has to be readable
+# and diffable, and 98 bytes of little-endian shorts is neither.
+#
+# **The square syntax here is not new.** It is exactly what `tests/regress.py`'s boardText
+# emits into every line of golden_moves.txt, and there has been a decoder for it since the
+# Rust port: engine-rs/tests/golden_search.rs parses it to check the search golden. What
+# was missing was the Python half, so the format could be written here and read only over
+# there. tests/test_position_setup.py pins the two encoders together across a sweep,
+# because a drift would break golden_search.rs and say so in a place nobody would connect
+# back to here.
+#
+# Eight fields per square, in Parse_Space order -- which is Build_Space's argument list, so
+# decoding a square is Build_Space(*fields) and inherits its overfull check for nothing.
+
+BOARD_EMPTY = "-empty-"
+SQUARE_SEP = "|"
+FIELD_SEP = ","
+ALG_SEP = ":"
+
+POSITION_MAGIC = "# Royals position 1"
+TURN_KEY = "turn"
+
+# The engine's own names for the sides, and what a file is written with. The desktop calls
+# them White and Black on its buttons, so both are accepted on the way in -- a person
+# hand-editing a file should not have to know that the window renamed them.
+SIDE_TO_NAME = {0: "blue", 1: "red"}
+NAME_TO_SIDE = {"blue": 0, "red": 1, "white": 0, "black": 1}
+
+
+def encode_board(board):
+    """Board tuple -> `d3:0,1,0,0,0,0,0,0|d4:0,0,1,4,1,0,0,0`.
+
+    Empty squares are left out rather than written as zeroes: a position is usually a
+    handful of pieces, and 44 empties would bury them. An entirely empty board is the
+    `-empty-` sentinel, because a zero-length line is not obviously a board at all.
+    """
+    validate_board(board)
+
+    squares = []
+    for index, s in enumerate(Hasher.Parse_Board(board)):
+        fields = s[:Hasher.FIELDS]
+        if not any(fields):
+            continue
+        squares.append(index_to_alg(index) + ALG_SEP
+                       + FIELD_SEP.join(str(f) for f in fields))
+
+    return SQUARE_SEP.join(squares) if squares else BOARD_EMPTY
+
+
+def decode_board(text):
+    """`d3:0,1,...` -> a board tuple, validated.
+
+    Every failure is a NotationError naming the square at fault, because the input is a
+    file somebody may well have typed. Build_Space's own ValueError for an overfull square
+    is caught and reworded for the same reason -- "square overfull" with no square in it is
+    not much help when the line holds a dozen of them.
+    """
+    if not isinstance(text, str):
+        raise NotationError("a board is text, got %r" % (type(text).__name__,))
+
+    body = text.strip()
+    if not body:
+        raise NotationError("a board line is empty")
+    if body == BOARD_EMPTY:
+        return Hasher.EMPTY_BOARD
+
+    cells = list(Hasher.EMPTY_BOARD)
+    seen = set()
+
+    for chunk in body.split(SQUARE_SEP):
+        piece = chunk.strip()
+        if not piece:
+            raise NotationError("empty square in %r -- two separators together?" % (body,))
+        if ALG_SEP not in piece:
+            raise NotationError("%r is not `square:fields`" % (piece,))
+
+        alg, _, raw = piece.partition(ALG_SEP)
+        square = alg_to_square(alg.strip())
+        if square in seen:
+            raise NotationError("%s appears twice" % (alg.strip().lower(),))
+        seen.add(square)
+
+        parts = raw.split(FIELD_SEP)
+        if len(parts) != Hasher.FIELDS:
+            raise NotationError("%s has %d fields, expected %d (%s)"
+                                % (alg, len(parts), Hasher.FIELDS,
+                                   "side,dragon,spy,pawns,royal,capSpy,capPawns,prisFlag"))
+
+        fields = []
+        for part in parts:
+            value = part.strip()
+            # int() takes "+3", " 3 " and unicode digits; a field is a plain small number
+            # and anything else is a typo worth naming rather than quietly accepting.
+            if not value.isdigit():
+                raise NotationError("%s has field %r, which is not a whole number"
+                                    % (alg, part))
+            fields.append(int(value))
+
+        try:
+            cells[square - 1] = Hasher.Build_Space(*fields)
+        except ValueError as exc:
+            raise NotationError("%s is not a square this game can hold: %s" % (alg, exc)) from exc
+
+    return validate_board(tuple(cells))
+
+
+def encode_position(board, side, notes=()):
+    """A board and whose turn it is -> the text of a position file.
+
+    `notes` are free-text header lines and are dropped on read, exactly as encode_game's
+    are. Everything a reader needs is on the two real lines.
+    """
+    if side not in SIDE_TO_NAME:
+        raise NotationError("side is 0 or 1, got %r" % (side,))
+
+    lines = [POSITION_MAGIC]
+    for note in notes:
+        lines.extend(_comment(note))
+    lines.append("%s %s" % (TURN_KEY, SIDE_TO_NAME[side]))
+    lines.append(encode_board(board))
+    return "\n".join(lines) + "\n"
+
+
+def decode_position(text):
+    """The text of a position file -> (board, side to move).
+
+    Order of the two lines is not enforced -- a `turn` line and a board line are told apart
+    by their first word, and requiring them in a fixed order would only make a hand-edited
+    file fail for a reason that does not matter.
+    """
+    if not isinstance(text, str):
+        raise NotationError("a position is text, got %r" % (type(text).__name__,))
+
+    turn = None
+    board_line = None
+
+    for line in text.splitlines():
+        # Same comment rule as decode_game: a '#' can never occur inside a token, so it
+        # opens a comment wherever it appears.
+        body = line.split(COMMENT, 1)[0].strip()
+        if not body:
+            continue
+
+        head = body.split(None, 1)
+        if head[0].lower() == TURN_KEY:
+            if turn is not None:
+                raise NotationError("two `turn` lines")
+            if len(head) < 2:
+                raise NotationError("`turn` needs a side: turn blue, or turn red")
+            name = head[1].strip().lower()
+            if name not in NAME_TO_SIDE:
+                raise NotationError("%r is not a side -- blue or red" % (head[1].strip(),))
+            turn = NAME_TO_SIDE[name]
+            continue
+
+        if board_line is not None:
+            raise NotationError("two board lines -- a position file holds one position")
+        board_line = body
+
+    if board_line is None:
+        raise NotationError("no board in this file")
+    if turn is None:
+        raise NotationError("no `turn` line -- a position has to say who moves")
+
+    return decode_board(board_line), turn
