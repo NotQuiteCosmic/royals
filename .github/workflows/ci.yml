@@ -52,9 +52,21 @@ jobs:
       # entering heuristic or the Perlin field changed; moves can only move if the rules
       # changed. Reporting them together made a rules bug and an opening-book tweak look
       # like the same event.
+      #
+      # pushmoves is checked here and not only in `differential:` because this is the one
+      # job that runs PyPy, and the entire reason the goldens run under two interpreters is
+      # that CPython and PyPy once disagreed in the last place on a float, flipped an
+      # alpha-beta cutoff, and changed the move played. A contract verified under a single
+      # interpreter is not defended against that -- which is what the variant's contract was
+      # until this step existed. It is a separate step rather than `check all` so a failure
+      # still names the file, which is the whole point of the split above.
       - name: Rules contract -- golden_moves.txt must be byte-identical
         working-directory: tests
         run: python regress.py check moves
+
+      - name: Variant rules contract -- golden_push_moves.txt must be byte-identical
+        working-directory: tests
+        run: python regress.py check pushmoves
 
       - name: Entering contract -- golden_enter.txt must be byte-identical
         working-directory: tests
@@ -216,7 +228,12 @@ jobs:
         run: cargo build --release --features wasm --target wasm32-unknown-unknown
         working-directory: engine-rs
 
-      - name: The shipped module plays by the same rules
+      # Both rule sets, in one run. The parity check swept only the standard game until the
+      # push-range variant existed, and it stayed green while the browser was structurally
+      # unable to play the variant at all -- the module had no way to be told, and the
+      # three-byte move record had nowhere to put a distance. A guard with a blind spot is
+      # worse than a missing one, because it reads as coverage.
+      - name: The shipped module plays by the same rules, standard and push-range
         run: |
           python engine-rs/tests/wasm_parity.py \
             engine-rs/target/wasm32-unknown-unknown/release/royals_engine.wasm

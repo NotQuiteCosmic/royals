@@ -34,7 +34,8 @@ python3 -m py_compile engine/src/royals_engine/*.py apps/*/*.py    # quick synta
 ```
 
 **The engine exists twice, so those three commands are not the whole check.** The full sweep,
-which is what CI runs:
+which is what to run locally before pushing — and which is *not* the same set CI runs, see
+below:
 
 ```bash
 cargo test --manifest-path engine-rs/Cargo.toml
@@ -47,16 +48,35 @@ ROYALS_NO_ACCEL=1 python3 -m pytest tests/ -q     # the pure-Python path
 python3 engine-rs/tests/wasm_parity.py            # the browser's copy
 ```
 
+**Two of those lines have no counterpart in `ci.yml`, which is worth knowing rather than
+assuming.** Neither `royals-golden` invocation runs in CI at all. The Rust rules are still held
+to both move goldens there, by a different route: `differential:` builds the wheel, asserts
+`_accel.active()` so a wheel that installs but does not import cannot pass as agreement, and
+then runs `regress.py check all` through it. That is the same rules code by way of `py.rs`
+rather than the same binary — equivalent for the rules, and no check at all on `royals-golden`
+itself. The two lines above are a local check nothing else makes for you.
+
+**And `check all` is not what the `goldens:` job runs.** That job — the only one on the
+CPython-and-PyPy matrix — checks each baseline by name, deliberately, so a failure says which
+contract broke rather than merely that something did. All four are named there now.
+`golden_push_moves.txt` was the late arrival and spent its first commits verified only in
+`differential:`, which is CPython-only; since the whole reason the goldens run under two
+interpreters is that CPython and PyPy once disagreed on a float, a contract checked under one
+of them was not defended against the thing the arrangement exists to catch. It is checked under
+both as of the `check pushmoves` step. **A fifth baseline must be added there too — `check all`
+elsewhere will not cover it, and nothing fails to remind you.**
+
 Expected green state: `golden_enter.txt` 445 lines, `golden_moves.txt` 13,051 lines,
 `golden_push_moves.txt` 12,365 lines, `golden_search.txt` 245 lines identical — **from both
-implementations** — and 604 tests passing
+implementations** — and 632 tests passing
 (23 accel, 24 break rules, 19 carry rules, 7 delayed win, 28 desktop appearance,
-13 desktop assist, 27 desktop lifecycle, 29 desktop record, 28 engine-purity, 19 entering,
+13 desktop assist, 28 desktop lifecycle, 32 desktop record, 24 dragon balance,
+28 engine-purity, 19 entering,
 4 flights, 101 notation, 53 position setup, 22 projection, 12 push range, 26 record,
 45 theme, 111 web API, 13 win horizon). With
-`ROYALS_NO_ACCEL=1` it is 601 passed and 3 skipped; the skips are the tests that need the
+`ROYALS_NO_ACCEL=1` it is 629 passed and 3 skipped; the skips are the tests that need the
 wheel, and skipping is
-correct — not having it is a supported configuration. **130 of them drive a real tkinter
+correct — not having it is a supported configuration. **134 of them drive a real tkinter
 window** and skip on a headless runner, which is also correct. Counting the files that hold
 them stopped being useful once three of them came to be part display and part not — the
 figure is every test taking the `window` fixture, and
@@ -65,9 +85,9 @@ from `tests/conftest.py`, and that is not a tidiness measure -- see the note the
 
 `cargo test` is 36, and `royals-golden` must emit `golden_moves.txt` byte for byte. A
 Python-only run proves almost nothing about what a browser or a wheel-equipped machine will do.
-Note what that 36 leaves out: the seven tests in `engine-rs/src/wasm.rs` are behind
+Note what that 36 leaves out: the nine tests in `engine-rs/src/wasm.rs` are behind
 `--features wasm` and a bare `cargo test` never compiles them, including the one asserting the
-move-kind order `static/engine.js` decodes with. **`cargo test --features wasm` is 43 and does
+move-kind order `static/engine.js` decodes with. **`cargo test --features wasm` is 45 and does
 compile them** — they build for the host perfectly well, the gate is about what ships in the
 module. CI's `rust:` job runs both, in that order. `wasm_parity.py` is still what guards the
 shipped artifact, which is a different question from whether the code is correct.
@@ -83,7 +103,7 @@ cursor is left open makes the next `commit` fail. Everything in `persist.py` goe
 `_run`/`_query`, which close theirs. Don't add a bare `self._conn.execute`.
 
 The web API tests call `pytest.importorskip("fastapi")`, so without `pip install -e ./web`
-they skip silently and the run reports 481 passed and 13 skipped, not 604. Twelve of those
+they skip silently and the run reports 509 passed and 13 skipped, not 632. Twelve of those
 thirteen are individual tests; the thirteenth is the whole of `test_web_api.py`, because a
 module that skips at import is one item however many tests it holds — which is why 111 tests
 can vanish and the total only fall by 123. Eight of the twelve are the cross-checks in
@@ -246,7 +266,7 @@ was arrived at the hard way. Match that. A comment explaining a performance deci
 rule's edge case is in keeping here; a comment restating what the line does is not.
 
 Numbers in prose follow one rule: **exact where the reader is meant to check it, rounded into
-words where it is only conveying scale.** "572 tests, and 449 means you forgot the web package"
+words where it is only conveying scale.** "632 tests, and 509 means you forgot the web package"
 is a check and has to be exact. "thirteen thousand lines", "about thirty-six times faster" are
 rhetoric, and a rounded word is still true two commits later where a digit is not. Every count
 in this file is the first kind, which is why they live here and nowhere else.
@@ -256,10 +276,10 @@ in this file is the first kind, which is why they live here and nowhere else.
 Every figure above comes from something that already runs. From the repo root:
 
 ```bash
-python3 -m pytest tests/ -q                      # the total, and 604 vs 481 above
-ROYALS_NO_ACCEL=1 python3 -m pytest tests/ -q    # the 601 passed / 3 skipped split
-(cd tests && python3 regress.py check all)       # the three golden line counts
-cargo test --manifest-path engine-rs/Cargo.toml  # the 35
+python3 -m pytest tests/ -q                      # the total, and 632 vs 509 above
+ROYALS_NO_ACCEL=1 python3 -m pytest tests/ -q    # the 629 passed / 3 skipped split
+(cd tests && python3 regress.py check all)       # the four golden line counts
+cargo test --manifest-path engine-rs/Cargo.toml  # the 36
 python3 engine-rs/tests/wasm_parity.py           # prints its own question count
 ```
 
@@ -267,7 +287,7 @@ For the per-file breakdown, `python3 -m pytest tests/<file> --collect-only -q` �
 `def test_` undercounts badly, because several files parametrise (`test_accel.py` reads as 11
 and collects 23).
 
-The 449 is the awkward one: it needs a checkout where `./web` was never installed, and no
+The 509 is the awkward one: it needs a checkout where `./web` was never installed, and no
 pytest flag simulates that. A stub on `PYTHONPATH` does reproduce it, but only if you get two
 things right, both of which give a plausible wrong answer rather than an error.
 
@@ -277,7 +297,7 @@ printf 'raise ModuleNotFoundError("No module named %s", name="fastapi")\n' "'fas
   > /tmp/noweb/fastapi.py
 printf 'raise ModuleNotFoundError("No module named %s", name="royals_web")\n' "'royals_web'" \
   > /tmp/noweb/royals_web/__init__.py
-PYTHONPATH=/tmp/noweb python3 -m pytest tests/ -q      # 449 passed, 13 skipped
+PYTHONPATH=/tmp/noweb python3 -m pytest tests/ -q      # 509 passed, 13 skipped
 ```
 
 **It has to be `ModuleNotFoundError`, not `ImportError`.** `importorskip` skips on the former
@@ -286,6 +306,7 @@ loudly instead of being silently skipped. A stub raising plain `ImportError` get
 collection error, not the count.
 
 **Both names have to be hidden.** Blocking `fastapi` alone leaves `royals_web` importable and
-merely broken, and the run reports 334 passed / 1 skipped — ten tests that a real checkout
-without the web package would skip stay in, so the number looks reasonable and is wrong.
+merely broken, and the run reports 521 passed / 1 skipped — the twelve tests that a real
+checkout without the web package would skip stay in, and only `test_web_api.py`'s
+module-level skip still fires, so the number looks reasonable and is wrong.
 `pip install -e ./web` puts both names there, so a checkout without it has neither.

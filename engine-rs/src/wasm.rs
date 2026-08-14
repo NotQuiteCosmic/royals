@@ -59,13 +59,22 @@ use crate::MoveKind;
 const SQUARES: usize = 49;
 const FIELDS: usize = 8;
 
-/// The most moves one square can offer: four jump strands of six, four pushes, four breaks
-/// and four frees.
-const MAX_MOVES: usize = 36;
+/// The most moves one square can offer: four jump strands of six, four breaks, four frees,
+/// and four pushes -- which under the push-range rule are one move per distance, up to six
+/// each. Off the rule that last term is 4 rather than 24 and the true ceiling is 36, but the
+/// buffer is sized for the rule being on because the page can turn it on at any moment and a
+/// truncated move list is a legal move the player is never offered.
+const MAX_MOVES: usize = 56;
 
-/// Three bytes a move -- kind, 1-based origin, target -- and never more than 49 entries when
-/// [`royals_origins`] is the one writing.
-const OUT_BYTES: usize = MAX_MOVES * 3;
+/// Four bytes a move -- kind, 1-based origin, target, travel -- and never more than 49
+/// entries of one byte each when [`royals_origins`] is the one writing.
+///
+/// **`travel` is why this is four and not three.** Under the push-range rule the pushes out
+/// of a square all share one `target` -- the square being shoved -- and differ only in how
+/// far the line travels. Three bytes a move would have handed the page six identical
+/// triples with nothing to choose between them.
+const MOVE_STRIDE: usize = 4;
+const OUT_BYTES: usize = MAX_MOVES * MOVE_STRIDE;
 
 /// The kind byte. **`engine.js` mirrors this order**, and `kinds_are_in_the_documented_order`
 /// below is what keeps the two from drifting.
@@ -118,12 +127,37 @@ pub extern "C" fn royals_board_ptr() -> *mut u8 {
     board_in().as_mut_ptr()
 }
 
-/// Where answers appear. Three bytes per move: kind, 1-based origin, target -- with target a
-/// 0-based square for a jump, push or free, and a **direction index** for a break, which is
-/// the same asymmetry the engine carries everywhere else.
+/// Where answers appear. Four bytes per move: kind, 1-based origin, target, travel -- with
+/// target a 0-based square for a jump, push or free, and a **direction index** for a break,
+/// which is the same asymmetry the engine carries everywhere else. `travel` is 1 for
+/// everything that is not a push that travels.
 #[no_mangle]
 pub extern "C" fn royals_out_ptr() -> *const u8 {
     out().as_ptr()
+}
+
+/// How many bytes a move occupies in that buffer, for `engine.js` to assert against its own
+/// constant on load.
+///
+/// This exists because [`royals_self_test`] cannot do the job: it answers a *move count*,
+/// which a change to the buffer layout does not affect -- so a page built for one stride
+/// would decode a module built for the other into plausible nonsense and pass the self test
+/// on the way. The two checks ask different questions and the module needs both.
+#[no_mangle]
+pub extern "C" fn royals_move_stride() -> u32 {
+    MOVE_STRIDE as u32
+}
+
+/// Turn the push-range rule on or off for everything asked afterwards.
+///
+/// The rule lives in a process-wide atomic (`crate::set_push_range`), which is sound here for
+/// the reason the rest of this module's shared state is: wasm without `SharedArrayBuffer` has
+/// one thread and one page has one game. It is exported at all because the PyO3 binding that
+/// sets it for the wheel is behind `feature = "python"` and so absent from this build -- which
+/// left the browser structurally unable to play the variant however the flag was compiled in.
+#[no_mangle]
+pub extern "C" fn royals_set_push_range(on: u32) {
+    crate::set_push_range(on != 0);
 }
 
 /// Packs whatever is in the input buffer into a board. Returns 1, or **0 if any square was
@@ -173,9 +207,12 @@ pub extern "C" fn royals_moves_from(contr: u32, origin: u32, moving_pris: u32) -
             break;
         }
 
-        out[count * 3] = kind_byte(mv.kind);
-        out[count * 3 + 1] = mv.origin;
-        out[count * 3 + 2] = mv.target;
+        out[count * MOVE_STRIDE] = kind_byte(mv.kind);
+        out[count * MOVE_STRIDE + 1] = mv.origin;
+        out[count * MOVE_STRIDE + 2] = mv.target;
+        // 1 for everything under the standard rules, so a page that ignores this byte reads
+        // the same move list it always did.
+        out[count * MOVE_STRIDE + 3] = mv.travel;
         count += 1;
     }
 
@@ -277,9 +314,10 @@ mod tests {
 
         let out = out();
         for (i, mv) in want.iter().enumerate() {
-            assert_eq!(out[i * 3], kind_byte(mv.kind));
-            assert_eq!(out[i * 3 + 1], mv.origin);
-            assert_eq!(out[i * 3 + 2], mv.target);
+            assert_eq!(out[i * MOVE_STRIDE], kind_byte(mv.kind));
+            assert_eq!(out[i * MOVE_STRIDE + 1], mv.origin);
+            assert_eq!(out[i * MOVE_STRIDE + 2], mv.target);
+            assert_eq!(out[i * MOVE_STRIDE + 3], mv.travel);
         }
 
         // and the dragon has no prisoners to bring
@@ -331,9 +369,56 @@ mod tests {
 
     #[test]
     fn no_square_can_offer_more_than_the_buffer_holds() {
-        // MAX_MOVES is four jump strands of six, four pushes, four breaks and four frees --
-        // the widest a single origin can possibly be
+        // MAX_MOVES is four jump strands of six, four breaks, four frees, and four pushes --
+        // which under the push-range rule are one move per distance, up to six each. That
+        // last term is what took this from 36 to 56, and getting it wrong does not fail
+        // loudly: royals_moves_from breaks out of its loop at the cap, so the page is simply
+        // never offered a move that was legal.
         let _ = make_origin(&EMPTY_BOARD, 1, false, false);
-        assert!(MAX_MOVES >= 24 + 4 + 4 + 4);
+        assert!(MAX_MOVES >= 24 + 4 + 4 + 24);
+    }
+
+    #[test]
+    fn the_stride_engine_js_is_told_is_the_stride_the_writer_uses() {
+        // The load-time guard against a stale module. royals_self_test cannot catch a layout
+        // change -- it answers a move count, which the stride does not affect -- so a page
+        // built for one stride would decode the other into plausible nonsense and pass.
+        assert_eq!(royals_move_stride() as usize, MOVE_STRIDE);
+        assert_eq!(OUT_BYTES, MAX_MOVES * MOVE_STRIDE);
+    }
+
+    #[test]
+    fn the_page_can_turn_the_push_range_rule_on() {
+        let _held = ONE_AT_A_TIME.lock().unwrap();
+        // b4 has four pawns and shoves a lone pawn on c4, so the variant offers distances
+        // 1 through 4 where the standard game offers one push.
+        // rank 4 is squares 22..28, so b4 is 23 and c4 is 24
+        const B4: usize = 23;
+        const C4: usize = 24;
+        let mut start = EMPTY_BOARD;
+        start[B4 - 1] = build_space(0, 0, 0, 4, 0, 0, 0, 0).unwrap();
+        start[C4 - 1] = build_space(1, 0, 0, 1, 0, 0, 0, 0).unwrap();
+        load(&start);
+
+        let origin = B4 as u32;
+
+        royals_set_push_range(0);
+        let plain = royals_moves_from(0, origin, 0) as usize;
+        let plain_pushes: Vec<u8> = (0..plain)
+            .filter(|i| out()[i * MOVE_STRIDE] == kind_byte(MoveKind::Push))
+            .map(|i| out()[i * MOVE_STRIDE + 3])
+            .collect();
+        assert_eq!(plain_pushes, vec![1], "the standard game has one push and it moves one");
+
+        royals_set_push_range(1);
+        let ranged = royals_moves_from(0, origin, 0) as usize;
+        let ranged_pushes: Vec<u8> = (0..ranged)
+            .filter(|i| out()[i * MOVE_STRIDE] == kind_byte(MoveKind::Push))
+            .map(|i| out()[i * MOVE_STRIDE + 3])
+            .collect();
+        royals_set_push_range(0);
+
+        assert_eq!(ranged_pushes, vec![1, 2, 3, 4],
+                   "the distances are what the fourth byte is for");
     }
 }

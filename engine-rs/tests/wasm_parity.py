@@ -33,6 +33,9 @@ from wasmtime import Engine, Instance, Module, Store
 
 from royals_engine import ai as AI
 from royals_engine import hasher as Hasher
+# `Engine` above is wasmtime's, so the rules engine comes in under its own name. Only
+# setPushRange is wanted from it -- telling the Python side which game it is comparing.
+from royals_engine import engine as Rules
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
@@ -63,7 +66,7 @@ class Browser:
         missing = [name for name in
                    ("memory", "royals_board_ptr", "royals_out_ptr", "royals_load",
                     "royals_moves_from", "royals_has_moves", "royals_origins",
-                    "royals_self_test")
+                    "royals_self_test", "royals_move_stride", "royals_set_push_range")
                    if name not in self.exports]
         if missing:
             raise SystemExit("%s exports none of %s" % (path, ", ".join(missing)))
@@ -88,8 +91,18 @@ class Browser:
     def moves_from(self, contr, origin, pris):
         count = self.call("royals_moves_from", contr, origin, 1 if pris else 0)
         at = self.call("royals_out_ptr")
-        raw = self.memory.read(self.store, at, at + count * 3)
-        return [(KINDS[raw[i * 3]], raw[i * 3 + 1], raw[i * 3 + 2]) for i in range(count)]
+        stride = self.call("royals_move_stride")
+        raw = self.memory.read(self.store, at, at + count * stride)
+        # The fourth byte is what the variant needs and what this test was blind to before
+        # it existed: under push-range the pushes out of a square share one target and differ
+        # only in how far they carry, so comparing the first three would have called six
+        # different moves identical.
+        return [(KINDS[raw[i * stride]], raw[i * stride + 1], raw[i * stride + 2],
+                 raw[i * stride + 3])
+                for i in range(count)]
+
+    def set_push_range(self, on):
+        self.call("royals_set_push_range", 1 if on else 0)
 
     def origins(self, contr):
         count = self.call("royals_origins", contr)
@@ -97,10 +110,16 @@ class Browser:
         return list(self.memory.read(self.store, at, at + count))
 
 
-def positions():
-    """Every position the fixture walks pass through -- entered boards, then real games."""
+def positions(key="walks"):
+    """Every position the fixture walks pass through -- entered boards, then real games.
+
+    `key` picks which set. The variant needs its own because a walk is a list of *indices*
+    into listAllMoves' output and the variant's output is longer, so index 7 is a different
+    move -- one set of indices cannot serve both rule sets. tests/regress.py records the two
+    separately for the same reason.
+    """
     with open(FIXTURES) as f:
-        walks = json.load(f)["walks"]
+        walks = json.load(f)[key]
 
     out = []
     for walk in walks:
@@ -116,16 +135,25 @@ def positions():
 
 def expected(board, contr, origin, pris):
     """What game.py's moves_from answers, minus the ko filter the module cannot apply."""
-    return [(m[AI.MOVE_KIND], m[AI.MOVE_ORIGIN], m[AI.MOVE_TARGET])
+    return [(m[AI.MOVE_KIND], m[AI.MOVE_ORIGIN], m[AI.MOVE_TARGET],
+             m[AI.MOVE_TRAVEL] if len(m) > AI.MOVE_TRAVEL else 1)
             for m in AI.listAllMoves(board, contr)
             if m[AI.MOVE_ORIGIN] == origin and bool(m[AI.MOVE_PRIS]) == pris]
 
 
-def check(module, boards):
-    """Returns a list of complaints, first few only -- they come in floods once they start."""
+def check(module, boards, push_range=False):
+    """Returns a list of complaints, first few only -- they come in floods once they start.
+
+    `push_range` runs the whole sweep again under the optional rule. Both sides are told:
+    the module through its own export, and the Python engine through Engine.setPushRange --
+    and if either were missed the comparison would be of two different games and would fail
+    loudly, which is the point. Put back in a `finally` by the caller.
+    """
     faults = []
 
-    if module.call("royals_self_test") != SELF_TEST:
+    module.set_push_range(push_range)
+
+    if module.call("royals_self_test") != SELF_TEST and not push_range:
         faults.append("royals_self_test answered %d, not %d"
                       % (module.call("royals_self_test"), SELF_TEST))
 
@@ -159,24 +187,42 @@ def check(module, boards):
     return faults, asked
 
 
+def sweep(module, label):
+    """Both rule sets, and the total asked across them."""
+    was = Rules.PUSH_RANGE
+    total = 0
+    try:
+        for push_range, key in ((False, "walks"), (True, "push_walks")):
+            Rules.setPushRange(push_range)
+            faults, asked = check(module, positions(key), push_range)
+            total += asked
+            if faults:
+                return faults, total, ("the push-range variant" if push_range
+                                       else "the standard rules")
+    finally:
+        Rules.setPushRange(was)
+    return [], total, None
+
+
 def main():
-    boards = positions()
     fresh = sys.argv[1] if len(sys.argv) > 1 else None
 
     if fresh:
-        faults, asked = check(Browser(fresh), boards)
+        faults, asked, under = sweep(Browser(fresh), "fresh")
         if faults:
-            print("FAIL -- the freshly built module disagrees with the Python engine.")
+            print("FAIL -- the freshly built module disagrees with the Python engine, under "
+                  "%s." % (under,))
             print("       The Rust and the Python rules have diverged; the goldens are where")
             print("       to look, not this file.\n")
             print("\n".join(faults))
             return 1
-        print("fresh   OK -- %s agrees with the Python engine on %d questions"
+        print("fresh   OK -- %s agrees with the Python engine on %d questions, both rule sets"
               % (os.path.relpath(fresh, ROOT), asked))
 
-    faults, asked = check(Browser(SHIPPED), boards)
+    faults, asked, under = sweep(Browser(SHIPPED), "shipped")
     if faults:
-        print("FAIL -- static/royals.wasm disagrees with the Python engine.")
+        print("FAIL -- static/royals.wasm disagrees with the Python engine, under %s."
+              % (under,))
         if fresh:
             print("       A fresh build of the same source agrees, so the checked-in module")
             print("       is STALE. Rebuild it and commit the result:\n")
@@ -189,8 +235,8 @@ def main():
         print("\n".join(faults))
         return 1
 
-    print("shipped OK -- static/royals.wasm agrees with the Python engine on %d questions"
-          % asked)
+    print("shipped OK -- static/royals.wasm agrees with the Python engine on %d questions, "
+          "both rule sets" % (asked,))
     return 0
 
 

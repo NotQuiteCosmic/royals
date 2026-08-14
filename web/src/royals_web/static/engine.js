@@ -47,6 +47,14 @@ const FIELDS = 8;
 // not merely download.
 const SELF_TEST = 10;
 
+// How many bytes a move occupies in the out buffer: kind, origin, target, travel.
+//
+// Checked separately from SELF_TEST because the two catch different failures. SELF_TEST is a
+// move *count*, which a change to the buffer layout leaves untouched -- so a module built for
+// a three-byte stride would answer 10 quite correctly and then be decoded into nonsense. This
+// is the one that notices.
+const MOVE_STRIDE = 4;
+
 let wasm = null;
 
 // Resolves to true if the page has a working engine. Never rejects: a browser that can't run
@@ -65,6 +73,9 @@ async function load() {
 
     if (exports.royals_self_test() !== SELF_TEST) {
       throw new Error("royals.wasm disagrees with the rules this page was built against");
+    }
+    if (!exports.royals_move_stride || exports.royals_move_stride() !== MOVE_STRIDE) {
+      throw new Error("royals.wasm lays its answers out differently than this page reads them");
     }
 
     wasm = exports;
@@ -107,25 +118,40 @@ function loadBoard(board) {
 // Everything `contr` may do from one square, in exactly the shape GET /moves answers with --
 // so app.js cannot tell which of the two it is holding. Returns null if there is no engine
 // here, which is the caller's signal to ask the server and wait.
-export function movesFrom(board, contr, originAlg, pris) {
+export function movesFrom(board, contr, originAlg, pris, pushRange) {
   if (!wasm || !board) return null;
   if (!loadBoard(board)) return null;
+
+  // Set per call rather than once per game. The rule lives in a static inside the module, and
+  // a page that set it at game creation would be one navigation or one reload away from
+  // asking under whatever the last game used. Passing it every time costs a store.
+  wasm.royals_set_push_range(pushRange ? 1 : 0);
 
   const origin = algToIndex(originAlg) + 1;
   const carrying = pris ? 1 : 0;
   const count = wasm.royals_moves_from(contr, origin, carrying);
-  const out = new Uint8Array(wasm.memory.buffer, wasm.royals_out_ptr(), count * 3);
+  const out = new Uint8Array(wasm.memory.buffer, wasm.royals_out_ptr(),
+                             count * MOVE_STRIDE);
 
   const moves = [];
   for (let i = 0; i < count; i++) {
-    const kind = KINDS[out[i * 3]];
-    const target = out[i * 3 + 2];
+    const kind = KINDS[out[i * MOVE_STRIDE]];
+    const target = out[i * MOVE_STRIDE + 2];
+    const travel = out[i * MOVE_STRIDE + 3];
 
     // A break has a heading rather than a destination; everything else has a 0-based square.
     // That asymmetry is the engine's, all the way down, and this is not the place to tidy it.
-    moves.push(kind === "break"
-      ? { kind, origin: originAlg, dir: DIR_LETTERS[target] }
-      : { kind, origin: originAlg, target: indexToAlg(target), pris: !!pris });
+    if (kind === "break") {
+      moves.push({ kind, origin: originAlg, dir: DIR_LETTERS[target] });
+      continue;
+    }
+
+    const move = { kind, origin: originAlg, target: indexToAlg(target), pris: !!pris };
+    // Present only where it is more than one square, because notation.move_to_json does
+    // exactly that and this list has to be indistinguishable from the server's. Always
+    // setting it would differ in the one case nobody would think to test: a standard game.
+    if (kind === "push" && travel > 1) move.travel = travel;
+    moves.push(move);
   }
 
   return {
