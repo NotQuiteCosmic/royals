@@ -874,9 +874,14 @@ el.save.addEventListener("click", () => {
 // *validated* here -- the server decodes every token and names the first bad one. This only
 // counts, so that a file too long to upload is explained without being uploaded.
 //
-// The two header words have to be skipped rather than counted: four words of header on a
+// The header words have to be skipped rather than counted: a few words of header on a
 // record already near the limit would refuse a file the server would have accepted.
-const RECORD_KEYWORDS = new Set(["turn", "board"]);
+//
+// `rules` is here for the same reason the other two are, and it is the one most likely to
+// be forgotten: it appears only on a game played under an optional rule, so a record
+// without one counts correctly whether or not this set knows the word.
+// tests/test_web_api.py checks all three against notation.py's own constants.
+const RECORD_KEYWORDS = new Set(["turn", "board", "rules"]);
 
 function countPlies(text) {
   return text.split("\n")
@@ -1051,7 +1056,13 @@ function renderReview() {
             plySide(review.at - 1));
 
   const ending = review.at === last && review.result ? describeEnd(review) + "  " : "";
-  setHint(`${ending}← and → step through the game; click any move to jump to it.`);
+  // A game played under an optional rule has to say so, or the boards look wrong to anyone
+  // who knows the standard game: a push that moved four squares is not a push they can
+  // account for. The server sends the rules it replayed under rather than the page
+  // inferring them from the tokens, which it could only do once a ranged push had appeared.
+  const variant = (review.rules || []).length
+    ? `Pushes travel — ${review.rules.join(", ")}.  ` : "";
+  setHint(`${ending}${variant}← and → step through the game; click any move to jump to it.`);
 }
 
 // What a person calls a position: "Move 7", or "Entering 3 of 12" during the opening.

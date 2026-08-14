@@ -718,6 +718,12 @@ def _review_json(moves, spots, game, start_side=None):
         "moves": list(moves),
         "result": game.result,
         "termination": game.termination,
+        # Which optional rules this game was played under, so the page can say so. Taken
+        # from the game rather than passed in separately because both callers already hand
+        # one over -- the stored game, or the throwaway `positions` walked -- and the walked
+        # one carries the rule set it was replayed with. One source, and it cannot disagree
+        # with the boards above it.
+        "rules": [N.RULE_PUSH_RANGE] if game.push_range else [],
         "enterSteps": len(G.ENTER_STEPS) if entering else 0,
         # Which side made the first ply of *play*. Red for an ordinary game -- whoever
         # entered second opens -- and whatever the position said otherwise.
@@ -766,20 +772,19 @@ async def review_record(body: ReviewIn, request: Request):
     # notation.validate_board on the way through -- 49 squares, codes in range, no side
     # holding more pieces than it owns -- which is the same ceiling a position file has
     # always been read under.
-    # The fourth value is the optional rules the game was played under. The server offers
-    # none of them, so a record naming one is refused rather than replayed under the standard
-    # rules -- which would produce a plausible board and a different game.
+    # The fourth value is the optional rules the game was played under, and it is passed
+    # through to the walk rather than merely accepted. Replaying a push-range game with the
+    # variant off clamps every ranged push to one square, and what comes back is a plausible
+    # board and a different game -- which is why this used to refuse such records outright.
+    # decode_record has already rejected any rule name the engine does not know.
     moves, board, turn, rules = N.decode_record(body.record)  # NotationError -> 422, naming the ply
-    if rules:
-        raise HTTPException(422, "this record was played under %s, which this server does "
-                                 "not offer" % (", ".join(rules),))
     if len(moves) > REVIEW_MAX_PLIES:
         raise HTTPException(
             413, "that record is %d moves long and this server will review up to %d -- "
                  "long enough that it no longer fits in one request"
                  % (len(moves), REVIEW_MAX_PLIES))
 
-    spots, walked = G.positions(moves, board, turn)     # ReplayError -> 422
+    spots, walked = G.positions(moves, board, turn, rules)     # ReplayError -> 422
     return _review_json(moves, spots, walked, start_side=turn)
 
 

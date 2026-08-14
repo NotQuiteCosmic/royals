@@ -2195,7 +2195,7 @@ def test_the_page_skips_the_header_when_it_counts_plies():
     from royals_web.main import STATIC_DIR
 
     source = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
-    for keyword in (N.TURN_KEY, N.BOARD_KEY):
+    for keyword in (N.TURN_KEY, N.BOARD_KEY, N.RULES_KEY):
         assert '"%s"' % keyword in source, \
             "app.js does not know about the %r header line" % (keyword,)
 
@@ -2399,3 +2399,35 @@ def test_every_call_to_legal_moves_names_its_rule_set():
                 continue
             assert any(kw.arg == "push_range" for kw in node.keywords), \
                 "%s:%d calls legal_moves without naming push_range" % (path.name, node.lineno)
+
+
+def test_review_accepts_a_variant_record_and_says_so(client):
+    """The gap this whole change exists to close. A record the desktop writes was refused
+    with a 422 rather than replayed, because replaying it under the standard rules would
+    have produced a plausible board and a different game."""
+    text, played = variant_record()
+
+    res = client.post("/api/review", json={"record": text})
+    assert res.status_code == 200, res.text
+    body = res.json()
+
+    assert body["rules"] == [N.RULE_PUSH_RANGE]
+    assert body["positions"][-1]["board"] == G.board_to_json(played), \
+        "the walk clamped the ranged push"
+
+
+def test_review_still_refuses_a_rule_it_does_not_know(client):
+    """Accepting the rules we have must not become accepting any word in that line."""
+    text, _played = variant_record()
+    bent = text.replace("%s %s" % (N.RULES_KEY, N.RULE_PUSH_RANGE),
+                        "%s teleporting-dragons" % (N.RULES_KEY,))
+
+    res = client.post("/api/review", json={"record": bent})
+    assert res.status_code == 422, res.text
+
+
+def test_a_standard_review_says_it_has_no_rules(client, game):
+    """The other half: a normal game must not start claiming a variant."""
+    res = client.post("/api/review", json={"record": position_record()})
+    assert res.status_code == 200, res.text
+    assert res.json()["rules"] == []
