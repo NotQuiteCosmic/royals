@@ -19,7 +19,7 @@
 // what used to be "is it the human's turn", and a page with no token is a spectator --
 // which is a real thing to be, since anyone can be sent the link.
 
-import { BoardView, looksWrapped, algToIndex, FILES } from "/static/board.js";
+import { BoardView, looksWrapped, algToIndex, indexToAlg, FILES } from "/static/board.js";
 import * as engine from "/static/engine.js";
 
 const $ = (id) => document.getElementById(id);
@@ -51,6 +51,7 @@ const el = {
   opponentChoice: $("opponent-choice"), opponentHint: $("opponent-hint"),
   aiOptions: $("ai-options"), noiseField: $("noise-field"), setupError: $("setup-error"),
   entryChoice: $("entry-choice"), entryHint: $("entry-hint"),
+  rulesChoice: $("rules-choice"), rulesHint: $("rules-hint"),
   inviteUrl: $("invite-url"), copyInvite: $("copy-invite"), sendInvite: $("send-invite"),
   shareStatus: $("share-status"), resumeUrl: $("resume-url"),
   inviteAgain: $("invite-again"),
@@ -89,9 +90,16 @@ let pending = null;
 // needs is in here -- the move list, and the board after every ply -- so stepping touches
 // no other state and asks the server nothing. See "Saving and reviewing" below.
 let review = null;
-let setup = { mode: "ai", side: 0, difficulty: "strong", randomEntry: false };
+let setup = { mode: "ai", side: 0, difficulty: "strong", randomEntry: false,
+              pushRange: false };
 
 const SIDE_NAME = ["blue", "red"];
+
+// Which optional rules the game on screen is played under. The server sends them per game
+// -- as a list, in the same words a record header uses -- rather than the page inferring
+// anything, because a variant game betrays itself only once a ranged push has been played.
+const RULE_PUSH_RANGE = "push-range";
+const isVariant = () => !!(state && (state.rules || []).includes(RULE_PUSH_RANGE));
 
 // ---------------------------------------------------------------------------
 // The seat token
@@ -406,6 +414,19 @@ el.entryChoice.addEventListener("click", (e) => {
   refreshSetup();
 });
 
+// No refreshSetup: this rule changes what a push does, not which controls apply, and
+// asking for one anyway would rebuild the whole screen on every click.
+el.rulesChoice.addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-rules]");
+  if (!b) return;
+  setup.pushRange = b.dataset.rules === "push-range";
+  [...el.rulesChoice.children].forEach((c) => c.classList.toggle("selected", c === b));
+  el.rulesHint.textContent = setup.pushRange
+    ? "A push carries as far as your strength beats what you shove, and you pick the "
+      + "distance -- click the square you want to end on."
+    : "A push shoves the next square along, and the line behind it moves one.";
+});
+
 el.sideChoice.addEventListener("click", (e) => {
   const b = e.target.closest("button[data-side]");
   if (!b) return;
@@ -436,6 +457,7 @@ el.start.addEventListener("click", async () => {
         difficulty: setup.difficulty,
         noise: Number(el.noise.value) / 100,
         randomEntry: setup.randomEntry,
+        pushRange: setup.pushRange,
         ...(setup.mode === "human" ? withName({}) : {}),
       }),
     });
@@ -616,7 +638,7 @@ async function onPlayClick(alg) {
     // your own people impossible whenever shoving them was legal too. Breaks are not in
     // here at all; they have a heading rather than a destination, and the arrows ask for
     // them.
-    const here = moves.filter((m) => m.kind !== "break" && m.target === alg);
+    const here = moves.filter((m) => m.kind !== "break" && clickSquare(m) === alg);
     if (here.length === 1) return submit(here[0]);
     if (here.length > 1) { chooser = { alg, options: here }; return render(); }
     if (alg === selected) return clearSelection();
@@ -646,7 +668,7 @@ async function selectOrigin(alg, pris) {
   const mine = ++pickId;
 
   const local = engine.available()
-    ? engine.movesFrom(state.board, state.sideToMove, alg, pris)
+    ? engine.movesFrom(state.board, state.sideToMove, alg, pris, isVariant())
     : null;
   if (local) showOptions(alg, pris, local, true);
 
@@ -670,10 +692,65 @@ async function selectOrigin(alg, pris) {
 // one already on screen. Only a first answer puts the arrows and the push-or-free question
 // away: the player may have opened either of them in the moments since, and closing it under
 // them would be the reconciliation reaching somewhere it has no business.
+// Where a push actually comes to rest.
+//
+// The move names the square being *shoved*, not the square the pusher ends on -- under the
+// standard rules those differ by one and nobody has to think about it. With the push-range
+// rule every distance out of a square shares one `target` and differs only in `travel`, so
+// the destination a player clicks has to be worked out rather than read off the move.
+//
+// The board is a torus, so this walks with wrapping, the same way Engine.PUSHRAY does.
+function pushLanding(originAlg, targetAlg, travel) {
+  const o = algToIndex(originAlg);
+  const t = algToIndex(targetAlg);
+  const N = FILES.length;
+
+  const oc = o % N, or = Math.floor(o / N);
+  const tc = t % N, tr = Math.floor(t / N);
+
+  // A push is orthogonal and one square, so each of these is 0, 1 or N-1 -- and N-1 is a
+  // step backwards that wrapped, which is why it comes back as -1 rather than staying large.
+  const step = (d) => (d === N - 1 ? -1 : d);
+  const dc = step((tc - oc + N) % N);
+  const dr = step((tr - or + N) % N);
+
+  const col = ((oc + dc * travel) % N + N) % N;
+  const row = ((or + dr * travel) % N + N) % N;
+  return indexToAlg(row * N + col);
+}
+
+// Give every push the square it ends on, so the rest of the page can go on treating a move
+// as "the square you click".
+//
+// The tie-break is not decoration. On a seven-wide torus two directions reach the same
+// square, at distances summing to seven -- a push of five to the right lands where a push
+// of two to the left does. One square cannot be two moves, so the shorter wins, and the
+// longer becomes unclickable. The desktop resolves it the same way (landingsFor in
+// royals_gui.py), and matching it matters more than either answer does on its own.
+function withLandings(list) {
+  const best = new Map();
+  const out = list.map((m) => {
+    if (m.kind !== "push") return m;
+    const travel = m.travel || 1;
+    return { ...m, landing: pushLanding(m.origin, m.target, travel), travel };
+  });
+
+  for (const m of out) {
+    if (m.kind !== "push") continue;
+    const held = best.get(m.landing);
+    if (!held || m.travel < held.travel) best.set(m.landing, m);
+  }
+  return out.filter((m) => m.kind !== "push" || best.get(m.landing) === m);
+}
+
+// Which square a move is clicked on. A push that travels is reached by its landing square;
+// everything else is its target.
+const clickSquare = (m) => (m.kind === "push" ? m.landing || m.target : m.target);
+
 function showOptions(alg, pris, res, fresh) {
   selected = alg;
   carrying = pris;
-  moves = res.moves;
+  moves = withLandings(res.moves);
   if (fresh) {
     breakOpen = false;
     chooser = null;
@@ -716,6 +793,11 @@ async function submit(move) {
   const body = { kind: move.kind, origin: move.origin, pris: !!move.pris };
   if (move.kind === "break") body.dir = move.dir;
   else body.target = move.target;
+  // Only where it is more than one square, which is the shape move_to_json emits and
+  // move_from_json expects. Sending 1 is not the same request: the notation refuses it,
+  // because a distance of one is spelled by leaving the field out and two spellings of one
+  // move would be a record that does not round-trip to itself.
+  if (move.kind === "push" && move.travel > 1) body.travel = move.travel;
   // If this request is a retry of one that already landed, the server refuses it rather
   // than playing the move a second time.
   body.expectedVersion = state.version;
@@ -824,9 +906,16 @@ function recordText() {
     : state.result === "draw" ? `drawn by ${state.termination}`
     : `${state.result} wins by ${state.termination}`;
 
+  // The rules line, where there is one. Without it the file replays as a standard game:
+  // every ranged push clamps to one square, the piece counts still add up, and the boards
+  // are a game nobody played. encode_game writes this line in the same place.
+  const rules = (state.rules || []).length
+    ? [`rules ${(state.rules || []).join(" ")}`] : [];
+
   return [
     RECORD_MAGIC,
     `# ${when}  ${who}  ${how}  ${state.moves.length} plies`,
+    ...rules,
     ...wrapTokens(state.moves, RECORD_WRAP),
     "",
   ].join("\n");
@@ -1147,9 +1236,10 @@ function marksFor() {
       // question -- clicking it opens the chooser rather than playing anything. Painting
       // it as a push while it plays a free, or the other way about, is the bug this
       // whole layer exists to remove.
-      const already = marks.get(m.target);
-      if (already) { marks.set(m.target, "choice"); continue; }
-      marks.set(m.target, m.kind === "jump" && looksWrapped(m.origin, m.target)
+      const square = clickSquare(m);
+      const already = marks.get(square);
+      if (already) { marks.set(square, "choice"); continue; }
+      marks.set(square, m.kind === "jump" && looksWrapped(m.origin, m.target)
         ? "wrap" : m.kind);
     }
   } else {

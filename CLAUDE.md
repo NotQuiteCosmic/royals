@@ -68,13 +68,13 @@ elsewhere will not cover it, and nothing fails to remind you.**
 
 Expected green state: `golden_enter.txt` 445 lines, `golden_moves.txt` 13,051 lines,
 `golden_push_moves.txt` 12,365 lines, `golden_search.txt` 245 lines identical — **from both
-implementations** — and 632 tests passing
+implementations** — and 653 tests passing
 (23 accel, 24 break rules, 19 carry rules, 7 delayed win, 28 desktop appearance,
 13 desktop assist, 28 desktop lifecycle, 32 desktop record, 24 dragon balance,
 28 engine-purity, 19 entering,
 4 flights, 101 notation, 53 position setup, 22 projection, 12 push range, 26 record,
-45 theme, 111 web API, 13 win horizon). With
-`ROYALS_NO_ACCEL=1` it is 629 passed and 3 skipped; the skips are the tests that need the
+45 theme, 132 web API, 13 win horizon). With
+`ROYALS_NO_ACCEL=1` it is 650 passed and 3 skipped; the skips are the tests that need the
 wheel, and skipping is
 correct — not having it is a supported configuration. **134 of them drive a real tkinter
 window** and skip on a headless runner, which is also correct. Counting the files that hold
@@ -103,10 +103,10 @@ cursor is left open makes the next `commit` fail. Everything in `persist.py` goe
 `_run`/`_query`, which close theirs. Don't add a bare `self._conn.execute`.
 
 The web API tests call `pytest.importorskip("fastapi")`, so without `pip install -e ./web`
-they skip silently and the run reports 509 passed and 13 skipped, not 632. Twelve of those
+they skip silently and the run reports 509 passed and 13 skipped, not 653. Twelve of those
 thirteen are individual tests; the thirteenth is the whole of `test_web_api.py`, because a
 module that skips at import is one item however many tests it holds — which is why 111 tests
-can vanish and the total only fall by 123. Eight of the twelve are the cross-checks in
+can vanish and the total only fall by 144. Eight of the twelve are the cross-checks in
 `test_record.py` and `test_desktop_record.py` that hold the engine's record walker — and its
 move numbering — against the server's, and they are the ones most worth noticing the absence
 of. The other four are the game-loop half of `test_delayed_win.py`, which is marked rather
@@ -266,7 +266,7 @@ was arrived at the hard way. Match that. A comment explaining a performance deci
 rule's edge case is in keeping here; a comment restating what the line does is not.
 
 Numbers in prose follow one rule: **exact where the reader is meant to check it, rounded into
-words where it is only conveying scale.** "632 tests, and 509 means you forgot the web package"
+words where it is only conveying scale.** "653 tests, and 509 means you forgot the web package"
 is a check and has to be exact. "thirteen thousand lines", "about thirty-six times faster" are
 rhetoric, and a rounded word is still true two commits later where a digit is not. Every count
 in this file is the first kind, which is why they live here and nowhere else.
@@ -276,8 +276,8 @@ in this file is the first kind, which is why they live here and nowhere else.
 Every figure above comes from something that already runs. From the repo root:
 
 ```bash
-python3 -m pytest tests/ -q                      # the total, and 632 vs 509 above
-ROYALS_NO_ACCEL=1 python3 -m pytest tests/ -q    # the 629 passed / 3 skipped split
+python3 -m pytest tests/ -q                      # the total, and 653 vs 509 above
+ROYALS_NO_ACCEL=1 python3 -m pytest tests/ -q    # the 650 passed / 3 skipped split
 (cd tests && python3 regress.py check all)       # the four golden line counts
 cargo test --manifest-path engine-rs/Cargo.toml  # the 36
 python3 engine-rs/tests/wasm_parity.py           # prints its own question count

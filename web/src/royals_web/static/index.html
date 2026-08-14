@@ -85,6 +85,19 @@
         royals first.</p>
     </div>
 
+    <!-- Outside #ai-options for the same reason the entering choice above is: this one
+         changes what a push may do for both sides, so it applies just as much to a game
+         between two people. -->
+    <div class="field">
+      <span class="label">Pushes</span>
+      <div class="choice" id="rules-choice">
+        <button type="button" class="chip selected" data-rules="standard">One square</button>
+        <button type="button" class="chip" data-rules="push-range">Travel further</button>
+      </div>
+      <p class="hint" id="rules-hint">A push shoves the next square along, and the line
+        behind it moves one.</p>
+    </div>
+
     <div id="ai-options">
       <div class="field">
         <span class="label">Opponent strength</span>

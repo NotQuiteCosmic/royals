@@ -2562,3 +2562,96 @@ def test_a_distance_the_notation_refuses_is_refused_here_too(client):
                                 "target": push["target"], "travel": bad},
                           headers=headers)
         assert res.status_code == 422, "travel=%r was accepted: %s" % (bad, res.text)
+
+
+# ---------------------------------------------------------------------------
+# The page's own arithmetic
+# ---------------------------------------------------------------------------
+
+def _javascript(source):
+    """Run a snippet in JavaScriptCore and return its last expression, or skip.
+
+    There is no JS test infrastructure in this repo and adding one is a bigger decision
+    than this test. macOS ships JavaScriptCore behind `osascript -l JavaScript`, which is a
+    real engine rather than a simulation, so on the machine where app.js is actually edited
+    the check runs against the real thing. It skips elsewhere -- including CI -- the way
+    the tkinter tests skip on a headless runner: honest about what it covers rather than
+    passing for a reason that has nothing to do with the code.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    if not shutil.which("osascript"):
+        pytest.skip("no JavaScript engine here (osascript is macOS only)")
+
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+        f.write(source)
+        path = f.name
+    done = subprocess.run(["osascript", "-l", "JavaScript", path],
+                          capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    return done.stdout.strip()
+
+
+def test_the_page_lands_a_travelling_push_where_the_engine_does():
+    """app.js has to work out where a push comes to rest, because the move names the square
+    being *shoved* and every distance out of a square shares it. That is the one piece of
+    board geometry the page computes rather than being told, so it is the one that can
+    silently disagree with the engine -- and it would disagree by putting the mark on the
+    wrong square, which looks like a rendering bug rather than an arithmetic one.
+
+    Checked against Engine.PUSHRAY over every push the engine actually has: 1,008 of them,
+    four directions from every square that has one, at every distance up to six. Directions
+    whose ray is empty are skipped because no such push exists to land anywhere.
+    """
+    from royals_engine import engine as Engine
+    from royals_web.main import STATIC_DIR
+
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    body = app[app.index("function pushLanding("):
+               app.index("// Give every push the square it ends on")]
+
+    cases = []
+    for square in range(1, 50):
+        for direction in range(4):
+            ray = Engine.PUSHRAY[square][direction]
+            if not ray:
+                continue
+            target = Hasher.IndexToAlg(ray[0])
+            for travel in range(1, 7):
+                cases.append("%s %s %d %s" % (Hasher.IndexToAlg(square - 1), target,
+                                              travel, Hasher.IndexToAlg(ray[travel - 1])))
+    assert len(cases) > 900, "the sweep stopped covering the board"
+
+    source = "\n".join([
+        'const FILES = ["a","b","c","d","e","f","g"];',
+        "const NN = 7;",
+        "function algToIndex(alg){return (parseInt(alg[1],10)-1)*NN + FILES.indexOf(alg[0]);}",
+        "function indexToAlg(i){return FILES[i%NN] + (Math.floor(i/NN)+1);}",
+        body,
+        "const cases = %s;" % (repr(cases).replace("'", '"'),),
+        """
+        const bad = [];
+        for (const line of cases) {
+          const [origin, target, travel, want] = line.split(" ");
+          const got = pushLanding(origin, target, Number(travel));
+          if (got !== want) bad.push(origin + "->" + target + " x" + travel +
+                                     ": page " + got + ", engine " + want);
+        }
+        bad.length ? bad.slice(0, 5).join("; ") : "AGREE";
+        """,
+    ])
+
+    assert _javascript(source) == "AGREE"
+
+
+def test_the_page_writes_the_rules_line_the_notation_reads():
+    """A browser-saved variant game with no header replays as a standard game: every ranged
+    push clamps to one square, and the boards are a game nobody played. Source-pinned the
+    way the other two header words are."""
+    from royals_web.main import STATIC_DIR
+
+    source = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert "`%s ${" % (N.RULES_KEY,) in source or '"%s "' % (N.RULES_KEY,) in source, \
+        "app.js does not write a %r line into a saved record" % (N.RULES_KEY,)
