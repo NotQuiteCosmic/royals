@@ -239,8 +239,8 @@ The engine targets **Python ≥ 3.10**, not 3.12, so it keeps running under PyPy
 faster than CPython on this search, and the interpreter to reach for when there is no compiled
 wheel. Scores are computed in integers rather than floats for a related reason: CPython and
 PyPy once disagreed in the last decimal place on a square root, which flipped an alpha-beta
-cutoff and changed the move played. CI runs the goldens under both, and integers are also what
-lets a second and third implementation reproduce them at all.
+cutoff and changed the move played. CI runs all four goldens under both, and integers are also
+what lets a second and third implementation reproduce them at all.
 
 ## It is faster if you have the compiled engine, and identical if you don't
 

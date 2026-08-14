@@ -878,7 +878,18 @@ def chooseMove(cBoard, contr, depth = 3):
 
 # Forgets everything learned about the game just played. The table stays true across moves
 # but a new game is a different game, and leaving a full one standing would only spend memory
-# on positions the new one is unlikely to reach. Call it wherever Engine.koReset is called.
+# on positions the new one is unlikely to reach.
+#
+# **Call it when a different game is starting -- not simply wherever Engine.koReset is.** The
+# two do travel together at the start of a game, which is what that shorter rule was reaching
+# for, but they answer different questions and one caller has them apart on purpose. A driver
+# taking a move back rebuilds the ko history to a prefix of the *same* game, so it calls
+# koReset and must not call this: the table's contents are precisely the positions the
+# resumed game is about to walk back through, and dropping them buys nothing and costs the
+# search everything it already knew. It is safe to keep for the reason the stamps exist --
+# root entries are keyed on Engine.koGeneration, which koReset and every koRecord bump, so a
+# rebuilt history cannot match one filed against the line that was abandoned, and everything
+# below the root never read the ko history to begin with. See royals_gui.resumeAt.
 def newGame():
     global killers, history, table, tableOld
 

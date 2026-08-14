@@ -260,8 +260,9 @@ different move. The regression suite passed under one interpreter and failed und
 other on exactly that.
 
 Every evaluation weight is exact at this scale, including the spread penalty, which was the
-only irrational term. **CI runs the goldens under both interpreters** so this cannot come
-back.
+only irrational term. **CI runs all four goldens under both interpreters** so this cannot come
+back. A new baseline has to be added to the `goldens:` job by name to get that protection —
+`golden_push_moves.txt` went several commits without it; see [CLAUDE.md](../CLAUDE.md).
 
 ### Module-level state
 

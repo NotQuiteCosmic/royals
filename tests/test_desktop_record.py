@@ -49,7 +49,7 @@ royals_gui = pytest.importorskip("royals_gui")
 # second root that does.
 
 
-def play_two_handed(win, plies=40):
+def play_two_handed(win, plies=40, pushRange=False, choose=None, pick=None):
     """Play a whole game through the window's own click handlers, both sides.
 
     Two players rather than one, so nothing runs on the AI's worker thread and every ply
@@ -59,8 +59,16 @@ def play_two_handed(win, plies=40):
     Boards are collected as the window draws them, which is the account the record has to
     reproduce. The padding matters: `enterStep` writes a "--" for a skipped placement
     without anybody clicking anything, so one click can add more than one ply.
+
+    `pushRange` opts the game into the variant; `pick` chooses which piece moves and
+    `choose` what it does. All three default to what every test here meant before any of
+    them existed -- the lowest-numbered legal origin, and the first thing it can do. The
+    rule is set either way rather than only when it is wanted: the window is session-scoped,
+    and a game that inherited the last test's rules would be a game nobody in this file
+    asked for. (`buildSetup` remakes the variable at 0, so this is belt as well as braces.)
     """
     win.modeVar.set(0)              # 2 player
+    win.pushRangeVar.set(1 if pushRange else 0)
     win.startGame()
 
     boards = [Hasher.Entering_Board()]
@@ -81,10 +89,10 @@ def play_two_handed(win, plies=40):
         # A pass is taken by playStep itself and leaves nothing to click.
         if not win.legalOrigins:
             break
-        origin = sorted(win.legalOrigins)[0]
+        origin = pick(win) if pick else sorted(win.legalOrigins)[0]
         win.select(origin)
         before = len(win.record)
-        played = offer_a_move(win, origin)
+        played = (choose or offer_a_move)(win, origin)
         catch_up()
         if not played or len(win.record) == before:
             # Ko took the move back, or the square had only a break this test did not
@@ -115,6 +123,83 @@ def offer_a_move(win, origin):
         win.playBreak(breaks[0])
         return True
     return False
+
+
+def travelling_landing(win):
+    """The lowest square the selected piece could push to at more than one square's range."""
+    for square, (_, step) in sorted(win.pushLandings.items()):
+        if step > 1:
+            return square
+    return None
+
+
+def travelling_pick(win):
+    """A `pick` that hunts for a piece with a push that travels, and settles for any piece.
+
+    Left to `sorted(legalOrigins)[0]` a variant game plays out without the rule ever coming
+    up: the lowest-numbered piece almost always has a jump, jumps come first, and a push at
+    range needs an enemy stack next door that the piece can outweigh. So this asks each piece
+    in turn -- `select` is what fills `pushLandings`, and re-selecting is how the window
+    itself answers the same question when a player clicks around.
+    """
+    origins = sorted(win.legalOrigins)
+    for origin in origins:
+        win.select(origin)
+        if travelling_landing(win) is not None:
+            return origin
+    return origins[0]
+
+
+def travelling_chooser(travelled):
+    """A `choose` that takes a push that travels wherever one is offered.
+
+    `offer_a_move` tries jumps first, which would play a whole variant game with the rule
+    never once applying -- a test that passes because nothing happened. This reaches for the
+    distance instead, and appends every one it plays to `travelled` so a test can say out
+    loud that it got what it came for.
+
+    The landings are the window's own: `select` fills `pushLandings` with
+    {landing square: (square shoved, distance)}, because a push at range comes to rest
+    somewhere other than the square it shoved. Clicking a landing is how a person plays one,
+    and `playClick` is where that is read.
+    """
+    def choose(win, origin):
+        square = travelling_landing(win)
+        if square is None:
+            return offer_a_move(win, origin)
+        win.playClick(square + 1)
+        travelled.append(win.pushLandings[square][1])
+        return True
+    return choose
+
+
+@pytest.fixture
+def shownErrors(monkeypatch):
+    """messagebox.showerror collected in a list instead of put on the screen.
+
+    **A test that let one through would not fail, it would hang.** showerror is modal and
+    there is nobody in a test run to press OK, so the window sits inside Tk waiting for a
+    click that is never coming and pytest is killed by whatever is watching it. That is how
+    the bug these tests are about first announced itself here, which is a poor way to read a
+    failure: the list is what turns it back into an assertion with the message in it.
+    """
+    shown = []
+    monkeypatch.setattr(royals_gui.messagebox, "showerror",
+                        lambda *a, **kw: shown.append(a))
+    return shown
+
+
+@pytest.fixture
+def variant(window):
+    """`window`, with Engine.PUSH_RANGE put back however the test ends.
+
+    The same discipline tests/test_push_range.py keeps and for the same reason: the flag is
+    a process global, and a test that raised part way through would leave the variant on for
+    every test after it, where the failure would land somewhere that never mentioned it.
+    """
+    was = Engine.PUSH_RANGE
+    yield window
+    Engine.setPushRange(was)
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +648,104 @@ def test_a_forked_game_is_still_a_record_that_saves_and_replays(window, monkeypa
     assert moves == window.record
     assert spots[-1].board == window.board
     assert window.errors == []
+
+
+# ---------------------------------------------------------------------------
+# The same three things, under the push-range rule
+# ---------------------------------------------------------------------------
+# A walk of a record is made under the rules the game was played under, and the walker has
+# to be told which those are -- `record.positions` takes them, sets the flag for the walk
+# and puts it back afterwards. The window used to tell it when saving a file and not when
+# reviewing its own game, which is a difference nothing in this file could see, because
+# every game it played was a standard one.
+#
+# **Both ways it fails are here.** Replayed with the variant off, every travelling push
+# clamps to one square; a few plies later a capture folds pieces into a stack that still has
+# its originals somewhere else, `validate_board` counts five pawns and REWIND puts up "this
+# game's record is not readable" about a game that is perfectly good. And where the counts
+# happen to survive, nothing objects at all: the walk hands back a plausible wrong board,
+# PLAY ON forks onto it, and the computer plays a move that reads as a blunder and is
+# merely about a different position.
+
+
+def test_a_variant_game_reviews_into_the_boards_the_window_drew(variant, shownErrors):
+    """The walk is made under the game's own rules, or it is a walk of another game."""
+    travelled = []
+    boards = play_two_handed(variant, pushRange=True, pick=travelling_pick,
+                                choose=travelling_chooser(travelled))
+
+    # Said before anything is checked: without a push that travelled, every assertion below
+    # would hold with the rule ignored entirely, and the test would pass for no reason.
+    assert travelled, "no push travelled, so this game says nothing about the rule"
+    assert max(travelled) > 1
+
+    variant.startReview()
+    assert shownErrors == [], "REVIEW refused a good game: %r" % (shownErrors,)
+    assert variant.review is not None, "the review refused to open"
+
+    spots = variant.review["spots"]
+    assert len(spots) == len(boards)
+    for spot, drawn in zip(spots, boards):
+        assert spot.board == drawn, "ply %d of %d" % (spot.ply, len(boards) - 1)
+
+    variant.exitReview()
+    assert variant.errors == []
+
+
+def test_playing_on_in_a_variant_game_resumes_on_the_board_that_was_on_screen(variant,
+                                                                             shownErrors,
+                                                                             monkeypatch):
+    travelled = []
+    boards = play_two_handed(variant, pushRange=True, pick=travelling_pick,
+                                choose=travelling_chooser(travelled))
+    assert travelled, "no push travelled, so this game says nothing about the rule"
+
+    steps = len(Engine.enteringSequence())
+    assert len(variant.record) > steps + 3, "too short to fork in"
+    at = len(variant.record) - 2
+    full = list(variant.record)
+
+    dropped = review_at(variant, at, monkeypatch=monkeypatch)
+
+    assert shownErrors == [], "REVIEW refused a good game: %r" % (shownErrors,)
+    assert dropped > 0
+    assert variant.record == full[:at]
+    assert variant.board == boards[at], "the fork landed on a board nobody played to"
+    assert variant.phase == "play"
+    # And the rule is still on afterwards -- record.positions borrows the flag for the walk
+    # and hands it back, and a fork that resumed under the standard game would be a second
+    # way to play somewhere else.
+    assert Engine.PUSH_RANGE is True
+    assert variant.pushRange is True
+    assert variant.errors == []
+
+
+def test_rewinding_a_variant_game_gives_back_exactly_the_last_move(variant, shownErrors,
+                                                                   monkeypatch):
+    """Where the "too many pawns" dialog came from: the record is fine, the replay was not."""
+    travelled = []
+    boards = play_two_handed(variant, pushRange=True, pick=travelling_pick,
+                                choose=travelling_chooser(travelled))
+    assert travelled, "no push travelled, so this game says nothing about the rule"
+
+    steps = len(Engine.enteringSequence())
+    assert len(variant.record) > steps + 1, "too short to take anything back"
+    full = list(variant.record)
+    at = len(full) - 1
+
+    monkeypatch.setattr(royals_gui.messagebox, "askyesno", lambda *a, **kw: True)
+
+    # A 2 player game has no PAUSE, so REWIND is live on its own account -- see refreshHold.
+    variant.rewind()
+
+    assert shownErrors == [], ("REWIND refused a game that was perfectly good: %r"
+                               % (shownErrors,))
+    assert variant.record == full[:at]
+    assert variant.board == boards[at]
+    # The history goes back with it, and the board that was just given back is out of it.
+    assert boards[at] in Engine.koTrack
+    assert boards[at + 1] not in Engine.koTrack
+    assert variant.errors == []
 
 
 def test_opening_a_review_does_not_widen_the_panel(window):

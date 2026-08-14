@@ -55,12 +55,20 @@ def pump(root, seconds=2.0, until=None):
     return until is None
 
 
-def blocked(monkeypatch, name, released):
-    """Make one engine call wait for the test's say-so, as a deep search would."""
+def blocked(monkeypatch, name, released, letThrough=0):
+    """Make engine calls wait for the test's say-so, as a deep search would.
+
+    `letThrough` answers that many calls at once first, which is how a test gets a game with
+    both a move in its record and a search still out -- the two conditions a fork under a
+    live search needs, and which no single blocked call can produce together.
+    """
     real = getattr(AI, name)
+    calls = []
 
     def slow(*args, **kwargs):
-        released.wait(20)
+        calls.append(1)
+        if len(calls) > letThrough:
+            released.wait(20)
         # depth is the third positional argument to takeTurn; answer quickly once let go,
         # since what is being tested is when the answer arrives and not what it is.
         if name == "takeTurn":
@@ -540,6 +548,63 @@ def test_rewind_takes_back_one_ply_and_leaves_the_game_held(window, monkeypatch)
     plies = len(window.record)
     pump(window.root, 1.0)
     assert len(window.record) == plies, "the game carried on after a take-back"
+    assert window.errors == []
+
+
+def test_a_hold_taken_mid_search_offers_no_fork_until_the_answer_lands(window, monkeypatch):
+    """A hold stops the game and does not stop the search, and those are different things.
+
+    `aiBusy` answers "is the loop waiting on a search", and the hold clears it deliberately
+    -- otherwise the hold would never lift. What it cannot clear is the worker, which has no
+    interrupt and goes on reading and writing the process globals a fork is about to rewrite:
+    Engine.koTrack, which resumeAt clears and refills, and the search's own tables, whose root
+    entries are keyed off Engine.koGeneration and so are re-stamped by exactly that rebuild.
+    An abandoned search can therefore file a root answer under the resumed game's stamp,
+    worked out against a ko set that was half-built when it looked -- and the resumed game
+    believes it, and plays a move that reads as a blunder.
+
+    So `searchLive` counts the threads rather than the waiting, and REWIND and REVIEW stand
+    down until it falls to zero. Normally that is one poll and nobody notices.
+    """
+    released = threading.Event()
+    # One search through, so there is a move in the record for REWIND to be offered; the
+    # next one blocks, so there is a worker still in there when the hold is taken.
+    blocked(monkeypatch, "takeTurn", released, letThrough=1)
+
+    window.modeVar.set(2)               # 0 player, so the next search starts on its own
+    window.entryVar.set(1)              # dealt opening, so play starts at once
+    window.depthVar.set(1)
+    window.startGame()
+    assert pump(window.root, 10.0,
+                until=lambda: len(window.record) > len(window.enterSteps)), \
+        "the computer never played its first move"
+
+    assert window.searchLive == 1, "the second search should be out and blocked"
+    assert window.aiBusy is True
+
+    window.togglePause(); window.root.update()
+
+    assert window.paused is True
+    assert window.aiBusy is False, "a hold that left this set would never lift"
+    assert window.searchLive == 1, "the worker is still in there"
+    assert "REVIEW and REWIND come back" in window.hintLabel.cget("text"), \
+        "two dark buttons and nothing on screen saying why"
+
+    assert not window.rewindButton.enabled, "REWIND offered a fork under a live search"
+    window.startReview()
+    assert window.review is None, "REVIEW opened under a live search"
+    assert "Wait for the computer" in window.hintLabel.cget("text")
+
+    # And they come back on their own when it lands -- nobody has to press anything.
+    released.set()
+    assert pump(window.root, 10.0, until=lambda: window.searchLive == 0), \
+        "the abandoned search never came back"
+
+    assert window.paused is True, "the answer that landed restarted a held game"
+    assert window.rewindButton.enabled, "REWIND stayed dark after the search landed"
+    window.startReview()
+    assert window.review is not None, "REVIEW stayed shut after the search landed"
+    window.exitReview()
     assert window.errors == []
 
 

@@ -1499,6 +1499,34 @@ class RoyalsWindow:
         self.pauseButton = None
         self.rewindButton = None
 
+        # How many searches are actually running on a worker right now.
+        #
+        # **This is not aiBusy and the difference is the whole reason it exists.** aiBusy
+        # means "the game loop is waiting on a search" -- it is what stops `advance` starting
+        # a second one and what keeps clicks off the board -- and pausePlay deliberately
+        # clears it while the thread carries on, because the hold is meant to make the window
+        # answer again and the search's answer is going to be thrown away regardless. What no
+        # flag said until this one was "a thread is still in there", which is a different
+        # question with different owners: Engine.koTrack, Engine.PUSH_RANGE and the AI's
+        # tables are process globals, and a search reads and writes them the whole time it
+        # runs.
+        #
+        # So a fork taken while one is still going -- pause mid-think, then REWIND, which is
+        # exactly what the hold invites -- rebuilds the ko history underneath a live search.
+        # On the pure-Python path minimax reads Engine.koBreaks at its root and re-keys its
+        # root table entries off Engine.koGeneration on every deepening pass, so the abandoned
+        # search can file a root answer stamped with the *new* generation and worked out
+        # against a half-rebuilt ko set -- which the resumed game's own search then finds and
+        # believes. With the wheel in, the ko set is copied per call and that particular
+        # corruption cannot happen, but engine-rs has one process-wide Mutex<Search>, so the
+        # resumed search silently blocks behind the abandoned one instead.
+        #
+        # Counted rather than flagged because more than one can be out at once, and set here
+        # rather than in resetGameState on purpose: it counts threads, not games, and a NEW
+        # GAME pressed mid-search leaves a worker that is still going to come back and
+        # decrement it. Zeroing it per game is how it goes negative.
+        self.searchLive = 0
+
         # What the window is wearing, before anything is built in it -- a widget copies its
         # colours in when it is made, so the theme has to be on before the first one exists.
         #
@@ -4025,7 +4053,7 @@ class RoyalsWindow:
             text = N.encode_game(self.record, notes=[self.recordNote()],
                                  board=self.startBoard if self.fromPosition else None,
                                  turn=self.startTurn if self.fromPosition else None,
-                                 rules=(N.RULE_PUSH_RANGE,) if self.pushRange else ())
+                                 rules=self.gameRules())
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(text)
         except (OSError, N.NotationError) as error:
@@ -4134,22 +4162,67 @@ class RoyalsWindow:
         if not self.record:
             self.setHint("Nothing to review yet — no moves have been made.")
             return
-        if self.aiBusy:
+        if self.searchLive:
             # The search is on a worker thread and its result lands in commit(), which
-            # would move the board out from under the review.
+            # would move the board out from under the review. searchLive rather than aiBusy
+            # because a hold clears aiBusy and leaves the thread running, and it is the
+            # thread this is about: it holds the ko history and the engine's tables the whole
+            # time it is in there. See searchLive's note for what a fork under one does.
             self.setHint("Wait for the computer to finish its move.")
             return
+        spots = self.walkThisGame()
+        if spots is None:
+            return
+        self.beginReview(self.record, spots, live=True, title="This game")
+
+    # This game, walked back into the board after every ply of it -- the one thing REVIEW
+    # and REWIND both need and the one thing neither may get wrong. None means it could not
+    # be done and the player has already been told why.
+    #
+    # Two callers and one copy, for the same reason resumeAt has one: what is worth
+    # extracting is not the four lines of argument passing but the check under them, which
+    # is the only part that fails without saying so.
+    def walkThisGame(self):
         try:
-            spots = Record.positions(self.record, self.startBoard if self.fromPosition
-                                     else None,
-                                     self.startTurn if self.fromPosition else None)
+            spots = Record.positions(self.record,
+                                     self.startBoard if self.fromPosition else None,
+                                     self.startTurn if self.fromPosition else None,
+                                     self.gameRules())
         except Record.RecordError as error:
             # Only reachable if the recorder above has a bug, which is exactly when it is
             # worth saying so loudly rather than showing a plausible wrong game.
             messagebox.showerror("Royals", "This game's record is not readable.\n\n%s"
                                  % (error,), parent=self.root)
-            return
-        self.beginReview(self.record, spots, live=True, title="This game")
+            return None
+
+        # **The walk has to arrive back where the game actually is.** Every ply of this
+        # record was played in this window, against this board, under these rules, so the
+        # last board the walk produces is the board on the table -- not approximately, byte
+        # for byte, because a board is one canonical tuple per position.
+        #
+        # It is checked because the way this goes wrong is silent. A walk handed the wrong
+        # rules replays every ranged push as a one-square push and hands back boards that
+        # validate perfectly; REVIEW then shows a game nobody played, and PLAY ON forks into
+        # a position nobody stood in, at which point the computer plays a move that looks
+        # inexplicable and is merely about somewhere else. The RecordError above catches the
+        # cases where the divergence happens to break the piece counts a few plies later,
+        # which is most of them and none of the quiet ones.
+        #
+        # One tuple comparison a press, and it turns any future drift between what the game
+        # is played under and what a replay is told about into a refusal instead of a fork.
+        if spots[-1].board != self.board:
+            messagebox.showerror(
+                "Royals",
+                "This game's record does not replay into the position on the board.\n\n"
+                "Replaying it produces a different board at ply %d, so REVIEW would show a "
+                "game that was not played and PLAY ON would carry on from a position that "
+                "was never stood in. Nothing has been changed." % (len(self.record),),
+                parent=self.root)
+            self.log("The record does not replay into the board on the table — REVIEW and "
+                     "REWIND refused.", "grey")
+            return None
+
+        return spots
 
     def beginReview(self, moves, spots, live, title):
         self.review = {
@@ -4233,6 +4306,22 @@ class RoyalsWindow:
     def enterPlies(self):
         return 0 if self.fromPosition else len(self.enterSteps)
 
+    # Which optional rules this game is being played under, in the shape record.positions and
+    # notation.encode_game both take. The one place the window works it out, for the same
+    # reason enterPlies is: it is asked for by everything that writes a record down or walks
+    # one back, and a caller that answered it itself is a caller that can answer it wrong.
+    #
+    # **Every walk of a record has to be handed this**, and the failure when one is not is
+    # the reason it is a method rather than three inline tuples. record.positions replays
+    # under the rules it is given and puts the flag back afterwards, so a walk that names
+    # none replays a push-range game with the variant off: every ranged push clamps to one
+    # square, the boards come back describing a game nobody played, and the piece counts stop
+    # adding up a few plies later. What that looks like from the outside is REWIND refusing a
+    # perfectly good game because a side has five pawns, or -- worse, because it is silent --
+    # PLAY ON handing the search a position that was never stood in.
+    def gameRules(self):
+        return (N.RULE_PUSH_RANGE,) if self.pushRange else ()
+
     # Which side moves at ply `at` -- the ply about to be made, not the one just made.
     #
     # **The distinction is the whole of it.** `spots[at].side` is who played the move that
@@ -4288,14 +4377,20 @@ class RoyalsWindow:
 
         # **The search that is already out.** It cannot be called off -- the worker thread
         # has no interrupt -- so what happens instead is that its answer is dropped, by the
-        # generation token every deferred call already carries. Bumping it takes the pending
-        # pollAI with it, and the 400ms pass timer, and anything else `later` is holding,
-        # which is exactly the set of things that should not fire while the game is held.
+        # generation token every deferred call already carries. Bumping it takes the 400ms
+        # pass timer and anything else `later` is holding, which is exactly the set of things
+        # that should not fire while the game is held.
         #
-        # aiBusy has to be cleared here rather than left to pollAI, because pollAI's early
-        # return on a stale generation happens *before* the line that clears it. A hold that
+        # **The pending pollAI is the exception, and deliberately.** It reads the stale
+        # generation and drops the *answer*, but it goes on polling until the answer comes,
+        # because searchLive is what REVIEW and REWIND now wait on and nothing but the queue
+        # can tell them the worker has gone. See pollAI, and searchLive's own note.
+        #
+        # aiBusy has to be cleared here rather than left to pollAI, because pollAI's return
+        # on a stale generation still happens *before* the line that clears it. A hold that
         # left it set would never lift: `advance` would return on the first guard for ever.
-        if self.aiBusy:
+        midSearch = self.aiBusy
+        if midSearch:
             self.gameGen += 1
             self.aiBusy = False
             self.log(self.turnMark() + "Held mid-search — the computer will think again.",
@@ -4305,8 +4400,16 @@ class RoyalsWindow:
 
         self.showAssist(None)
         self.setStatus("Held — " + sideName(self.turn % 2) + " to move", self.turn % 2)
-        self.setHint("The game is held. REVIEW to walk back through it, REWIND to take a "
-                     "move back, or RESUME to carry on.")
+        # Two hints, because a hold taken mid-search is a hold with two of its three buttons
+        # dark and no explanation on screen for it. The wait is real but short -- the thread
+        # is finishing the depth it was on, and pollAI lights them the moment it lands.
+        if midSearch and self.searchLive:
+            self.setHint("The game is held. REVIEW and REWIND come back when the computer's "
+                         "last thought lands — it is still finishing it, and forking the "
+                         "game underneath it is how it ends up playing somewhere else.")
+        else:
+            self.setHint("The game is held. REVIEW to walk back through it, REWIND to take a "
+                         "move back, or RESUME to carry on.")
         self.refreshHold()
         self.redraw()
 
@@ -4340,9 +4443,17 @@ class RoyalsWindow:
         # placement -- rewinding into the opening would land on one, which is the rule PLAY
         # ON keeps for the same reason. And in a game with a computer in it, only while held:
         # a take-back that resumed would hand the position straight back to the search.
+        #
+        # `not self.searchLive` is the hold's other half, and the hold alone is not it. A
+        # hold clears aiBusy and leaves the thread running -- see searchLive's own note --
+        # so without this line the take-back offered the moment the game is held is precisely
+        # the one taken while a search is still reading the ko history it is about to rebuild.
+        # It is normally not a wait at all: the answer is a poll away, and the button comes
+        # back when pollAI collects it.
         self.rewindButton.setEnabled(
             playing and len(self.record) > self.enterPlies()
-            and (self.paused or self.pauseButton is None))
+            and (self.paused or self.pauseButton is None)
+            and not self.searchLive)
 
     ####### REWIND #######
 
@@ -4359,6 +4470,12 @@ class RoyalsWindow:
             self.setHint("There is nothing to take back — the opening is not a move.")
             return
 
+        # Before the dialog, so a take-back that cannot be made does not spend the one
+        # warning this game gets on a question it was never going to act on.
+        spots = self.walkThisGame()
+        if spots is None:
+            return
+
         # Once a game, and deliberately not once a press. PLAY ON asks every time because it
         # can drop thirty plies; this drops one, and a dialog per undo is what makes an undo
         # not worth using.
@@ -4371,17 +4488,6 @@ class RoyalsWindow:
                     parent=self.root):
                 return
             self.rewindWarned = True
-
-        try:
-            spots = Record.positions(self.record,
-                                     self.startBoard if self.fromPosition else None,
-                                     self.startTurn if self.fromPosition else None)
-        except Record.RecordError as error:
-            # Only reachable if the recorder has a bug, which is when it is worth saying so
-            # loudly rather than putting up a plausible wrong board.
-            messagebox.showerror("Royals", "This game's record is not readable.\n\n%s"
-                                 % (error,), parent=self.root)
-            return
 
         token = self.record[at]
         self.resumeAt(at, spots, list(self.record[:at]))
@@ -4489,6 +4595,16 @@ class RoyalsWindow:
         # The entering boards are deliberately not in it: koRecord is not called during
         # entering, and a review walker touches no ko state at all, so this is the driver
         # doing what only the driver may do.
+        #
+        # **No artificialPlayer.newGame() here, and that is a decision rather than an
+        # oversight.** This is the same game one or thirty plies back, not a different one:
+        # what the transposition table holds is exactly the positions the resumed game is
+        # about to walk back through, and throwing them away would make the search redo work
+        # it has already done for no gain at all. Keeping them is sound because the stamps
+        # were built for it -- a root entry is keyed on Engine.koGeneration, which koReset
+        # and every koRecord below bump, so nothing filed against the line just abandoned can
+        # be matched again, and interior entries never consulted the ko history to begin
+        # with. See AI.newGame, which says which of the two questions it answers.
         Engine.koReset()
         for spot in spots[enterPlies:at + 1]:
             Engine.koRecord(spot.board)
@@ -4940,6 +5056,9 @@ class RoyalsWindow:
 
     def runAI(self, work, done):
         self.aiBusy = True
+        # Paired with the decrement in pollAI, which happens on every path that takes the
+        # thread's answer off the queue -- including the one that then throws it away.
+        self.searchLive += 1
         results = queue.Queue()
 
         # BaseException rather than Exception, which normally reads as a mistake and here is
@@ -4994,15 +5113,31 @@ class RoyalsWindow:
     # closer to twenty, which is long enough that a player gets bored, starts another game,
     # and watches the old one reappear.
     #
-    # So the answer is dropped rather than the search stopped: no reschedule, no `done`, and
-    # aiBusy deliberately left alone, because it belongs to whatever game is running now. The
-    # thread finishes into a queue nobody reads and is collected with it.
+    # So the answer is dropped rather than the search stopped: no `done`, and aiBusy
+    # deliberately left alone, because it belongs to whatever game is running now.
+    #
+    # **The polling itself carries on, though, and that is not what it used to do.** It used
+    # to return on the stale generation before looking at the queue at all, so the thread
+    # finished into a queue nobody read and was collected with it -- which is fine for the
+    # answer and useless for the question REWIND and REVIEW now ask, which is "is a worker
+    # still in there". Nothing can tell them but the queue. So a stale generation reads the
+    # queue exactly like a live one, drops the payload instead of the poll, and lets
+    # searchLive fall to zero on the way past. It terminates for the same reason the live
+    # path does: `run` puts exactly one item in, whichever way it went.
     def pollAI(self, results, done, gen):
-        if gen != self.gameGen: return
-
         try: kind, payload = results.get_nowait()
         except queue.Empty:
             self.root.after(60, lambda: self.pollAI(results, done, gen))
+            return
+
+        # The thread is done, whichever game it belonged to.
+        self.searchLive -= 1
+
+        if gen != self.gameGen:
+            # Whatever it answered is about a position that is no longer on the board. But
+            # the buttons that stood down while it ran can come back up now, and only this
+            # line knows that they can.
+            self.refreshHold()
             return
 
         self.aiBusy = False
