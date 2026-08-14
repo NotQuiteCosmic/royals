@@ -37,6 +37,11 @@ from royals_engine import record as R
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "apps" / "desktop"))
 
+# The older tests here import this inside the functions that patch its dialogs. The PLAY ON
+# tests below patch one from a helper, so it is wanted at module scope too; the two spellings
+# reach the same module object and the local ones are left alone rather than churned.
+royals_gui = pytest.importorskip("royals_gui")
+
 
 # `window` comes from tests/conftest.py, and is shared with the other two files that drive
 # the real window. It used to be built here, a fresh Tk() per test, which worked only because
@@ -393,3 +398,311 @@ def test_the_review_labels_a_position_by_its_move_number(window):
     window.reviewGoTo(steps + 7)
     assert window.reviewMark.cget("text") == "Move 7"
     assert royals_gui.reviewLabel(window.review["spots"][steps + 7], steps) == "Move 7"
+
+
+# ---------------------------------------------------------------------------
+# PLAY ON
+# ---------------------------------------------------------------------------
+# The one door out of a review that does not put the game back as it was: it keeps the
+# plies up to the position on screen, drops the rest, and hands the game back at that
+# point. A prefix of a record is a record -- test_record.py has held that since before
+# there was anything here relying on it -- so this is a truncation and not a new format.
+
+
+def review_at(win, at, answer=True, monkeypatch=None):
+    """Review this game and press PLAY ON at ply `at`. Returns how many plies were dropped."""
+    win.startReview()
+    win.reviewGoTo(at)
+    dropped = len(win.record) - at
+    if monkeypatch is not None:
+        monkeypatch.setattr(royals_gui.messagebox, "askyesno", lambda *a, **kw: answer)
+    win.playOn()
+    return dropped
+
+
+def test_playing_on_keeps_the_prefix_and_drops_the_rest(window, monkeypatch):
+    boards = play_two_handed(window)
+    assert len(window.record) > len(Engine.enteringSequence()) + 3, "too short to fork in"
+
+    at = len(Engine.enteringSequence()) + 2
+    full = list(window.record)
+    dropped = review_at(window, at, monkeypatch=monkeypatch)
+
+    assert dropped > 0, "this test only means something with something to drop"
+    assert window.record == full[:at]
+    assert window.board == boards[at]
+    assert window.review is None, "the review should be over"
+    assert window.phase == "play"
+    assert window.errors == []
+
+
+def test_playing_on_puts_the_turn_back_where_the_record_says(window, monkeypatch):
+    """`turnMark` and `record.turn_of_ply` are one rule, and a fork is where they would
+    most easily part company: the counter is being set to the middle of a game rather than
+    to the start of one."""
+    play_two_handed(window)
+    at = len(Engine.enteringSequence()) + 3
+    review_at(window, at, monkeypatch=monkeypatch)
+
+    phase, number = R.turn_of_ply(at)
+    assert phase == R.PHASE_PLAYING
+    assert window.turnMark().strip() == "%d." % number
+    assert window.turn % 2 == R.side_of_ply(at)
+    assert window.errors == []
+
+
+def test_playing_on_rebuilds_the_ko_history_from_the_prefix(window, monkeypatch):
+    """The part that would fail silently.
+
+    A forked game that kept no history would accept a repetition it should refuse, and
+    nothing on the screen would say so. Every board of the playing phase up to the fork has
+    to be back in the set, and none of the boards that were dropped.
+    """
+    boards = play_two_handed(window)
+    steps = len(Engine.enteringSequence())
+    at = steps + 3
+
+    kept = set(boards[steps:at + 1])
+    doomed = [b for b in boards[at + 1:] if b not in kept]
+    # Stated before the fork so this test cannot pass by accident: the boards it is about
+    # to check the absence of are in the set right now, put there by the game being played.
+    assert doomed, "the game did not run far enough past the fork to drop anything"
+    assert doomed[0] in Engine.koTrack
+
+    review_at(window, at, monkeypatch=monkeypatch)
+
+    assert kept <= set(Engine.koTrack), "a board the fork kept is not in the ko history"
+    for board in doomed:
+        assert board not in Engine.koTrack, "a dropped board stayed in the ko history"
+    # And the entering boards are deliberately not in it, exactly as after startPlay.
+    assert boards[0] not in Engine.koTrack
+    assert window.errors == []
+
+
+def test_playing_on_asks_first_and_a_no_changes_nothing(window, monkeypatch):
+    play_two_handed(window)
+    at = len(Engine.enteringSequence()) + 2
+    full, board = list(window.record), window.board
+
+    window.startReview()
+    window.reviewGoTo(at)
+    asked = []
+    monkeypatch.setattr(royals_gui.messagebox, "askyesno",
+                        lambda *a, **kw: asked.append(a) or False)
+    window.playOn()
+
+    assert asked, "it dropped plies without asking"
+    assert window.record == full
+    assert window.review is not None, "the review was left open, as it should be"
+    window.exitReview()
+    assert window.board == board
+    assert window.errors == []
+
+
+def test_playing_on_from_the_end_asks_nothing(window, monkeypatch):
+    """Forking from the last position is just carrying on with the game."""
+    play_two_handed(window)
+    full = list(window.record)
+
+    window.startReview()
+    asked = []
+    monkeypatch.setattr(royals_gui.messagebox, "askyesno",
+                        lambda *a, **kw: asked.append(a) or True)
+    window.playOn()
+
+    assert not asked, "it asked about dropping nothing"
+    assert window.record == full
+    assert window.review is None
+    assert window.errors == []
+
+
+def test_play_on_is_dark_inside_the_opening(window):
+    play_two_handed(window)
+    steps = len(Engine.enteringSequence())
+
+    window.startReview()
+    for at in (0, 1, steps - 1):
+        window.reviewGoTo(at)
+        assert not window.playOnButton.enabled, "ply %d offered to play on" % at
+
+    # The board entering left behind is where play begins, so it is forkable.
+    window.reviewGoTo(steps)
+    assert window.playOnButton.enabled
+    window.exitReview()
+    assert window.errors == []
+
+
+def test_a_refused_fork_inside_the_opening_says_so(window):
+    """The button is greyed for it, and the method keeps the rule on its own account."""
+    play_two_handed(window)
+    window.startReview()
+    window.reviewGoTo(2)
+    full = list(window.record)
+    window.playOn()
+
+    assert window.record == full
+    assert window.review is not None
+    assert "opening" in window.hintLabel.cget("text")
+    window.exitReview()
+    assert window.errors == []
+
+
+def test_a_forked_game_is_still_a_record_that_saves_and_replays(window, monkeypatch):
+    play_two_handed(window)
+    at = len(Engine.enteringSequence()) + 2
+    review_at(window, at, monkeypatch=monkeypatch)
+
+    # Play one more, so the fork is a game that went somewhere else.
+    if window.legalOrigins:
+        origin = sorted(window.legalOrigins)[0]
+        window.select(origin)
+        offer_a_move(window, origin)
+
+    text = N.encode_game(window.record, notes=[window.recordNote()])
+    moves, spots = R.read(text)
+    assert moves == window.record
+    assert spots[-1].board == window.board
+    assert window.errors == []
+
+
+def test_opening_a_review_does_not_widen_the_panel(window):
+    """PLAY ON is a fifth button, and five across that row do not fit.
+
+    Beside the four step buttons and DONE it took the row to 392px against a panel of 296,
+    so every review would have shoved the board ninety-six pixels sideways and put it back
+    on DONE. It sits on a row of its own instead -- the same answer archiveRow's own comment
+    records for the same problem.
+    """
+    play_two_handed(window)
+    panel = window.reviewRow.master
+    window.root.update_idletasks()
+    playing = panel.winfo_reqwidth()
+
+    window.startReview()
+    window.root.update_idletasks()
+    assert panel.winfo_reqwidth() == playing, "the panel changed width for the review"
+
+    window.exitReview()
+    window.root.update_idletasks()
+    assert panel.winfo_reqwidth() == playing
+    assert window.errors == []
+
+
+# ---------------------------------------------------------------------------
+# SAVE BOARD
+# ---------------------------------------------------------------------------
+# The board a review is showing, lifted out as a position file. The interesting board in a
+# game is usually one somebody noticed on the way back through it, and until this the only
+# way to keep one was to rebuild it square by square in the editor.
+
+
+def test_save_board_writes_the_position_on_screen(window, tmp_path, monkeypatch):
+    boards = play_two_handed(window)
+    at = len(Engine.enteringSequence()) + 2
+    path = tmp_path / "lifted.txt"
+    monkeypatch.setattr(royals_gui.filedialog, "asksaveasfilename", lambda **kw: str(path))
+
+    window.startReview()
+    window.reviewGoTo(at)
+    window.saveBoard()
+
+    board, side = N.decode_position(path.read_text(encoding="utf-8"))
+    assert board == boards[at]
+    assert board == window.board, "it saved a board other than the one on screen"
+    assert side == R.side_of_ply(at)
+    window.exitReview()
+    assert window.errors == []
+
+
+def test_save_board_names_the_side_to_move_not_the_side_that_moved(window, tmp_path,
+                                                                   monkeypatch):
+    """The one thing here that is easy to get backwards.
+
+    `spots[at].side` is who played the move that produced this board; a position file names
+    who moves next. Reaching for the nearer one writes boards that play out as the wrong
+    side's turn, and nothing on screen says so.
+    """
+    play_two_handed(window)
+    steps = len(Engine.enteringSequence())
+    path = tmp_path / "side.txt"
+    monkeypatch.setattr(royals_gui.filedialog, "asksaveasfilename", lambda **kw: str(path))
+
+    window.startReview()
+    for at in (steps, steps + 1, steps + 2, steps + 3):
+        if at >= len(window.review["spots"]):
+            break
+        window.reviewGoTo(at)
+        window.saveBoard()
+        _board, side = N.decode_position(path.read_text(encoding="utf-8"))
+        assert side == R.side_of_ply(at), "ply %d" % at
+        # Inside play the sides alternate, so the two answers differ and this says the right
+        # one was taken. Not at the boundary: red placed the last spy *and* opens, because
+        # whoever entered second moves first, so at ply 12 they legitimately coincide.
+        if at > steps:
+            assert side != window.review["spots"][at].side, \
+                "ply %d saved the side that had just moved" % at
+    window.exitReview()
+    assert window.errors == []
+
+
+def test_save_board_is_dark_inside_the_opening(window, tmp_path, monkeypatch):
+    play_two_handed(window)
+    path = tmp_path / "never.txt"
+    monkeypatch.setattr(royals_gui.filedialog, "asksaveasfilename", lambda **kw: str(path))
+
+    window.startReview()
+    window.reviewGoTo(3)
+    assert not window.saveBoardButton.enabled
+
+    # And the method keeps the rule on its own account, because greying is what a screen does.
+    window.saveBoard()
+    assert not path.exists(), "a half-entered board was written anyway"
+    assert "opening" in window.hintLabel.cget("text")
+    window.exitReview()
+    assert window.errors == []
+
+
+def test_a_cancelled_save_board_writes_nothing_and_says_nothing(window, monkeypatch):
+    play_two_handed(window)
+    monkeypatch.setattr(royals_gui.filedialog, "asksaveasfilename", lambda **kw: "")
+
+    window.startReview()
+    window.reviewGoTo(len(Engine.enteringSequence()) + 1)
+    before = window.hintLabel.cget("text")
+    window.saveBoard()
+
+    assert window.hintLabel.cget("text") == before
+    window.exitReview()
+    assert window.errors == []
+
+
+def test_a_board_lifted_from_a_review_plays_as_the_game_it_came_from(window, tmp_path,
+                                                                     monkeypatch):
+    """The whole feature in one test.
+
+    Every other one here checks a half. This is the only one that would catch the two halves
+    being right separately and wrong together -- the file, the editor's LOAD, the menu, and
+    the game that finally starts from it.
+    """
+    boards = play_two_handed(window)
+    at = len(Engine.enteringSequence()) + 2
+    path = tmp_path / "study.txt"
+    monkeypatch.setattr(royals_gui.filedialog, "asksaveasfilename", lambda **kw: str(path))
+
+    window.startReview()
+    window.reviewGoTo(at)
+    window.saveBoard()
+    window.exitReview()
+
+    monkeypatch.setattr(royals_gui.filedialog, "askopenfilename", lambda **kw: str(path))
+    window.buildPosition()
+    window.loadPosition()
+    window.usePosition()                    # back to the menu, holding it
+    window.modeVar.set(0)                   # two humans, so nothing runs on a worker thread
+    window.startGame()
+    window.root.update()
+
+    assert window.fromPosition is True
+    assert window.board == boards[at], "the game did not begin on the board that was lifted"
+    assert window.turn % 2 == R.side_of_ply(at), "the wrong side was handed the move"
+    assert window.errors == []

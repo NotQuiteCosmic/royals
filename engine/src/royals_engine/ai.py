@@ -53,6 +53,12 @@ MOVE_KIND = 1
 MOVE_TARGET = 2
 MOVE_PRIS = 3
 
+# PROTOTYPE (Engine.PUSH_RANGE): a fifth element on a push, holding how far the mover chose to
+# travel. Present only when the ceiling is above 1, so off the flag every move is the four-tuple
+# it has always been and nothing that reads one can tell the difference. The places that
+# unpacked a move into four names take move[:4] for that reason.
+MOVE_TRAVEL = 4
+
 # matches the labels checkMoves puts in alphBreaks, indexed by direction the same way
 HEADINGS = Engine.HEADINGS
 
@@ -137,11 +143,34 @@ def makePossList(cBoard, contr, spaces = None):
 # Flattens a checkMoves result into moves out of one square, in the shape described up top.
 # The backup kept squares and direction words in one possMoves list and had to keep pulling
 # the string "break" back out of it; tagging avoids that entirely.
-def listMoves(moveArray, origin, movingPris, into):
+def listMoves(moveArray, origin, movingPris, into, cBoard = None, spaces = None, contr = None):
     if not moveArray: return
 
     for target in moveArray[0]: into.append((origin, "jump", target, movingPris))
-    for target in moveArray[1]: into.append((origin, "push", target, movingPris))
+
+    # PROTOTYPE (Engine.PUSH_RANGE): a push is one move per distance it may travel, so a
+    # four-strength stack shoving a lone pawn offers four. Off the flag the ceiling is 1
+    # everywhere and this emits exactly the one move it always has, in the same order.
+    #
+    # The fifth element is the distance. Everything that reads a move by index -- MOVE_ORIGIN
+    # through MOVE_PRIS -- is unaffected; the handful of places that unpacked a move into
+    # four names take move[:4] now, which reads the same either way.
+    for target in moveArray[1]:
+        ceiling = 1
+        if Engine.PUSH_RANGE and cBoard is not None:
+            direction = Engine.PUSHFROM[origin][target + 1]
+            if direction is not None:
+                pRange = Engine.getLegalPushLength(cBoard, origin, cBoard[origin - 1], direction,
+                                                   contr, movingPris, False, spaces)
+                ceiling = Engine.pushMaxTravel(cBoard, origin, cBoard[origin - 1], direction,
+                                               pRange, spaces)
+        # Distance 1 is the plain four-tuple, whatever the ceiling: absent means one square,
+        # so spelling it out would be a second way of writing the same move and the two
+        # engines would have to agree about which one to emit. They do agree -- by there
+        # being only one shape.
+        into.append((origin, "push", target, movingPris))
+        for step in range(2, ceiling + 1):
+            into.append((origin, "push", target, movingPris, step))
     # a break scatters the whole square, so there is no carrying-prisoners variant of one
     if not movingPris:
         for heading in moveArray[2]: into.append((origin, "break", heading, False))
@@ -179,7 +208,7 @@ def checkMove(move):
     board. A break's target is a direction index rather than a square, which is the
     asymmetry notation.py exists to contain.
     """
-    origin, kind, target, _pris = move
+    origin, kind, target, _pris = move[:4]
 
     if kind not in KINDS:
         raise ValueError("%r is not a move kind (one of %s)" % (kind, ", ".join(KINDS)))
@@ -213,7 +242,11 @@ def performOneStep(cBoard, contr, move):
     if kind == "jump":
         return Engine.exeMove(cBoard, move[MOVE_ORIGIN], move[MOVE_TARGET] + 1, contr, move[MOVE_PRIS])
     if kind == "push":
-        return Engine.exePush(cBoard, move[MOVE_ORIGIN], move[MOVE_TARGET] + 1, contr, move[MOVE_PRIS])
+        # A fifth element is the distance the mover chose; absent means one square, which is
+        # what a push has always been and what every record written before this rule says.
+        travel = move[MOVE_TRAVEL] if len(move) > MOVE_TRAVEL else None
+        return Engine.exePush(cBoard, move[MOVE_ORIGIN], move[MOVE_TARGET] + 1, contr,
+                              move[MOVE_PRIS], False, True, travel)
     if kind == "free":
         return Engine.exePush(cBoard, move[MOVE_ORIGIN], move[MOVE_TARGET] + 1, contr, move[MOVE_PRIS], True)
     return Engine.exeBreak(cBoard, move[MOVE_ORIGIN], move[MOVE_TARGET], contr)
@@ -247,7 +280,8 @@ def listAllMoves(cBoard, contr, spaces = None):
         # out is the only thing checkMoves will offer back
         if s[Hasher.SIDE] != contr:
             tOrigin = makeOrigin(cBoard, origin, False, True)
-            listMoves(Engine.checkMoves(cBoard, tOrigin, contr, spaces), origin, False, everything)
+            listMoves(Engine.checkMoves(cBoard, tOrigin, contr, spaces), origin, False, everything,
+                      cBoard, spaces, contr)
             continue
 
         carrying = [False]
@@ -257,7 +291,7 @@ def listAllMoves(cBoard, contr, spaces = None):
             tOrigin = makeOrigin(cBoard, origin, movingPris)
             # the board is already parsed, so checkMoves needn't walk it again
             listMoves(Engine.checkMoves(cBoard, tOrigin, contr, spaces), origin, movingPris,
-                      everything)
+                      everything, cBoard, spaces, contr)
     return everything
 
 
@@ -1276,7 +1310,20 @@ def describeMove(move):
         # standing rather than somewhere they are sent
         text += " frees " + Hasher.IndexToAlg(target).upper()
     else:
-        text += " " + kind + "s to " + Hasher.IndexToAlg(target).upper()
+        # A push's target names the square it shoves, which is where the stack lands only
+        # when it travels one -- so under the push-range variant the log has to work out
+        # where the stack actually came to rest, or a three-square push reads as a
+        # one-square push into a square the stack is not standing on.
+        landing = target
+        far = move[MOVE_TRAVEL] if len(move) > MOVE_TRAVEL else 1
+        if kind == "push" and far > 1:
+            origin = move[MOVE_ORIGIN]
+            landing = Engine.pushSquare(origin, Engine.findDirection(origin, target + 1),
+                                        far) - 1
+
+        text += " " + kind + "s to " + Hasher.IndexToAlg(landing).upper()
+        if kind == "push" and far > 1:
+            text += " (%d squares)" % (far,)
 
     if move[MOVE_PRIS]: text += " (with prisoners)"
     return text

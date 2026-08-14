@@ -83,12 +83,20 @@ def boardText(board):
 
 def moveText(move):
     if move is None: return "none"
-    origin, kind, target, pris = move
+    origin, kind, target, pris = move[:4]
     # a break's direction is carried as an index into Engine.pushDirs; spelled back out as
     # the pair, so what this records is the move and not how the move happens to be stored
     if kind == "break": what = "break " + str(tuple(Engine.pushDirs[target]))
     else: what = kind + " " + Hasher.IndexToAlg(target)
-    return Hasher.IndexToAlg(origin - 1) + " " + what + (" +pris" if pris else "")
+
+    # How far a push travels, under the push-range variant. Written only where the move
+    # carries it -- distance 1 is the plain four-tuple -- so golden_moves.txt is untouched by
+    # this line existing, and golden_push_moves.txt can tell two pushes down the same ray
+    # apart. Without it they would render identically, the sort would have nothing to
+    # separate them, and the file would record one move twice instead of two moves once.
+    far = (" x%d" % move[4]) if len(move) > 4 else ""
+
+    return Hasher.IndexToAlg(origin - 1) + " " + what + far + (" +pris" if pris else "")
 
 
 # The boards golden_moves.txt starts from are READ, not computed, and that is the point of
@@ -338,6 +346,22 @@ def dumpFixtures():
         walks.append({"seed": seed, "start": list(start),
                       "choices": choices, "final": list(final)})
 
+    # The same three walks under the push-range variant, and they have to be recorded
+    # separately rather than derived. A walk is a list of *indices* into listAllMoves' output,
+    # and the variant's output is longer -- so index 7 is a different move and the walk goes
+    # somewhere else from the first position where a push had room to travel. One set of
+    # indices cannot serve both rule sets.
+    pushWalks = []
+    was = Engine.PUSH_RANGE
+    Engine.setPushRange(True)
+    try:
+        for seed in MOVE_SEEDS:
+            start, choices, final = walkChoices(seed)
+            pushWalks.append({"seed": seed, "start": list(start),
+                              "choices": choices, "final": list(final)})
+    finally:
+        Engine.setPushRange(was)
+
     # UNPACK is 8192 rows of 14, which is half a megabyte of JSON to restate facts the
     # field rules already give. A port builds its own and checks the digest.
     flat = ",".join(",".join(str(v) for v in row) for row in Hasher.UNPACK)
@@ -356,6 +380,7 @@ def dumpFixtures():
         "jumpdist": [list(AI.JUMPDIST[sq]) for sq in range(1, 50)],
         "entering_board": list(Hasher.Entering_Board()),
         "walks": walks,
+        "push_walks": pushWalks,
     }
 
     os.makedirs(os.path.dirname(fixturePath()), exist_ok=True)
@@ -363,23 +388,47 @@ def dumpFixtures():
         json.dump(fixtures, f, indent=1, sort_keys=True)
         f.write("\n")
 
-    print("fixtures wrote %s -- %d walks, unpack sha256 %s..."
-          % (FIXTURE_PATH, len(walks), unpackDigest[:16]))
+    print("fixtures wrote %s -- %d walks + %d push walks, unpack sha256 %s..."
+          % (FIXTURE_PATH, len(walks), len(pushWalks), unpackDigest[:16]))
 
     # The whole value of this file is that it agrees with the sweep. Re-run the sweep and
     # confirm the goldens still match, so a fixture dump can never quietly certify a walk
     # the recorded file doesn't take.
-    if not check("moves"):
-        print("fixtures REFUSED -- golden_moves.txt does not match; fixtures may be stale")
-        sys.exit(1)
+    for baseline, golden in (("moves", "golden_moves.txt"),
+                             ("pushmoves", "golden_push_moves.txt")):
+        if not check(baseline):
+            print("fixtures REFUSED -- %s does not match; fixtures may be stale" % golden)
+            sys.exit(1)
 
 
-SWEEPS = {"entering": sweepEntering, "moves": sweepMoves, "games": sweepGames}
+# The same move sweep, played under the push-range variant.
+#
+# **A second rules contract, not a replacement for the first.** The variant is a rule a game
+# opts into, so there are two rule sets and each needs its own statement of what the rules say
+# a move does. Both engines emit both files, and both must match byte for byte -- the variant
+# is held to exactly the standard the original is, which is the only reason implementing it
+# twice is worth anything.
+#
+# It walks the same seeds from the same entered boards, so a line-by-line diff of the two
+# files is a readable statement of what the variant changes: identical wherever no push had
+# room to travel, and diverging from the first position where one did.
+def sweepPushMoves(emit):
+    was = Engine.PUSH_RANGE
+    Engine.setPushRange(True)
+    try:
+        sweepMoves(emit)
+    finally:
+        Engine.setPushRange(was)
+
+
+SWEEPS = {"entering": sweepEntering, "moves": sweepMoves, "games": sweepGames,
+          "pushmoves": sweepPushMoves}
 
 # name -> (file, sweeps), in the order they run
 BASELINES = [
     ("enter", ("golden_enter.txt", ("entering",))),
     ("moves", ("golden_moves.txt", ("moves",))),
+    ("pushmoves", ("golden_push_moves.txt", ("pushmoves",))),
     ("search", ("golden_search.txt", ("games",))),
 ]
 

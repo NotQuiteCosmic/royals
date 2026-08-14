@@ -700,14 +700,25 @@ async def resign_game(game_id: str, x_royals_seat: str = SeatHeader()):
 # It is the same board_to_json the live game sends, so board.js draws a reviewed position
 # with the renderer it already has and does not learn a second board format.
 
-def _review_json(moves, spots, game):
-    """`game` is whoever knows how it ended -- see the note in G.positions."""
+def _review_json(moves, spots, game, start_side=None):
+    """`game` is whoever knows how it ended -- see the note in G.positions.
+
+    `start_side` is set only for a record that began from a position set up by hand, which
+    has no entering phase; `enterSteps` goes to 0 with it. The page needs both: the first
+    for whose ply is whose, the second for where the opening ends. It cannot work either out
+    on its own, and the two together are what let it colour and number a record it did not
+    play.
+    """
+    entering = start_side is None
     return {
         "ply": len(moves),
         "moves": list(moves),
         "result": game.result,
         "termination": game.termination,
-        "enterSteps": len(G.ENTER_STEPS),
+        "enterSteps": len(G.ENTER_STEPS) if entering else 0,
+        # Which side made the first ply of *play*. Red for an ordinary game -- whoever
+        # entered second opens -- and whatever the position said otherwise.
+        "firstSide": 1 if entering else start_side,
         # `turn` is what a reviewer is shown -- placement 3 of 12, or move 7 -- and `ply`
         # is where that sits in the record. They differ by the whole entering phase, which
         # is exactly why both are sent rather than the client deriving one from the other.
@@ -747,15 +758,26 @@ async def review_record(body: ReviewIn, request: Request):
     if not store.may_act("review:" + client_key(request), REVIEW_LIMIT, REVIEW_WINDOW):
         raise HTTPException(429, "too many review requests -- slow down")
 
-    moves = N.decode_game(body.record)      # NotationError -> 422, naming the bad ply
+    # decode_record rather than decode_game, because a record may begin from a position
+    # somebody set up. The board comes off the wire from a stranger and is bounded by
+    # notation.validate_board on the way through -- 49 squares, codes in range, no side
+    # holding more pieces than it owns -- which is the same ceiling a position file has
+    # always been read under.
+    # The fourth value is the optional rules the game was played under. The server offers
+    # none of them, so a record naming one is refused rather than replayed under the standard
+    # rules -- which would produce a plausible board and a different game.
+    moves, board, turn, rules = N.decode_record(body.record)  # NotationError -> 422, naming the ply
+    if rules:
+        raise HTTPException(422, "this record was played under %s, which this server does "
+                                 "not offer" % (", ".join(rules),))
     if len(moves) > REVIEW_MAX_PLIES:
         raise HTTPException(
             413, "that record is %d moves long and this server will review up to %d -- "
                  "long enough that it no longer fits in one request"
                  % (len(moves), REVIEW_MAX_PLIES))
 
-    spots, walked = G.positions(moves)      # ReplayError -> 422
-    return _review_json(moves, spots, walked)
+    spots, walked = G.positions(moves, board, turn)     # ReplayError -> 422
+    return _review_json(moves, spots, walked, start_side=turn)
 
 
 @app.get("/api/health")

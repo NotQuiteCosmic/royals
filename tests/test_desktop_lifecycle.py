@@ -34,6 +34,9 @@ from royals_engine import record as R
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "apps" / "desktop"))
 
+# Wanted at module scope by the hold tests below, which patch its messagebox from a helper.
+royals_gui = pytest.importorskip("royals_gui")
+
 
 # `gui` and `window` come from tests/conftest.py now, shared with the other two files that
 # drive the real window. The reasoning that used to live here -- one Tk() per process, because
@@ -394,3 +397,259 @@ def test_a_handicap_match_says_so_in_the_file_it_saves(window):
     assert "white at depth 1 and black at depth 2" in window.recordNote()
     assert "White searches to depth 1, black to depth 2." \
         in window.logText.get("1.0", "end"), "the game log never mentioned the handicap"
+
+
+####### Holding play, and taking a move back #######
+# `paused` is one flag read by `advance`, which every turn goes through. The tests that earn
+# their place are the two where something is already in flight: a search that has to have its
+# answer dropped, and a take-back that has to leave the ko history right.
+
+
+def playTwoHanded(win, moves=3):
+    """Play a few moves through the window's own handlers, both sides, no worker thread."""
+    win.modeVar.set(0)              # 2 player
+    win.entryVar.set(1)             # dealt opening, so play starts at once
+    win.startGame()
+    win.root.update()
+    for _ in range(moves):
+        if win.phase != "play" or not win.legalOrigins:
+            break
+        origin = sorted(win.legalOrigins)[0]
+        win.select(origin)
+        jumps, pushes = win.moveArray[0], win.moveArray[1]
+        if jumps: win.playClick(jumps[0] + 1)
+        elif pushes: win.freeVar.set(0); win.playClick(pushes[0] + 1)
+        else: break
+        win.root.update()
+
+
+def test_a_two_player_game_has_no_pause_button(window):
+    """Nothing runs between turns, so there would be nothing for a hold to stop."""
+    playTwoHanded(window, moves=0)
+    assert window.pauseButton is None
+    assert window.rewindButton is not None
+
+
+def test_pausing_mid_search_drops_the_answer(window, monkeypatch):
+    """The one with a thread in it.
+
+    A search cannot be called off, so a hold has to drop its answer instead -- by the same
+    generation token that drops one from a game the player walked away from. `aiBusy` has to
+    come down with it, or the hold would never lift: advance returns on that guard first.
+    """
+    released = threading.Event()
+    blocked(monkeypatch, "takeTurn", released)
+
+    window.modeVar.set(1); window.sideVar.set(0)
+    window.entryVar.set(1); window.depthVar.set(1)
+    window.startGame(); window.root.update()
+    assert window.aiBusy, "the computer should be thinking"
+
+    board, plies = window.board, len(window.record)
+    window.togglePause(); window.root.update()
+
+    assert window.paused is True
+    assert window.aiBusy is False, "a hold that left this set would never lift"
+    assert window.pauseButton.cget("text") == "RESUME"
+
+    released.set()
+    pump(window.root, 3.0)
+
+    assert window.board == board, "the dropped answer moved the board anyway"
+    assert len(window.record) == plies
+    assert window.errors == []
+
+
+def test_a_held_game_plays_nothing_and_resuming_plays_on(window, monkeypatch):
+    released = threading.Event()
+    blocked(monkeypatch, "takeTurn", released)
+
+    window.modeVar.set(2); window.entryVar.set(1); window.depthVar.set(1)
+    window.startGame(); window.root.update()
+    window.togglePause(); window.root.update()
+    released.set()
+
+    plies = len(window.record)
+    pump(window.root, 1.5)
+    assert len(window.record) == plies, "a held game played on"
+
+    window.togglePause(); window.root.update()
+    assert window.paused is False
+    assert window.pauseButton.cget("text") == "PAUSE"
+    assert pump(window.root, 10.0, until=lambda: len(window.record) > plies), \
+        "resuming did not start the game again"
+    assert window.errors == []
+
+
+def test_a_held_game_can_be_reviewed_and_played_on_from(window, monkeypatch):
+    """Reviewing needs the search to be down, which is exactly what a hold does. And PLAY ON
+    out of a held review lifts the hold, because carrying on is what it is for."""
+    released = threading.Event()
+    blocked(monkeypatch, "takeTurn", released)
+
+    window.modeVar.set(2); window.entryVar.set(1); window.depthVar.set(1)
+    window.startGame(); window.root.update()
+    window.togglePause(); window.root.update()
+    released.set()
+    pump(window.root, 0.5)
+
+    window.startReview()
+    assert window.review is not None, "a held game would not open for review"
+    assert not window.rewindButton.enabled, "REWIND should stand down for the review"
+
+    monkeypatch.setattr(royals_gui.messagebox, "askyesno", lambda *a, **kw: True)
+    window.playOn()
+    window.root.update()
+
+    assert window.review is None
+    assert window.paused is False, "PLAY ON left the game held"
+    assert window.errors == []
+
+
+def test_rewind_takes_back_one_ply_and_leaves_the_game_held(window, monkeypatch):
+    """1 player rather than 0, and that is about the test harness rather than the feature.
+
+    A 0 player game at depth 1 runs to the end inside a single `root.update()` -- each
+    answer schedules the next search, and update() drains the whole cascade before `pump`
+    gets to look at its condition. A 1 player game stops on its own when it reaches the
+    human's turn, which is the only place a test can reliably take hold of one.
+    """
+    released = threading.Event()
+    blocked(monkeypatch, "takeTurn", released)
+    monkeypatch.setattr(royals_gui.messagebox, "askyesno", lambda *a, **kw: True)
+
+    # White is the human, so black -- the computer -- moves first and the game comes back to
+    # rest after exactly one move.
+    window.modeVar.set(1); window.sideVar.set(0)
+    window.entryVar.set(1); window.depthVar.set(1)
+    window.startGame(); window.root.update()
+    released.set()
+    assert pump(window.root, 10.0,
+                until=lambda: len(window.record) > len(window.enterSteps)), \
+        "the computer never played its move"
+    window.togglePause(); window.root.update()
+    assert window.paused is True
+
+    before = list(window.record)
+    assert len(before) > len(window.enterSteps), "no move to take back"
+
+    window.rewind(); window.root.update()
+
+    assert window.record == before[:-1]
+    assert window.paused is True, "a take-back that resumed would be played over at once"
+    plies = len(window.record)
+    pump(window.root, 1.0)
+    assert len(window.record) == plies, "the game carried on after a take-back"
+    assert window.errors == []
+
+
+def test_rewind_rebuilds_the_ko_history(window, monkeypatch):
+    """The half of a take-back that fails without saying so."""
+    monkeypatch.setattr(royals_gui.messagebox, "askyesno", lambda *a, **kw: True)
+    playTwoHanded(window, moves=3)
+    assert len(window.record) > len(window.enterSteps), "no move to take back"
+
+    dropped = window.board
+    # Said before the rewind so this cannot pass by accident: the board it is about to check
+    # the absence of is in the set right now, put there by the move being taken back.
+    assert dropped in Engine.koTrack
+
+    window.rewind(); window.root.update()
+
+    assert dropped not in Engine.koTrack, "the taken-back board stayed in the ko history"
+    assert window.board in Engine.koTrack, "the board it went back to is not in it"
+    assert window.errors == []
+
+
+def test_rewind_asks_once_a_game(window, monkeypatch):
+    asked = []
+    monkeypatch.setattr(royals_gui.messagebox, "askyesno",
+                        lambda *a, **kw: asked.append(a) or True)
+    playTwoHanded(window, moves=3)
+
+    window.rewind(); window.root.update()
+    assert len(asked) == 1, "the first take-back should ask"
+    window.rewind(); window.root.update()
+    assert len(asked) == 1, "it asked again in the same game"
+
+    # A new game is a new decision.
+    playTwoHanded(window, moves=3)
+    window.rewind(); window.root.update()
+    assert len(asked) == 2
+    assert window.errors == []
+
+
+def test_a_declined_rewind_changes_nothing(window, monkeypatch):
+    monkeypatch.setattr(royals_gui.messagebox, "askyesno", lambda *a, **kw: False)
+    playTwoHanded(window, moves=3)
+    before, board, ko = list(window.record), window.board, set(Engine.koTrack)
+
+    window.rewind(); window.root.update()
+
+    assert window.record == before
+    assert window.board == board
+    assert set(Engine.koTrack) == ko
+    assert window.rewindWarned is False, "a refusal should not count as being warned"
+    assert window.errors == []
+
+
+def test_rewind_needs_no_pause_in_a_two_player_game(window, monkeypatch):
+    monkeypatch.setattr(royals_gui.messagebox, "askyesno", lambda *a, **kw: True)
+    playTwoHanded(window, moves=3)
+
+    assert window.paused is False
+    assert window.rewindButton.enabled, "nothing runs between turns, so nothing to hold first"
+    before = list(window.record)
+    window.rewind(); window.root.update()
+
+    assert window.record == before[:-1]
+    # And the turn really was handed back: there is somebody to move and squares to move from.
+    assert window.legalOrigins
+    assert window.errors == []
+
+
+def test_rewind_is_dark_with_nothing_to_give_back(window):
+    """The opening is not a move, so rewinding into it would land on a placement."""
+    playTwoHanded(window, moves=0)
+    assert len(window.record) == len(window.enterSteps)
+    assert not window.rewindButton.enabled
+
+    playTwoHanded(window, moves=1)
+    assert window.rewindButton.enabled
+
+
+def test_rewind_is_refused_while_reviewing(window, monkeypatch):
+    monkeypatch.setattr(royals_gui.messagebox, "askyesno", lambda *a, **kw: True)
+    playTwoHanded(window, moves=3)
+    before = list(window.record)
+
+    window.startReview()
+    window.rewind()
+
+    assert window.record == before
+    assert "reviewing" in window.hintLabel.cget("text")
+    window.exitReview()
+    assert window.errors == []
+
+
+def test_the_assistant_is_dark_while_held(window, monkeypatch):
+    """askEngine sets aiBusy, and a hint asked for during a hold would leave RESUME with
+    nothing to do -- advance returns on that guard before it reaches the one for the hold."""
+    released = threading.Event()
+    blocked(monkeypatch, "takeTurn", released)
+
+    window.modeVar.set(1); window.sideVar.set(0)
+    window.entryVar.set(1); window.depthVar.set(1)
+    window.assistVar.set(1)
+    window.startGame(); window.root.update()
+    window.togglePause(); window.root.update()
+    released.set()
+    pump(window.root, 0.5)
+
+    window.askDepth()
+    window.askEngine(1)
+    assert window.aiBusy is False, "the assistant started a search during a hold"
+
+    window.togglePause()
+    assert window.paused is False
+    assert window.errors == []

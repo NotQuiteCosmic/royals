@@ -1,4 +1,5 @@
 # RoyalsLib was imported here and never used once -- dropped with the package split.
+import os
 import random
 
 from royals_engine import hasher as Hasher
@@ -137,6 +138,62 @@ PUSH_REACH = 21
 # The most pieces a break can scatter: a full stack of six plus the five prisoners it could
 # be holding. Weight counts prisoners here, unlike everywhere jumps are concerned.
 MAX_SCATTER = 11
+
+
+####### THE PUSH-RANGE VARIANT #######
+# **An optional rule, chosen per game.** A push travels a distance instead of the one square
+# it has always moved. Off -- the default -- every byte of behaviour is what it always was and
+# `golden_moves.txt` is byte-identical; on, the rules below apply and
+# `golden_push_moves.txt` is the contract instead. Two rule sets, two contracts, and both
+# engines answer to both.
+#
+#   distance = ANY of 1 .. strength - the total weight of the shoved line + 1
+#
+#   - **The distance is the mover's choice, not the arithmetic's.** Four pawns shoving one
+#     may travel 1, 2, 3 or 4, so the formula sets a ceiling and the player picks under it.
+#     That is what makes this a change to the move list and not only to the executor: one
+#     push becomes up to six moves, and the branching factor goes up with it.
+#   - Legality is unchanged. A ceiling of at least 1 is exactly the old strength >= weight,
+#     so which *directions* are on offer does not move -- only how far each can go.
+#   - The line is rigid: cut short by a collision with something that was not part of the
+#     push, or by the edge, and everyone moves the reduced amount together.
+#   - The pusher may not leave the board. Pieces it shoves may, and wrap as they always have,
+#     so the clip is on the pusher's landing square alone. A stack on e4 shoving right travels
+#     at most 2, while the pawn ahead of it goes f4 -> a4.
+#   - A lone spy may shove any square whatever it weighs and moves it exactly one. Without
+#     that exception the formula makes a completed six untouchable -- strength 1 against
+#     weight 6 is -4 -- and the delayed win becomes unreachable, since nothing else in the
+#     game can touch a finished stack.
+#   - Freeing stays a one-square move.
+#
+# **It may change between games and never within one.** This was read once at import while it
+# was an experiment, on the argument that a flag flipping mid-process would let one half of a
+# search play by one rule set and the other half by another -- and that argument is still
+# right. What has changed is that a game is now allowed to choose, so the constraint moves
+# rather than disappearing: setPushRange belongs beside `Engine.koReset()` and `AI.newGame()`
+# at the start of a game, and nowhere else. A search in flight must never see it move.
+#
+# The environment variable survives as the initial value, which is what a sweep or a
+# measurement harness sets before importing anything.
+PUSH_RANGE = os.environ.get("ROYALS_PUSH_RANGE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def setPushRange(on):
+    """Choose the rule set for the game about to be played.
+
+    **The compiled engine is told too, and that is the whole point of this being a function.**
+    `listAllMoves`, `performOneStep` and `takeTurn` all hand off to the wheel before any rule
+    check of their own, so a flag that lived only in Python would leave the computer playing
+    the standard game while the person at the keyboard played the variant -- with nothing
+    anywhere to notice the two disagreeing.
+    """
+    global PUSH_RANGE
+    PUSH_RANGE = bool(on)
+
+    from royals_engine import _accel
+    if _accel.accel is not None:
+        _accel.accel.set_push_range(PUSH_RANGE)
+    return PUSH_RANGE
 
 
 def buildJumpRays():
@@ -337,6 +394,73 @@ def getLegalPushLength(cBoard, inputSpace, inputData, dirIndex, contr, movingPri
     # (This used to print a debug marker to stdout. The engine is imported by a web worker
     # now, so it stays silent and simply reports no push -- which is what it always meant.)
     return 0
+
+
+####### PROTOTYPE: the furthest a push may travel #######
+# Off the flag this answers 1 to everything, which is the rule the game has always had, and
+# every caller can then take the same code path whichever way the flag is set.
+#
+# On, this is the CEILING and the mover chooses anything from 1 up to it -- see listMoves,
+# which turns one push into one move per distance. Read `pRange` as what it is -- the count of
+# contiguous squares being shoved, not a distance -- and note that legality has already been
+# decided by the time this is asked: getLegalPushLength said yes, so strength covers the line
+# and the ceiling below is at least 1 before anything clips it.
+#
+#   pusher's edge   The ray wraps and the pusher may not. So walk the ray in board
+#                   coordinates and stop the pusher at the last square it can reach without
+#                   the file or rank folding over. Only the pusher is clipped: the shoved
+#                   pieces are further along the same ray and wrap freely, which is what
+#                   makes "the pushing stack can't go off the edge, though pushed pieces
+#                   can" a rule about one square rather than about the line.
+#   collision       Beyond the line is the empty square that ended it. Past that there may be
+#                   anything, and at range the front of the line reaches it. Distance is cut
+#                   to leave the front on the last free square before whatever it met.
+def pushMaxTravel(cBoard, inputSpace, inputData, dirIndex, pRange, spaces, freePris = False):
+    if not PUSH_RANGE: return 1
+    if pRange == 0: return 0
+
+    origin = Hasher.UNPACK[inputData]
+
+    # A lone spy shoves anything and moves it one. It is the only thing that can touch a
+    # finished six, so this exception is what keeps the endgame alive -- see PUSH_RANGE.
+    if origin[Hasher.SPY] and origin[Hasher.CAPTORS] == 1: return 1
+
+    # Freeing stays a one-square move: the freed pieces stand up into the square the pusher
+    # walks onto, and at range there is no such square.
+    if freePris: return 1
+
+    if not isinstance(dirIndex, int): dirIndex = pushIndex(dirIndex)
+    ray = PUSHRAY[inputSpace][dirIndex]
+    if not ray: return 0
+
+    strength = origin[Hasher.STRENGTH] if origin[Hasher.PRISCOUNT] else origin[Hasher.CAPTORS]
+    lineWeight = 0
+    for n in range(0, pRange):
+        lineWeight += spaces[ray[n]][Hasher.WEIGHT]
+
+    distance = strength - lineWeight + 1
+    if distance < 1: return 0
+
+    # The collision. Offset pRange is the empty square the line stopped on, so the front may
+    # travel one square for each free square from there onwards.
+    room = 0
+    for n in range(pRange, len(ray)):
+        if spaces[ray[n]][Hasher.OCCUPIED]: break
+        room += 1
+        if room >= distance: break
+    if room < distance: distance = room
+    if distance < 1: return 0
+
+    # The pusher's edge. dirIndex names a unit step; the pusher may take it while both
+    # coordinates stay inside the board, and no further.
+    dx, dy = pushDirs[dirIndex]
+    x, y = (inputSpace - 1) % 7, (inputSpace - 1) // 7
+    reach = 0
+    while reach < distance and 0 <= x + dx * (reach + 1) < 7 and 0 <= y + dy * (reach + 1) < 7:
+        reach += 1
+    if reach < distance: distance = reach
+
+    return distance
 
 
 # Returns how many squares a break out of inputSpace would cover, 0 meaning no break.
@@ -718,14 +842,17 @@ def exeBreak(cBoard, inputSquare, direction, contr):
 #                          in between the shuffle and that scatter, which is the only place
 #                          the scatter can be measured from. Defaulted, so every caller that
 #                          existed before it did behaves exactly as it did.
-def exePush(cBoard, origin, destination, contr, movingPris, freePris = False, shatter = True):
+def exePush(cBoard, origin, destination, contr, movingPris, freePris = False, shatter = True,
+            travel = None):
     direction = PUSHFROM[origin][destination]
     # not neighbours, so there is no push to make
     if direction is None: return cBoard
 
     inputData = cBoard[origin - 1]
+    # One walk of the board for both questions -- how long the line is, and how far it goes.
+    spaces = Hasher.Parse_Board(cBoard)
     pRange = getLegalPushLength(cBoard, origin, inputData, direction, contr, movingPris, False,
-                                None, freePris)
+                                spaces, freePris)
     if pRange == 0: return cBoard
 
     o = Hasher.UNPACK[inputData]
@@ -745,10 +872,29 @@ def exePush(cBoard, origin, destination, contr, movingPris, freePris = False, sh
     # taking this branch wrote the pieces it had just freed into itself and lost them.
     freeing = freePris and wouldFree(o, adj, contr, movingPris)
 
+    # How far the whole line travels. One, always, unless the range prototype is on -- and the
+    # shuffle below is written in terms of it either way, so there is one code path rather
+    # than two to keep in step.
+    #
+    # `travel` is the mover's choice, anything from 1 up to the ceiling.
+    #
+    # **None means one square, not the ceiling**, and that default is load-bearing rather than
+    # arbitrary. A move tuple that does not mention a distance is either an old one, a hand-
+    # built one, or one that came back off a record written before this rule existed -- and
+    # every one of those meant the one square a push has always moved. Defaulting to the
+    # ceiling instead would replay all three as the longest push available: a plausible board,
+    # a different game, and nothing anywhere to say so.
+    #
+    # Clamped rather than trusted, because a push travelling further than the rules allow
+    # would produce a board no search had ever scored.
+    ceiling = pushMaxTravel(cBoard, origin, inputData, direction, pRange, spaces, freePris)
+    if ceiling == 0: return cBoard
+    travel = 1 if travel is None else max(1, min(int(travel), ceiling))
+
     # grab every square the shuffle needs before touching anything -- Mod_Space returns a
     # new board on each write, so these have to come off the original.
     payloads = {}
-    for n in range(0, pRange + 2):
+    for n in range(0, pRange + travel + 1):
         payloads[n] = cBoard[line[n]]
 
     # Work out every square's new contents before committing any of them. Walking from the
@@ -760,19 +906,25 @@ def exePush(cBoard, origin, destination, contr, movingPris, freePris = False, sh
 
         if freeing and d == 1:
             # offset 2 is free by now: either the cascade above just emptied it, or the
-            # push stopped there because it was empty to begin with.
+            # push stopped there because it was empty to begin with. Freeing is always a
+            # one-square move, so this offset is not travel-dependent.
             newPayloads[2] = Hasher.Build_Space(adj[Hasher.SIDE], adj[Hasher.DRAGON],
                                                 adj[Hasher.SPY], adj[Hasher.PAWNS], adj[Hasher.ROYAL])
             newPayloads[1] = Hasher.Build_Space(contr, 0, adj[Hasher.CAPSPY], adj[Hasher.CAPPAWNS], 0)
         else:
-            newPayloads[d + 1] = payloads[d]
-            newPayloads[d] = 0
+            newPayloads[d + travel] = payloads[d]
+            # Only vacate what nothing else is going to land on. At travel 1 the square
+            # ahead always takes this one's place so the order of writes settled it; at
+            # range the line leaves a gap behind it, and a blanket zero here would erase a
+            # square the stack behind had already been written into.
+            for gap in range(d, min(d + travel, pRange + 1)):
+                newPayloads.setdefault(gap, 0)
 
     # and now the pushing stack itself steps forward.
     if movingPris:
         # the whole square travels, prisoners included
-        newPayloads[1] = payloads[0]
-        newPayloads[0] = 0
+        newPayloads[travel] = payloads[0]
+        for gap in range(0, travel): newPayloads.setdefault(gap, 0)
     else:
         # freed pieces may already be standing on the destination, so merge rather than set
         newSpy = o[Hasher.SPY]
@@ -780,7 +932,8 @@ def exePush(cBoard, origin, destination, contr, movingPris, freePris = False, sh
         if freeing:
             newSpy += adj[Hasher.CAPSPY]
             newPawns += adj[Hasher.CAPPAWNS]
-        newPayloads[1] = Hasher.Build_Space(contr, o[Hasher.DRAGON], newSpy, newPawns, o[Hasher.ROYAL])
+        newPayloads[travel] = Hasher.Build_Space(contr, o[Hasher.DRAGON], newSpy, newPawns, o[Hasher.ROYAL])
+        for gap in range(1, travel): newPayloads.setdefault(gap, 0)
         # prisoners left behind go free, standing back up as a stack of their own side
         newPayloads[0] = Hasher.Build_Space(int(not contr), 0, o[Hasher.CAPSPY], o[Hasher.CAPPAWNS], 0)
 
@@ -796,9 +949,11 @@ def exePush(cBoard, origin, destination, contr, movingPris, freePris = False, sh
     # A lone spy's shove shatters what it hits. getLegalPushLength only ever grants a lone
     # spy a range of 1 -- it spends its single point of strength on the adjacent square and
     # has nothing left for a second -- so the stack it displaced is now sitting two squares
-    # out, and it scatters onward from there.
+    # out, and it scatters onward from there. Written as 1 + travel rather than as 2 because
+    # the range prototype pins a spy's travel to 1 rather than the arithmetic doing it, and a
+    # hard 2 would go on looking right if that exception were ever dropped.
     if shatter and o[Hasher.SPY] and o[Hasher.CAPTORS] == 1:
-        cBoard = exeBreak(cBoard, line[2] + 1, direction, contr)
+        cBoard = exeBreak(cBoard, line[1 + travel] + 1, direction, contr)
 
     return cBoard
 
@@ -834,7 +989,7 @@ def moveFlights(cBoard, move, contr):
     prisoners freed and prisoners left standing where they were being held are all changes
     of state on a square that had one already -- no journey is made, so none is reported.
     """
-    origin, kind, target, movingPris = move
+    origin, kind, target, movingPris = move[:4]
 
     if kind == "jump":
         # The move tuple says where the stack landed, not how it got there, and on a torus
@@ -856,18 +1011,28 @@ def moveFlights(cBoard, move, contr):
         if direction is None: return ()
 
         inputData = cBoard[origin - 1]
+        spaces = Hasher.Parse_Board(cBoard)
         pRange = getLegalPushLength(cBoard, origin, inputData, direction, contr, movingPris,
-                                    False, None, kind == "free")
+                                    False, spaces, kind == "free")
         if pRange == 0: return ()
 
-        # The whole line steps up one, offset n to offset n+1, for every n from the origin
-        # out to the far end -- which is the half of a push that never showed on the board
-        # before, since only the origin and the square next to it were ever marked. The
-        # freeing branch travels the same distances; all it changes is which pieces are in
-        # which payload when they arrive.
+        # The whole line steps up together, offset n to offset n + travel, for every n from
+        # the origin out to the far end -- which is the half of a push that never showed on
+        # the board before, since only the origin and the square next to it were ever marked.
+        # The freeing branch travels the same distances; all it changes is which pieces are
+        # in which payload when they arrive.
+        # The distance the mover chose, defaulted and clamped exactly the way exePush does it,
+        # so the arrows describe the move that will actually be played.
+        ceiling = pushMaxTravel(cBoard, origin, inputData, direction, pRange, spaces,
+                                kind == "free")
+        if ceiling == 0: return ()
+        chosen = move[4] if len(move) > 4 else None
+        travel = 1 if chosen is None else max(1, min(int(chosen), ceiling))
+
         line = (origin - 1,) + PUSHRAY[origin][direction]
         dx, dy = pushDirs[direction]
-        flights = [(line[n] + 1, line[n + 1] + 1, dx, dy, 1) for n in range(0, pRange + 1)]
+        flights = [(line[n] + 1, line[n + travel] + 1, dx, dy, travel)
+                   for n in range(0, pRange + 1)]
 
         # A lone spy's shove shatters what it hits, and that scatter cannot be read off the
         # board handed in: its ray wraps back over the squares the shuffle has just moved.
@@ -876,7 +1041,8 @@ def moveFlights(cBoard, move, contr):
         if o[Hasher.SPY] and o[Hasher.CAPTORS] == 1:
             mid = exePush(cBoard, origin, destination, contr, movingPris,
                           kind == "free", False)
-            flights.extend(moveFlights(mid, (line[2] + 1, "break", direction, False), contr))
+            flights.extend(moveFlights(mid, (line[1 + travel] + 1, "break", direction, False),
+                                       contr))
 
         return tuple(flights)
 

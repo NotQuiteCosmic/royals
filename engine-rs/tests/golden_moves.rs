@@ -16,10 +16,28 @@
 use std::process::Command;
 
 const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/golden_moves.txt");
+const PUSH_GOLDEN: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/golden_push_moves.txt");
 
 #[test]
 fn the_emitter_reproduces_the_golden() {
+    check(&[], GOLDEN);
+}
+
+/// The variant's contract, held to exactly the standard the original is.
+///
+/// The push-range rule is one a game opts into, so there are two rule sets and each needs its
+/// own statement of what the rules say a move does. Implementing the variant twice is only
+/// worth anything if the two implementations are checked against each other, which is what
+/// this is -- the same differential oracle, pointed at the other rule set.
+#[test]
+fn the_emitter_reproduces_the_push_range_golden() {
+    check(&["--push-range"], PUSH_GOLDEN);
+}
+
+fn check(args: &[&str], golden: &str) {
     let run = Command::new(env!("CARGO_BIN_EXE_royals-golden"))
+        .args(args)
         .output()
         .expect("could not run royals-golden");
 
@@ -30,7 +48,8 @@ fn the_emitter_reproduces_the_golden() {
     );
 
     let got = String::from_utf8(run.stdout).expect("emitter wrote something that isn't UTF-8");
-    let want = std::fs::read_to_string(GOLDEN).expect("tests/golden_moves.txt is missing");
+    let want = std::fs::read_to_string(golden)
+        .unwrap_or_else(|e| panic!("{golden}: {e} -- run `cd tests && python3 regress.py write all`"));
 
     let got: Vec<&str> = got.lines().collect();
     let want: Vec<&str> = want.lines().collect();

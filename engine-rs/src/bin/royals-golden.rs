@@ -35,7 +35,12 @@ const MOVE_SEEDS: [i64; 3] = [3, 11, 57];
 const TURNS: usize = 40;
 
 fn main() {
-    let fixtures = load_fixtures();
+    // `--push-range` emits the variant's contract, `tests/golden_push_moves.txt`, instead of
+    // the standard one. Two rule sets, two goldens, and this binary answers to both.
+    let variant = std::env::args().any(|a| a == "--push-range");
+    royals_engine::set_push_range(variant);
+
+    let fixtures = load_fixtures(if variant { "push_walks" } else { "walks" });
     let stdout = std::io::stdout();
     let mut out = BufWriter::new(stdout.lock());
 
@@ -165,10 +170,20 @@ fn move_text(mv: &Move) -> String {
         kind => format!("{} {}", kind.as_str(), index_to_alg(mv.target)),
     };
 
+    // How far a push travels, written only where the move carries it -- distance 1 is the
+    // plain move, so golden_moves.txt is untouched by this existing. Without it two pushes
+    // down the same ray render identically and the file records one move twice.
+    let far = if mv.kind == MoveKind::Push && mv.travel > 1 {
+        format!(" x{}", mv.travel)
+    } else {
+        String::new()
+    };
+
     format!(
-        "{} {}{}",
+        "{} {}{}{}",
         index_to_alg(mv.origin - 1),
         what,
+        far,
         if mv.moving_pris { " +pris" } else { "" }
     )
 }
@@ -186,17 +201,25 @@ struct Walk {
     final_board: Board,
 }
 
-fn load_fixtures() -> Vec<Walk> {
+/// `key` is `"walks"` for the standard rules and `"push_walks"` for the variant. They are
+/// recorded separately because a walk is a list of *indices* into `list_all_moves`' output
+/// and the variant's output is longer, so index 7 names a different move: one set of indices
+/// cannot serve both rule sets.
+fn load_fixtures(key: &str) -> Vec<Walk> {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/port_fixtures.json");
     let src = std::fs::read_to_string(path).unwrap_or_else(|e| {
         panic!("{path}: {e} -- run `cd tests && python3 regress.py fixtures`")
     });
 
-    let mut at = find_key(&src, "\"walks\"", 0);
+    let quoted = format!("\"{key}\"");
+    let mut at = find_key(&src, &quoted, 0);
     let mut walks = Vec::new();
 
-    // sort_keys puts them in this order inside each walk object
-    while let Some(next) = src[at..].find("\"choices\"").map(|i| at + i) {
+    // sort_keys puts them in this order inside each walk object. Stop at the expected count:
+    // "push_walks" sorts before "walks", so scanning past the end of one section runs
+    // straight into the other and would read six walks where there are three.
+    while walks.len() < MOVE_SEEDS.len() {
+        let Some(next) = src[at..].find("\"choices\"").map(|i| at + i) else { break };
         let (choices, after) = read_array(&src, find_colon(&src, next));
         let (final_board, after) = read_array(&src, find_colon(&src, find_key(&src, "\"final\"", after)));
         let (seed, after) = read_number(&src, find_colon(&src, find_key(&src, "\"seed\"", after)));

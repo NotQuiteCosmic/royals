@@ -1296,6 +1296,11 @@ class StoneButton(tk.Label):
         self.configure(fg=TEXT if on else TEXT_DIM,
                        bg=PANEL_LT if on else PANEL)
 
+    # PAUSE and RESUME are one button saying two things, which is the only reason this
+    # exists -- every other button on the window is built with the text it dies with.
+    def setText(self, text):
+        self.configure(text=text)
+
 
 # One line of a group: a marker, then its label. `value` None makes it a checkbox that
 # toggles its variable between 0 and 1; anything else makes it a radio that sets the
@@ -1339,6 +1344,22 @@ class StoneChoice(tk.Frame):
         if self.command: self.command()
 
     def refresh(self):
+        # A tk variable outlives the widgets watching it and there is no way to hand a trace
+        # back, so a screen that has been rebuilt leaves this bound to labels that are gone.
+        # Setting that variable afterwards used to raise `invalid command name ".!frame..."`
+        # inside Tk's callback handler -- one per stale row, from a screen no longer on the
+        # window, landing in the log where nobody would connect them to anything.
+        #
+        # Every screen here builds fresh IntVars each time it is drawn, which does prevent it,
+        # but that is a rule each new screen has to know and one of them eventually will not.
+        # This is the same fix from the other end and holds however the variable is shared.
+        #
+        # Answered here rather than by removing the trace on <Destroy>: an untraced variable
+        # becomes collectable, and tkinter's own Variable.__del__ then raises through the GC
+        # often enough to put dozens of unraisable-exception warnings through a test run. A
+        # trace that does nothing costs a dictionary lookup and says nothing at all.
+        if not self.winfo_exists(): return
+
         on = self.chosen()
         if self.value is None: self.mark.configure(text="[X]" if on else "[ ]")
         else: self.mark.configure(text="(*)" if on else "( )")
@@ -1430,6 +1451,13 @@ def reviewLabel(spot, enterSteps):
     return "Move %d" % spot.turn
 
 
+# What ply 0 of a review is, in words. Two answers, because a game that began from a
+# position was never before its first placement -- it was never entered at all.
+def reviewStartLabel(fromPosition):
+    return ("The position it began from" if fromPosition
+            else "Before the first piece was entered")
+
+
 class RoyalsWindow:
     def __init__(self, root):
         self.root = root
@@ -1458,6 +1486,18 @@ class RoyalsWindow:
         # had when it was asked for, and is dropped on arrival if the number has moved on.
         # See pollAI for what goes wrong without it.
         self.gameGen = 0
+
+        # A position built on the editor screen and carried back to the menu, so a game can be
+        # configured for it with the ordinary controls. Here rather than in resetGameState
+        # because it outlives a game on purpose: NEW GAME then START GAME plays the same study
+        # again, which is the whole point of trying one at two depths. Dropped only by DISCARD.
+        self.pendingBoard = None
+        self.pendingTurn = 0
+
+        # The hold row's two buttons, which only exist while a game screen is up. Named here
+        # so refreshHold can be called from a screen that has none.
+        self.pauseButton = None
+        self.rewindButton = None
 
         # What the window is wearing, before anything is built in it -- a widget copies its
         # colours in when it is made, so the theme has to be on before the first one exists.
@@ -1507,18 +1547,33 @@ class RoyalsWindow:
         # of a game that no longer exists; there is nothing to guard, only something to forget.
         self.review = None
 
-        # the setup screen is a column of controls and wants no more room than it asks for
         self.viewReady = False
-        self.root.resizable(False, False)
-        # And it wants the floor back. buildGame raises it to 820x620 for the board's sake and
-        # used to be the only thing that ever touched it, so a window that had held one game
-        # kept the board's minimum for the rest of the session -- on a screen with no board on
-        # it. Nothing looked wrong; the window simply would not get smaller again.
+
+        # **Resizable, and that is what lets this screen go full screen.** It used to be
+        # nailed shut -- a column of controls wants no more room than it asks for, and a
+        # window that cannot be dragged cannot be dragged wrong. The cost was not obvious
+        # until the screen outgrew the display: `resizable(False, False)` is also what takes
+        # away the green button, so a menu too tall to fit was a menu with no way at all to
+        # see the bottom of it. A floor is the part of that worth keeping; a ceiling is not.
+        self.root.resizable(True, True)
+
+        # And it wants its own floor back. buildGame raises it to 820x620 for the board's sake
+        # and used to be the only thing that ever touched it, so a window that had held one
+        # game kept the board's minimum for the rest of the session -- on a screen with no
+        # board on it. Nothing looked wrong; the window simply would not get smaller again.
+        # Set to 1 here and raised to this screen's own measurement at the end of the build.
         self.root.minsize(1, 1)
         self.root.geometry("")
 
         self.frame = tk.Frame(self.root, bg=PANEL, padx=30, pady=26)
         self.frame.pack(fill="both", expand=True)
+
+        # Everything on this screen goes inside one block that is centred rather than packed
+        # against the corner. At the window's natural size the block is the window and the
+        # centring does nothing; full screen, it is the difference between a menu and a menu
+        # huddled in the top left of a 27 inch display.
+        body = tk.Frame(self.frame, bg=PANEL)
+        body.pack(expand=True)
 
         # The title, and beside it the three doors out of this screen. They used to sit in the
         # bottom row next to START GAME, where four buttons came to 584px -- 154 wider than the
@@ -1527,7 +1582,7 @@ class RoyalsWindow:
         # and fill space that was empty. START GAME stays at the bottom on its own: one of
         # these four begins a game and the other three go somewhere else, which the old row
         # gave no way of telling.
-        header = tk.Frame(self.frame, bg=PANEL)
+        header = tk.Frame(body, bg=PANEL)
         header.pack(fill="x", pady=(0, 18))
 
         # The title goes on a canvas rather than in a Label so the lettering can carry the
@@ -1557,6 +1612,10 @@ class RoyalsWindow:
         self.noiseVar = tk.IntVar(value=50)
         self.assistVar = tk.IntVar(value=0)
 
+        # The optional rule. Off is the standard game, and the default, so a player who never
+        # touches this box plays the game the goldens describe.
+        self.pushRangeVar = tk.IntVar(value=0)
+
         # Black's own depth, and whether it is being used. Both start where a 0 player game
         # has always been -- one depth, both sides -- so the box below changes nothing until
         # somebody asks it to.
@@ -1570,12 +1629,28 @@ class RoyalsWindow:
         # Which box goes where is not arbitrary. COMPUTER is hidden outright in a 2 player game,
         # so putting it alone on the right would leave that column empty and the screen lopsided
         # in the one mode a beginner is most likely to start in. HELP keeps it company instead.
-        columns = tk.Frame(self.frame, bg=PANEL)
+        columns = tk.Frame(body, bg=PANEL)
         columns.pack(fill="both", expand=True)
         self.leftColumn = tk.Frame(columns, bg=PANEL)
         self.leftColumn.pack(side="left", fill="y", anchor="n")
         self.rightColumn = tk.Frame(columns, bg=PANEL, padx=18)
         self.rightColumn.pack(side="left", fill="y", anchor="n")
+
+        # A position built on the editor screen and waiting to be played. Above PLAYERS
+        # because it is the one thing on this screen that changes what the others mean:
+        # there is nothing to enter when the board is already laid out, so ENTERING goes
+        # while this is here and the two never show at once.
+        self.positionBox = self.carvedBox(self.leftColumn, "POSITION")
+        self.positionNote = tk.Label(self.positionBox, text="", bg=PANEL, fg=TEXT,
+                                     font=FONT["small"], wraplength=NOTE_WRAP,
+                                     justify="left", anchor="w")
+        self.positionNote.pack(fill="x")
+        positionRow = tk.Frame(self.positionBox, bg=PANEL)
+        positionRow.pack(fill="x", pady=(6, 0))
+        StoneButton(positionRow, "EDIT", self.buildPosition,
+                    font=FONT["small"]).pack(side="left")
+        StoneButton(positionRow, "DISCARD", self.discardPosition,
+                    font=FONT["small"]).pack(side="left", padx=(8, 0))
 
         # mode
         self.modeBox = self.carvedBox(self.leftColumn, "PLAYERS")
@@ -1616,6 +1691,23 @@ class RoyalsWindow:
         # The assistant. Its own box for the same reason ENTERING has one: it is about the
         # people at the keyboard rather than about the computer opponent, and it applies just
         # as much to a game between two of them.
+        # The optional rules. The right column holds only HELP in a 2 player game, which is
+        # the lopsidedness the column split above worries about; this is the box that fixes it,
+        # and it belongs on this side because it is a property of the game rather than of the
+        # people playing it.
+        self.rulesBox = self.carvedBox(self.rightColumn, "RULES")
+        # No refreshSetup command, unlike the controls either side of it: refreshSetup decides
+        # which boxes are showing and this rule changes none of them. Asking for one anyway
+        # tore down and rebuilt the whole screen on every click -- the same layout, unmapped
+        # and remapped, which on macOS Tk comes back unpainted until the window is given a
+        # reason to redraw. It looked like the text had blanked out.
+        StoneChoice(self.rulesBox, "Pushes travel further than one square",
+                    self.pushRangeVar).pack(fill="x", pady=1)
+        tk.Label(self.rulesBox,
+                 text="As far as your strength beats what you shove, and you pick.",
+                 bg=PANEL, fg=TEXT_DIM, font=FONT["small"], wraplength=NOTE_WRAP,
+                 justify="left", anchor="w").pack(fill="x", pady=(4, 0))
+
         self.assistBox = self.carvedBox(self.rightColumn, "HELP")
         self.assistCheck = StoneChoice(self.assistBox,
                                        "Let a player ask the engine for a move",
@@ -1688,11 +1780,57 @@ class RoyalsWindow:
                  bg=PANEL, fg=TEXT_DIM, font=FONT["small"], wraplength=NOTE_WRAP,
                  justify="left", anchor="w").pack(fill="x")
 
-        start = tk.Frame(self.frame, bg=PANEL)
+        start = tk.Frame(body, bg=PANEL)
         start.pack(anchor="w", pady=(4, 0))
         StoneButton(start, "START GAME", self.startGame).pack(side="left")
 
+        self.settleSetupSize()
         self.refreshSetup()
+
+    # Fix the window at the size of its fullest arrangement, once, before anything is hidden.
+    #
+    # Collapsing what a mode cannot use is what got this screen back onto the display, but it
+    # left the window changing shape every time somebody touched PLAYERS -- three settings
+    # apart, a menu that jumps twice on the way. The controls coming and going is the point;
+    # the window moving with them is not.
+    #
+    # So: show everything, ask how big that is, and make it the floor. tk sizes an auto-sized
+    # window to what its widgets request and clamps that to minsize, so a mode that requests
+    # less now gets the floor instead and the window sits still. A player who drags it bigger
+    # keeps whatever they chose -- tk stops auto-sizing once a size has been asked for by hand,
+    # and the floor goes on being a floor.
+    #
+    # Measured rather than written down as a constant, because a constant would be wrong the
+    # first time a theme changed the font: applyTheme rebuilds this screen, so this re-measures
+    # with it. The numbers it produces are in tests/test_desktop_appearance.py.
+    def settleSetupSize(self):
+        self.showRows([(self.rulesBox, True), (self.assistBox, True), (self.aiBox, True)],
+                      pady=(0, 14))
+        self.showRows([(self.depthGroup, True), (self.splitGroup, True),
+                       (self.noiseGroup, True)])
+        self.showRows([(self.blackDepthGroup, True)])
+
+        # The left column has two fullest arrangements rather than one, because POSITION and
+        # ENTERING never show together. Measuring them stacked would set a floor that nothing
+        # ever fills; measuring only the one showing now would let the window grow the first
+        # time a position came back from the editor. So: both, and the larger of the two.
+        #
+        # The note has to be carrying text while it is measured, or the box measures as an
+        # empty label and the floor is short by two lines the first time one appears. This is
+        # a full-length one; refreshSetup puts the real summary in a moment later.
+        self.positionNote.configure(
+            text="Set up by hand — 12 pieces, black to move. The game starts from it rather "
+                 "than from entering.")
+
+        widest = tallest = 0
+        for position in (False, True):
+            self.showRows([(self.positionBox, position), (self.modeBox, True),
+                           (self.sideBox, True), (self.entryBox, not position)], pady=(0, 14))
+            self.root.update_idletasks()
+            widest = max(widest, self.frame.winfo_reqwidth())
+            tallest = max(tallest, self.frame.winfo_reqheight())
+
+        self.root.minsize(widest, tallest)
 
     # Show these children of `parent`, in this order, and hide the rest.
     #
@@ -1706,10 +1844,30 @@ class RoyalsWindow:
     # The pack options go in because carvedBox packs itself with a 14px gap under it, and a
     # box that came back through here without one would sit flush against the next.
     def showRows(self, rows, **packing):
-        for widget, _visible in rows:
+        if not rows: return
+
+        managed = [widget for widget, _visible in rows]
+        wanted = [widget for widget, visible in rows if visible]
+
+        # Nothing to do is the common case and it has to be free. refreshSetup makes four of
+        # these calls and a click usually changes at most one of them, so the other three were
+        # tearing the screen down and rebuilding it identically -- and an unmapped and remapped
+        # LabelFrame comes back unpainted on macOS Tk until something forces a redraw. A
+        # control whose click changed no visibility at all blanked the whole screen.
+        #
+        # Filtered to `managed` rather than compared against pack_slaves() whole: splitGroup
+        # holds splitDepthCheck alongside blackDepthGroup, and only the second is this call's
+        # business. Unfiltered, that comparison would never match and the early return would
+        # quietly never fire there.
+        #
+        # A list rather than a set, because order is the thing this function exists to keep.
+        current = [w for w in managed[0].master.pack_slaves() if w in managed]
+        if current == wanted: return
+
+        for widget in managed:
             widget.pack_forget()
-        for widget, visible in rows:
-            if visible: widget.pack(fill="x", **packing)
+        for widget in wanted:
+            widget.pack(fill="x", **packing)
 
     # One depth control: ten buttons, and the list of them so refreshSetup can grey them.
     #
@@ -1765,8 +1923,15 @@ class RoyalsWindow:
 
         for b in self.sideButtons: b.setEnabled(mode == 1)
 
+        # A board that is already laid out has nothing to enter, so both the ENTERING box and
+        # the variety slider -- which is about the computer's placements and nothing else --
+        # are answering a question this game does not ask.
+        position = self.pendingBoard is not None
+        if position:
+            self.positionNote.configure(text=self.positionSummary())
+
         playsItself = mode != 0
-        liveNoise = playsItself and not self.entryVar.get()
+        liveNoise = playsItself and not position and not self.entryVar.get()
         for b in self.depthButtons: b.setEnabled(playsItself)
         self.noiseScale.setEnabled(liveNoise)
         self.noiseValue.configure(fg=TEXT_KEY if liveNoise else TEXT_DIM)
@@ -1787,11 +1952,13 @@ class RoyalsWindow:
         # And what comes and goes. YOUR SIDE asks which of the two you are, which only a 1
         # player game has an answer to. COMPUTER has nothing in it that applies when there is
         # no computer playing, so the whole box goes rather than sitting there entirely grey.
-        self.showRows([(self.modeBox, True),
+        self.showRows([(self.positionBox, position),
+                       (self.modeBox, True),
                        (self.sideBox, mode == 1),
-                       (self.entryBox, True)], pady=(0, 14))
+                       (self.entryBox, not position)], pady=(0, 14))
 
-        self.showRows([(self.assistBox, True),
+        self.showRows([(self.rulesBox, True),
+                       (self.assistBox, True),
                        (self.aiBox, playsItself)], pady=(0, 14))
 
         self.showRows([(self.depthGroup, playsItself),
@@ -1803,30 +1970,50 @@ class RoyalsWindow:
     ################################################################################
     ####### SETTING UP A POSITION ##################################################
     ################################################################################
-    # The fourth screen: a board you build a piece at a time, and then play from. It exists
-    # because a game has only ever been able to start one way -- the two dragons plus twelve
-    # entering plies -- and the positions worth studying are the ones a game reaches after
-    # fifty moves, not before any.
+    # The fourth screen: a board you build a square at a time, and then take back to the menu
+    # to play from. It exists because a game has only ever been able to start one way -- the
+    # two dragons plus twelve entering plies -- and the positions worth studying are the ones a
+    # game reaches after fifty moves, not before any.
     #
     # It is the board screen with a different column beside it, which is why it goes through
     # boardFrame: a second canvas would be a second set of bindings, a second projection fit
     # and a second thing to get wrong. `phase` is "setup" throughout, and that one string is
     # what keeps the click handlers apart -- boardClick already dispatches on it.
     #
+    # **The panel is a square, not a palette.** Click a square and the controls below show what
+    # is on it; change one and the square changes. That is the other way round from where this
+    # screen started -- pick a piece, click squares, one piece a click -- and the reason is that
+    # a palette can only add. Taking one pawn off a stack of four meant erasing the square and
+    # putting three back, and nothing on the screen ever said what a square held.
+    #
     # **Nothing here touches the engine's idea of a game.** No ko history, no record, no AI:
-    # the screen edits a board tuple and hands it to startPosition, which is the only place
+    # the screen edits a board tuple and hands it to the menu, and startGame is the only place
     # a game begins from one.
 
-    # What the palette places, as the index of the field it increments in a parsed square.
-    # Not an engine piece constant, because the editor works in fields: the eight of them
-    # are exactly Build_Space's arguments, so a click is "add one to field n and rebuild".
-    # Field 0 is SIDE, which is not a piece -- it stands in for "erase", since a square with
-    # no pieces on it has no side either.
-    PALETTE = ((Hasher.ROYAL, "Royal"),
-               (Hasher.PAWNS, "Pawn"),
-               (Hasher.SPY, "Spy"),
-               (Hasher.DRAGON, "Dragon"),
-               (Hasher.SIDE, "Erase the square"))
+    # One row of the panel, as (the field its control writes, its label, the name
+    # notation.PIECE_LIMITS knows it by, the field this piece stands in, the field it sits in
+    # as a prisoner). The eight fields of a parsed square are exactly Build_Space's arguments,
+    # which is why the editor works in fields rather than in engine piece constants: reading a
+    # square into the controls and writing them back out are one list in two directions.
+    #
+    # The limit doubles as the shape of the control. One of a thing is a checkbox; four of them
+    # is a row of five counts, 0 to 4.
+    #
+    # The last two columns are what CLEAR needs, and they are the same pair in both tables
+    # because clearing is per side and piece rather than per row: "white's pawns" means the ones
+    # white is standing on squares with *and* the ones black is holding prisoner.
+    SQUARE_ROWS = ((Hasher.ROYAL, "Royal", "royal", Hasher.ROYAL, None),
+                   (Hasher.SPY, "Spy", "spy", Hasher.SPY, Hasher.CAPSPY),
+                   (Hasher.PAWNS, "Pawns", "pawns", Hasher.PAWNS, Hasher.CAPPAWNS),
+                   (Hasher.DRAGON, "Dragon", "dragon", Hasher.DRAGON, None))
+
+    # A prisoner belongs to the side that does *not* hold the square, which is why these are a
+    # second table under a heading of their own rather than two more rows of the first. A royal
+    # is never taken prisoner and a dragon is never anything but alone, so neither appears.
+    PRIS_ROWS = ((Hasher.CAPSPY, "Spy", "spy", Hasher.SPY, Hasher.CAPSPY),
+                 (Hasher.CAPPAWNS, "Pawns", "pawns", Hasher.PAWNS, Hasher.CAPPAWNS))
+
+    SETUP_HINT = "Click a square to see and change what is on it."
 
     def buildPosition(self):
         panel = self.boardFrame()
@@ -1839,53 +2026,82 @@ class RoyalsWindow:
         # keeps and which test_desktop_appearance.py asserts.
         self.resetGameState()
 
-        # The editor starts from the two dragons rather than a bare board, because a position
-        # without them is one no game could reach and the commonest thing to want is a real
-        # game's position with pieces moved about.
-        self.setupBoard = Hasher.Entering_Board()
+        # Opens on whatever the menu is holding, so EDIT comes back to the position rather
+        # than to a fresh board. With nothing held it starts from the two dragons, because a
+        # position without them is one no game could reach and the commonest thing to want is
+        # a real game's position with the pieces moved about.
+        self.setupBoard = self.pendingBoard or Hasher.Entering_Board()
         self.phase = "setup"
         self.board = self.setupBoard
         self.viewReady = True
 
+        # The chosen square is `selected` rather than a name of this screen's own, and that is
+        # worth a line: drawSquare draws the solid double rule for `square == self.selected`
+        # with no test on the phase, so the editor gets the highlight for nothing -- and it is
+        # the same mark that means "the square you picked" in the middle of a game.
+        self.selected = None
+
         # Fresh variables, every one of them, and that is not tidiness. StoneChoice traces the
         # variable it is given for the life of the process and never untraces it, so a variable
         # that outlives its widgets fires callbacks into destroyed labels the next time
-        # anything sets it -- TclErrors from a screen that is no longer on the window. buildSetup
-        # rebuilds its five for exactly this reason; these are the same five plus this screen's
-        # own, seeded from whatever was last chosen so a decision made on the menu carries over.
+        # anything sets it -- TclErrors from a screen that is no longer on the window.
+        #
+        # The menu's three go with them, and this screen no longer shows any of them. That is
+        # the point: `boardFrame` above has just destroyed the menu's widgets and the menu's
+        # variables are still what `self.modeVar` names, so the traces outlived what they draw.
+        # buildSetup makes its own again on the way back, so nothing is carried by keeping
+        # these -- only the values, which is why they are seeded rather than defaulted.
         self.modeVar = tk.IntVar(value=self.modeVar.get() if hasattr(self, "modeVar") else 1)
         self.sideVar = tk.IntVar(value=self.sideVar.get() if hasattr(self, "sideVar") else 0)
         self.depthVar = tk.IntVar(value=self.depthVar.get() if hasattr(self, "depthVar")
                                   else DEPTH_DEFAULT)
 
-        self.setupSideVar = tk.IntVar(value=0)
-        self.setupPieceVar = tk.IntVar(value=Hasher.PAWNS)   # the piece there are four of
-        self.setupPrisVar = tk.IntVar(value=0)
-        self.setupTurnVar = tk.IntVar(value=0)
+        self.setupTurnVar = tk.IntVar(value=self.pendingTurn)
+        self.sqSideVar = tk.IntVar(value=0)
+        self.sqVars = {row[0]: tk.IntVar(value=0)
+                       for row in self.SQUARE_ROWS + self.PRIS_ROWS}
+        self.sqButtons = {}
 
         head = tk.Frame(panel, bg=PANEL_LT, bd=3, relief="raised")
         head.pack(fill="x")
         tk.Label(head, text="SET UP A POSITION", font=FONT["status"], bg=PANEL_LT,
                  fg=TEXT, anchor="w", padx=10, pady=7).pack(fill="x")
 
-        self.setupHint = tk.Label(panel, text="Click a square to place the piece chosen below.",
+        # Wrapped to the column the rows below set, not to the 290 the old palette needed:
+        # a note wrapping short inside a box half again as wide reads as a mistake.
+        self.setupHint = tk.Label(panel, text=self.SETUP_HINT,
                                   font=FONT["small"], fg=TEXT_DIM, bg=PANEL,
-                                  wraplength=290, justify="left", anchor="w")
+                                  wraplength=360, justify="left", anchor="w")
         self.setupHint.pack(fill="x", pady=(8, 10))
 
-        box = self.carvedBox(panel, "PLACE")
-        for value, text in ((0, "□  White"), (1, "■  Black")):
-            StoneChoice(box, text, self.setupSideVar, value).pack(fill="x", pady=1)
+        box = self.carvedBox(panel, "THE SQUARE")
+        self.squareLabel = tk.Label(box, text="No square chosen", bg=PANEL, fg=TEXT_DIM,
+                                    font=FONT["body"], anchor="w")
+        self.squareLabel.pack(fill="x", pady=(0, 4))
+
+        # Which side holds the square -- and, with nothing chosen, which side the CLEAR
+        # buttons act on. It stays live either way, because both of those are about the board
+        # rather than about a square.
+        for value, text in ((0, "□  Held by White"), (1, "■  Held by Black")):
+            StoneChoice(box, text, self.sqSideVar, value,
+                        command=self.holderChanged).pack(fill="x", pady=1)
+
         tk.Frame(box, bg=RULE_LT, height=1).pack(fill="x", pady=6)
-        for field, text in self.PALETTE:
-            StoneChoice(box, text, self.setupPieceVar, field).pack(fill="x", pady=1)
+        for row in self.SQUARE_ROWS:
+            self.squareRow(box, row, captive=False)
+
         tk.Frame(box, bg=RULE_LT, height=1).pack(fill="x", pady=6)
-        StoneChoice(box, "As a prisoner of that square",
-                    self.setupPrisVar).pack(fill="x", pady=1)
+        self.prisLabel = tk.Label(box, text="", bg=PANEL, fg=TEXT_DIM, font=FONT["small"],
+                                  anchor="w")
+        self.prisLabel.pack(fill="x")
+        for row in self.PRIS_ROWS:
+            self.squareRow(box, row, captive=True)
 
         row = tk.Frame(panel, bg=PANEL)
         row.pack(fill="x", pady=(0, 12))
-        StoneButton(row, "CLEAR", self.clearPosition, font=FONT["small"]).pack(side="left")
+        StoneButton(row, "EMPTY SQUARE", self.emptySquare, font=FONT["small"]).pack(side="left")
+        StoneButton(row, "CLEAR ALL", self.clearPosition,
+                    font=FONT["small"]).pack(side="left", padx=(8, 0))
         StoneButton(row, "LOAD", self.loadPosition,
                     font=FONT["small"]).pack(side="left", padx=(8, 0))
         StoneButton(row, "SAVE", self.savePosition,
@@ -1895,51 +2111,64 @@ class RoyalsWindow:
         for value, text in ((0, "□  White"), (1, "■  Black")):
             StoneChoice(turn, text, self.setupTurnVar, value).pack(fill="x", pady=1)
 
-        players = self.carvedBox(panel, "PLAYERS")
-        for value, text in ((0, "2 player"), (1, "1 player"), (2, "0 player")):
-            StoneChoice(players, text, self.modeVar, value,
-                        command=self.refreshPosition).pack(fill="x", pady=1)
-        self.posSideButtons = []
-        tk.Frame(players, bg=RULE_LT, height=1).pack(fill="x", pady=6)
-        tk.Label(players, text="Your side", bg=PANEL, fg=TEXT, font=FONT["body"],
-                 anchor="w").pack(fill="x")
-        for value, text in ((0, "□  White"), (1, "■  Black")):
-            b = StoneChoice(players, text, self.sideVar, value)
-            b.pack(fill="x", pady=1)
-            self.posSideButtons.append(b)
-
-        ai = self.carvedBox(panel, "COMPUTER")
-        tk.Label(ai, text="Search depth", bg=PANEL, fg=TEXT, font=FONT["body"],
-                 anchor="w").pack(fill="x")
-        self.posDepthButtons = self.depthButtonRows(ai, self.depthVar)
-
         self.setupWarn = tk.Label(panel, text="", font=FONT["small"], fg=TEXT_DIM,
-                                  bg=PANEL, wraplength=290, justify="left", anchor="w")
+                                  bg=PANEL, wraplength=360, justify="left", anchor="w")
         self.setupWarn.pack(fill="x", pady=(0, 10))
 
+        # PLAYERS, YOUR SIDE and COMPUTER used to be repeated here, and this screen was a
+        # second and poorer setup menu for it: no HELP, no split depth, and an assistant that
+        # was never switched on. The position goes back to the real menu instead, and every
+        # question about how it is played is asked once, in the one place that asks it.
         buttons = tk.Frame(panel, bg=PANEL)
         buttons.pack(side="bottom", fill="x")
-        StoneButton(buttons, "START PLAYING", self.startPosition).pack(side="left")
+        StoneButton(buttons, "USE THIS POSITION", self.usePosition).pack(side="left")
         StoneButton(buttons, "BACK", self.buildSetup,
                     font=FONT["small"]).pack(side="left", padx=(8, 0))
 
-        self.refreshPosition()
-        self.redraw()
+        self.loadSquare()
+        self.showPositionState()
 
-    # The same two rules refreshSetup keeps, over this screen's copies of the controls.
-    def refreshPosition(self):
-        for b in self.posSideButtons: b.setEnabled(self.modeVar.get() == 1)
-        for b in self.posDepthButtons: b.setEnabled(self.modeVar.get() != 0)
+    # One row: the control on the left, and on the right a button that takes every one of that
+    # side's pieces of that kind off the board.
+    def squareRow(self, parent, row, captive):
+        field, label, key, standing, held = row
 
-    # Advisory only, and deliberately: a four-piece endgame study is exactly what this screen
-    # is for, and refusing it because there is no dragon would rule out the common case. What
-    # notation.validate_board refuses -- five pawns, an overfull square -- is refused at the
-    # click, because those are positions the engine could not hold rather than positions a
-    # game could not have reached.
-    def positionWarnings(self, board):
-        counts = [dict(dragon=0, spy=0, pawns=0, royal=0) for _ in (0, 1)]
-        for code in board:
-            if not code: continue
+        line = tk.Frame(parent, bg=PANEL)
+        line.pack(fill="x", pady=1)
+
+        # Packed before the control and to the right, so the control takes whatever is left
+        # rather than the button being pushed off the end of a full row.
+        StoneButton(line, "CLEAR", lambda: self.clearField(standing, held, captive),
+                    font=FONT["small"]).pack(side="right")
+
+        if N.PIECE_LIMITS[key] == 1:
+            b = StoneChoice(line, label, self.sqVars[field], command=self.applySquare)
+            b.pack(side="left")
+            self.sqButtons[field] = [b]
+            return
+
+        tk.Label(line, text=label, bg=PANEL, fg=TEXT, font=FONT["body"], anchor="w",
+                 width=7).pack(side="left")
+        self.sqButtons[field] = []
+        for count in range(N.PIECE_LIMITS[key] + 1):
+            b = StoneChoice(line, str(count), self.sqVars[field], count,
+                            command=self.applySquare)
+            b.pack(side="left", padx=(0, 4))
+            self.sqButtons[field].append(b)
+
+    # How many of each piece each side has on this board.
+    #
+    # `skip` leaves one square out, 1-based, which is what the panel needs: what the square
+    # being edited already holds is not something that square has to make room for. Counting
+    # it would grey the very button that is switched on.
+    #
+    # The same accumulation notation._check_piece_counts makes -- prisoners credited to the
+    # side that does not hold the square -- but counting rather than refusing, because this
+    # screen has two readers for it and neither of them wants an exception.
+    def pieceCounts(self, board, skip=None):
+        counts = [dict.fromkeys(N.PIECE_LIMITS, 0) for _ in (0, 1)]
+        for index, code in enumerate(board):
+            if not code or index + 1 == skip: continue
             s = Hasher.UNPACK[code]
             side = s[Hasher.SIDE]
             counts[side]["dragon"] += s[Hasher.DRAGON]
@@ -1948,6 +2177,15 @@ class RoyalsWindow:
             counts[side]["royal"] += s[Hasher.ROYAL]
             counts[1 - side]["spy"] += s[Hasher.CAPSPY]
             counts[1 - side]["pawns"] += s[Hasher.CAPPAWNS]
+        return counts
+
+    # Advisory only, and deliberately: a four-piece endgame study is exactly what this screen
+    # is for, and refusing it because there is no dragon would rule out the common case. What
+    # notation.validate_board refuses -- five pawns, an overfull square -- the panel greys out
+    # before it can be asked for, because those are positions the engine could not hold rather
+    # than positions a game could not have reached.
+    def positionWarnings(self, board):
+        counts = self.pieceCounts(board)
 
         notes = []
         for side, name in ((0, "White"), (1, "Black")):
@@ -1975,90 +2213,202 @@ class RoyalsWindow:
                                  fg=TEXT_KEY if notes else TEXT_DIM)
         self.redraw()
 
-    # One click, one piece. Everything is done in the eight parsed fields and handed back to
-    # Build_Space, which is what refuses an impossible square -- five pawns on one, a spy that
-    # is already there. Its ValueError is caught and shown rather than raised, because this is
-    # a person clicking rather than a caller with a bug.
+    # A click chooses a square. Everything that changes the board is a control in the panel.
     def setupClick(self, square):
-        s = Hasher.UNPACK[self.setupBoard[square - 1]]
-        fields = list(s[:Hasher.FIELDS])
-        field = self.setupPieceVar.get()
-        side = self.setupSideVar.get()
+        self.selected = square
+        self.setupHint.configure(text=self.SETUP_HINT)
+        self.loadSquare()
+        self.showPositionState()
 
-        if field == Hasher.SIDE:                        # erase
-            fields = [0] * Hasher.FIELDS
-        elif self.setupPrisVar.get():
-            # Prisoners belong to whichever side does NOT hold the square, so there has to be
-            # a captor and it has to be the other side. A royal is never taken prisoner and a
-            # dragon is never anything but alone, so neither is offered here.
-            if field not in (Hasher.SPY, Hasher.PAWNS):
-                self.setupHint.configure(
-                    text="Only a spy or a pawn is ever taken prisoner.")
-                return
-            if not any(fields):
-                self.setupHint.configure(
-                    text="Nobody is holding that square, so there is nobody to hold a prisoner.")
-                return
-            if s[Hasher.SIDE] == side:
-                self.setupHint.configure(
-                    text="A prisoner belongs to the side that does not hold the square — "
-                         "place the other colour, or put a captor there first.")
-                return
-            fields[Hasher.CAPSPY if field == Hasher.SPY else Hasher.CAPPAWNS] += 1
-            fields[Hasher.PRISFLAG] = 1
-        elif field == Hasher.DRAGON:                    # a dragon stands alone
-            fields = [side, 1, 0, 0, 0, 0, 0, 0]
-        else:
-            # A square holds one side's standing pieces. Placing the other colour on it takes
-            # the square over rather than mixing them, which is the only reading that leaves
-            # the encoding intact.
-            if any(fields) and s[Hasher.SIDE] != side:
-                fields = [side, 0, 0, 0, 0, 0, 0, 0]
-            elif fields[Hasher.DRAGON]:
-                fields = [side, 0, 0, 0, 0, 0, 0, 0]
-            fields[Hasher.SIDE] = side
-            fields[field] += 1
+    # The board into the controls. `.set()` is safe against setting off the very callback that
+    # would write it straight back out: StoneChoice fires its command from `click` and from
+    # nowhere else, and traces the variable only to redraw its own marker.
+    def loadSquare(self):
+        s = ((0,) * Hasher.FIELDS if self.selected is None
+             else Hasher.UNPACK[self.setupBoard[self.selected - 1]][:Hasher.FIELDS])
 
+        # An empty square has no side, so adopting its 0 would flip the holder back to white
+        # every time somebody laying out black's pieces clicked the next empty square. The
+        # chosen colour carries instead, which is what the palette this replaced did.
+        if any(s):
+            self.sqSideVar.set(s[Hasher.SIDE])
+        for field, var in self.sqVars.items():
+            var.set(s[field])
+
+        self.refreshSquarePanel()
+
+    # The controls into the board, or a reason why not.
+    def applySquare(self):
+        if self.selected is None:
+            self.setupHint.configure(text="Click a square first.")
+            return
+
+        fields = [0] * Hasher.FIELDS
+        fields[Hasher.SIDE] = self.sqSideVar.get()
+        for field, var in self.sqVars.items():
+            fields[field] = var.get()
+
+        # A dragon stands alone, and it is enforced here rather than left to Build_Space,
+        # which drops whatever else is in the list without saying so. That is fine for a
+        # caller with a bug and no good at all for a panel somebody is looking at: the
+        # controls have to end up showing what the square ended up holding.
+        if fields[Hasher.DRAGON]:
+            for field in (Hasher.SPY, Hasher.PAWNS, Hasher.ROYAL,
+                          Hasher.CAPSPY, Hasher.CAPPAWNS):
+                fields[field] = 0
+
+        # A prisoner belongs to the side that does not hold the square, so an empty square has
+        # nobody to hold one.
+        if not any(fields[f] for f in (Hasher.DRAGON, Hasher.SPY, Hasher.PAWNS, Hasher.ROYAL)):
+            fields[Hasher.CAPSPY] = fields[Hasher.CAPPAWNS] = 0
+
+        fields[Hasher.PRISFLAG] = 1 if (fields[Hasher.CAPSPY] or fields[Hasher.CAPPAWNS]) else 0
+
+        # The two refusals the panel cannot grey away. Build_Space rules on the square, and
+        # validate_board on the board -- the second because the greying is computed from a
+        # board that a LOAD or a CLEAR may have moved under it.
         try:
             code = Hasher.Build_Space(*fields)
         except ValueError as exc:
-            self.setupHint.configure(text=str(exc))
-            return
+            return self.refuseSquare(str(exc))
 
-        candidate = Hasher.Mod_Space(self.setupBoard, square, code)
+        candidate = Hasher.Mod_Space(self.setupBoard, self.selected, code)
         try:
             N.validate_board(candidate)
         except N.NotationError as exc:
-            self.setupHint.configure(text=str(exc))
-            return
+            return self.refuseSquare(str(exc))
 
         self.setupBoard = candidate
-        self.setupHint.configure(text="Click a square to place the piece chosen below.")
+        self.setupHint.configure(text=self.SETUP_HINT)
+        self.loadSquare()
+        self.showPositionState()
+
+    # Say why, and put the controls back to the board they failed to change. Without the
+    # second half the panel goes on showing a square that is not there, which is worse than
+    # the refusal it is reporting.
+    def refuseSquare(self, message):
+        self.setupHint.configure(text=message)
+        self.loadSquare()
+
+    # What is on and what is grey. Called from loadSquare, so every path that touches the
+    # board comes through it.
+    def refreshSquarePanel(self):
+        chosen = self.selected is not None
+        self.squareLabel.configure(
+            text=("Square " + Hasher.IndexToAlg(self.selected - 1).upper() if chosen
+                  else "No square chosen"),
+            fg=TEXT if chosen else TEXT_DIM)
+
+        side = self.sqSideVar.get()
+        other = 1 - side
+        self.prisLabel.configure(text="HELD PRISONER — %s's" % sideName(other).lower())
+
+        held = self.pieceCounts(self.setupBoard, skip=self.selected)
+
+        # A dragon stands alone, so everything else on the square goes dark while one is on
+        # it -- the row that would silently be thrown away is better not offered.
+        alone = bool(self.sqVars[Hasher.DRAGON].get())
+        captor = any(self.sqVars[f].get()
+                     for f in (Hasher.DRAGON, Hasher.SPY, Hasher.PAWNS, Hasher.ROYAL))
+
+        for field, _label, key, _standing, _pris in self.SQUARE_ROWS:
+            self.setSquareRow(field, N.PIECE_LIMITS[key] - held[side][key],
+                              chosen and (field == Hasher.DRAGON or not alone))
+
+        # A prisoner is the other side's piece and comes out of the other side's allowance --
+        # the same rule pieceCounts credits by.
+        for field, _label, key, _standing, _pris in self.PRIS_ROWS:
+            self.setSquareRow(field, N.PIECE_LIMITS[key] - held[other][key],
+                              chosen and captor and not alone)
+
+    # One row, given how many of that piece the side has left over the rest of the board.
+    def setSquareRow(self, field, room, live):
+        buttons = self.sqButtons[field]
+        if len(buttons) == 1:
+            buttons[0].setEnabled(live and room > 0)
+            return
+        for count, b in enumerate(buttons):
+            b.setEnabled(live and count <= room)
+
+    # The holder radios. With a square chosen they change whose square it is; with none they
+    # only say which side the CLEAR buttons mean.
+    def holderChanged(self):
+        if self.selected is None:
+            self.refreshSquarePanel()
+        else:
+            self.applySquare()
+
+    # Every one of a side's pieces of one kind, off the board.
+    #
+    # A prisoner is still that side's piece -- it is what PIECE_LIMITS counts and what the
+    # greying above counts -- so clearing white's pawns takes the ones black is holding too.
+    # One button, one meaning: white has no pawns left anywhere. Anything else and the button
+    # and the limit would be talking about different sets, and clearing could leave the option
+    # still greyed out.
+    def clearField(self, standing, held, captive):
+        side = 1 - self.sqSideVar.get() if captive else self.sqSideVar.get()
+
+        board = list(self.setupBoard)
+        for index, code in enumerate(board):
+            if not code: continue
+            s = Hasher.UNPACK[code]
+            fields = list(s[:Hasher.FIELDS])
+            if s[Hasher.SIDE] == side:
+                fields[standing] = 0
+            elif held is not None:
+                fields[held] = 0
+            fields[Hasher.PRISFLAG] = (1 if (fields[Hasher.CAPSPY] or fields[Hasher.CAPPAWNS])
+                                       else 0)
+            board[index] = Hasher.Build_Space(*fields)
+
+        self.setupBoard = tuple(board)
+        self.loadSquare()
+        self.showPositionState()
+
+    def emptySquare(self):
+        if self.selected is None:
+            self.setupHint.configure(text="Click a square first.")
+            return
+        self.setupBoard = Hasher.Mod_Space(self.setupBoard, self.selected, 0)
+        self.loadSquare()
         self.showPositionState()
 
     def clearPosition(self):
         self.setupBoard = Hasher.EMPTY_BOARD
-        self.setupHint.configure(text="Cleared. The dragons are gone too — LOAD or CLEAR "
-                                      "again is how they come back.")
+        self.setupHint.configure(text="Cleared. The dragons went with it — a square's Dragon "
+                                      "box is how one comes back.")
+        self.loadSquare()
         self.showPositionState()
 
-    def savePosition(self):
+    # Ask where, write it, say what went wrong. Gives back the file's name, or None if the
+    # dialog was cancelled or the write failed.
+    #
+    # Two screens write position files -- this one and the review, which can lift the board
+    # it is showing straight out of a game -- and they differ only in where the board comes
+    # from and which label says so afterwards. The dialog, the default name and the error box
+    # are here so that a position saved from either place is the same file.
+    def writePositionFile(self, board, side, note):
         path = filedialog.asksaveasfilename(
             parent=self.root, title="Save this position",
             defaultextension=".txt",
             filetypes=[("Royals position", "*.txt"), ("All files", "*")],
             initialfile="position-%s.txt" % datetime.date.today().isoformat())
-        if not path: return
+        if not path: return None
         try:
-            text = N.encode_position(self.setupBoard, self.setupTurnVar.get(),
-                                     notes=["Set up in the desktop app."])
+            text = N.encode_position(board, side, notes=[note])
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(text)
         except (OSError, N.NotationError) as error:
             messagebox.showerror("Royals", "That position could not be saved.\n\n%s" % (error,),
                                  parent=self.root)
-            return
-        self.setupHint.configure(text="Saved to " + path.rsplit("/", 1)[-1])
+            return None
+        return path.rsplit("/", 1)[-1]
+
+    def savePosition(self):
+        name = self.writePositionFile(self.setupBoard, self.setupTurnVar.get(),
+                                      "Set up in the desktop app.")
+        if name:
+            self.setupHint.configure(text="Saved to " + name)
 
     def loadPosition(self):
         path = filedialog.askopenfilename(
@@ -2076,60 +2426,28 @@ class RoyalsWindow:
         self.setupBoard = board
         self.setupTurnVar.set(side)
         self.setupHint.configure(text="Loaded " + path.rsplit("/", 1)[-1])
+        self.loadSquare()
         self.showPositionState()
 
-    # Where a game begins from a board rather than from entering. What startPlay does at the
-    # end of the twelve placements, done here to a position nobody played to.
-    def startPosition(self):
-        board = self.setupBoard
-        side = self.setupTurnVar.get()
-        mode = self.modeVar.get()
+    # Back to the menu, holding the board. Not into a game: which side the player is, how deep
+    # the computer looks and whether the assistant answers are the menu's questions, and asking
+    # them twice in two places is how the copies on this screen came to drift from the originals.
+    def usePosition(self):
+        self.pendingBoard = self.setupBoard
+        self.pendingTurn = self.setupTurnVar.get()
+        self.buildSetup()
 
-        if mode == 0: self.humanSides = [True, True]
-        elif mode == 2: self.humanSides = [False, False]
-        elif self.sideVar.get() == 0: self.humanSides = [True, False]
-        else: self.humanSides = [False, True]
+    # What the menu says it is holding.
+    def positionSummary(self):
+        counts = self.pieceCounts(self.pendingBoard)
+        pieces = sum(sum(side.values()) for side in counts)
+        return "Set up by hand — %d piece%s, %s to move. The game starts from it rather than " \
+               "from entering." % (pieces, "" if pieces == 1 else "s",
+                                   sideName(self.pendingTurn).lower())
 
-        depth = max(1, int(self.depthVar.get()))
-        self.aiDepths = [depth, depth]
-
-        self.buildGame()
-        self.resetGameState()
-
-        self.board = board
-        self.fromPosition = True
-        self.phase = "play"
-
-        # Both are off for one reason: a RAN record derives every ply's side from its index,
-        # counting on exactly twelve entering plies before the first move (see
-        # record.turn_of_ply). A game that began mid-board has no place in that format --
-        # saving one would write a file that replays as a different game, and reviewing one
-        # would walk it from Entering_Board and show a game nobody played. Refused rather
-        # than approximated.
-        self.saveButton.setEnabled(False)
-        self.reviewButton.setEnabled(False)
-
-        # contr is turn % 2, so the parity of the counter is who moves. Starting at 0 or 1
-        # rather than always 1 is the only difference between this and startPlay.
-        self.turn = 0 if side == 0 else 1
-        self.firstTurn = self.turn          # what turnMark counts the log from
-        self.passes = 0
-
-        # The history starts on the position, exactly as it starts on what entering left
-        # behind -- so a first move cannot be undone back into the setup.
-        Engine.koReset()
-        Engine.koRecord(self.board)
-
-        for note in self.positionWarnings(board):
-            self.log(note, "grey")
-        self.log("A position set up by hand. %s to move." % ("Black" if side else "White"),
-                 "grey")
-        self.log("SAVE and REVIEW are off: a game that did not begin with entering has no "
-                 "record format to be written to. The position itself can be saved from the "
-                 "setup screen.", "grey")
-
-        self.viewReady = True
-        self.advance()
+    def discardPosition(self):
+        self.pendingBoard = None
+        self.refreshSetup()
 
     ################################################################################
     ####### APPEARANCE #############################################################
@@ -2813,6 +3131,23 @@ class RoyalsWindow:
         StoneButton(buttons, "RESET VIEW", self.resetView,
                     font=FONT["small"]).pack(side="left", padx=(8, 0))
 
+        # Holding the game, and taking a move back. A row of its own for the reason
+        # archiveRow gives below -- these do not fit across the panel beside NEW GAME.
+        #
+        # PAUSE is only built where there is a computer to hold. In a 2 player game nothing
+        # runs between turns, so a hold would stop nothing, and REWIND is simply live: the
+        # thing it takes back is always the last thing a person did.
+        self.holdRow = tk.Frame(panel, bg=PANEL)
+        self.holdRow.pack(fill="x", pady=(8, 0))
+        self.pauseButton = None
+        if not all(self.humanSides):
+            self.pauseButton = StoneButton(self.holdRow, "PAUSE", self.togglePause,
+                                           font=FONT["small"])
+            self.pauseButton.pack(side="left", padx=(0, 8))
+        self.rewindButton = StoneButton(self.holdRow, "REWIND", self.rewind,
+                                        font=FONT["small"])
+        self.rewindButton.pack(side="left")
+
         # Keeping the game and walking back through it. A second row rather than a longer
         # one: four of these do not fit across a 310px panel at this font.
         self.archiveRow = tk.Frame(panel, bg=PANEL)
@@ -2840,8 +3175,6 @@ class RoyalsWindow:
                               (">|", lambda: self.reviewGoTo(1 << 30))):
             StoneButton(steps, text, command, font=FONT["small"],
                         width=2).pack(side="left", padx=(0, 6))
-        StoneButton(steps, "DONE", self.exitReview,
-                    font=FONT["small"]).pack(side="right")
 
         # Which move is on the board, directly over the scrubber. This is the number
         # somebody stepping through a game keeps their place by, so it is the one thing in
@@ -2860,6 +3193,26 @@ class RoyalsWindow:
         self.reviewScale = None
         self.reviewScaleHolder = tk.Frame(self.reviewRow, bg=PANEL)
         self.reviewScaleHolder.pack(fill="x")
+
+        # The two ways out, on a row of their own under the scrubber, with the navigation
+        # left to the row above. A second row for the same reason archiveRow gives: DONE and
+        # PLAY ON beside the four step buttons come to 392px against this panel's 296, and a
+        # review that widened the panel by ninety-six would shove the board sideways every
+        # time somebody opened one. It also reads better than it measures -- stepping about
+        # is one kind of thing and leaving is another, and the row that replaces this one
+        # when the review closes holds exactly two buttons too.
+        exits = tk.Frame(self.reviewRow, bg=PANEL)
+        exits.pack(fill="x", pady=(8, 0))
+        # SAVE BOARD rather than SAVE: the row this one replaces has a SAVE on it and that
+        # one writes a game. Two buttons a mode apart spelled the same, writing two different
+        # formats, is a trap worth two extra characters.
+        self.saveBoardButton = StoneButton(exits, "SAVE BOARD", self.saveBoard,
+                                           font=FONT["small"])
+        self.saveBoardButton.pack(side="left")
+        self.playOnButton = StoneButton(exits, "PLAY ON", self.playOn, font=FONT["small"])
+        self.playOnButton.pack(side="left", padx=(8, 0))
+        StoneButton(exits, "DONE", self.exitReview,
+                    font=FONT["small"]).pack(side="left", padx=(8, 0))
 
     # In one colour the board says everything by shape, and a shape has to be told where a
     # colour could just be seen. Drawn with the same icon functions the board uses, so the
@@ -2989,11 +3342,29 @@ class RoyalsWindow:
         if self.assist:
             self.log("The engine will answer if a player asks it for a move.", "grey")
 
+        # After resetGameState, like everything else the menu decides -- that is where the
+        # no-menu default lives. Said in the log because a game under a non-standard rule
+        # must say so, the way the depth handicap does.
+        self.pushRange = bool(self.pushRangeVar.get())
+        Engine.setPushRange(self.pushRange)
+        if self.pushRange:
+            self.log("PUSHES TRAVEL — a push carries as far as your strength beats what "
+                     "you shove, and you pick the distance.", "grey")
+
         # A handicap match that does not say it is one is a game log making a claim about a
         # fair fight. The saved file's header says the same thing for the same reason.
         if self.aiDepths[0] != self.aiDepths[1]:
             self.log("White searches to depth %d, black to depth %d." % tuple(self.aiDepths),
                      "grey")
+
+        # A game begins one of two ways, and everything above this line is the same question
+        # either way -- who is at the keyboard, how deep the computer looks, whether the
+        # assistant answers. Everything below is about entering, which a position has already
+        # done. The position screen used to start its own games and so had none of the above:
+        # no assistant, no split depth, and a second copy of PLAYERS to keep in step.
+        if self.pendingBoard is not None:
+            self.startFromPosition()
+            return
 
         if self.randomEntry:
             # setEntryNoise is skipped outright here rather than set to zero: it only feeds
@@ -3026,6 +3397,41 @@ class RoyalsWindow:
         self.viewReady = True
         self.advance()
 
+    # The other half of startGame: a board somebody built instead of twelve entering plies.
+    # What startPlay does at the end of the placements, done to a position nobody played to.
+    def startFromPosition(self):
+        self.board = self.pendingBoard
+        self.fromPosition = True
+        self.phase = "play"
+
+        # The board this game began from, kept on the window rather than read back off
+        # pendingBoard when it is wanted: pendingBoard belongs to the menu and DISCARD can
+        # drop it in the middle of a game. These two are what the saved file's `turn` and
+        # `board` lines carry, and what the review walker is handed.
+        self.startBoard = self.pendingBoard
+        self.startTurn = self.pendingTurn
+
+        # contr is turn % 2, so the parity of the counter is who moves. Starting at 0 or 1
+        # rather than always 1 is the only difference between this and startPlay.
+        self.turn = self.pendingTurn
+        self.firstTurn = self.turn          # what turnMark counts the log from
+        self.passes = 0
+
+        # The history starts on the position, exactly as it starts on what entering left
+        # behind -- so a first move cannot be undone back into the setup.
+        Engine.koReset()
+        Engine.koRecord(self.board)
+
+        for note in self.positionWarnings(self.board):
+            self.log(note, "grey")
+        self.log("A position set up by hand. %s to move."
+                 % sideName(self.pendingTurn), "grey")
+        self.log("The saved file carries the position it began from, so it saves and reviews "
+                 "like any other game.", "grey")
+
+        self.viewReady = True
+        self.advance()
+
     # Everything a game window needs before anything is drawn in it. Split out of startGame
     # because opening a saved game needs the same blank slate and none of the questions
     # above it -- a record carries its own opening, so there is no seed or noise to set.
@@ -3038,6 +3444,16 @@ class RoyalsWindow:
         self.randomEntry = False
         self.entrySeed = None
         self.entryNoise = 0.0
+
+        # Which rules this game is played under. Set here as well as in startGame because
+        # openGame and the position editor come through here without a menu to read, and a
+        # game that inherited the last one's rules would be a game nobody chose.
+        #
+        # **Engine.setPushRange tells the compiled engine too**, which is the whole reason it
+        # is a function call rather than an assignment: without it the computer would play
+        # the standard game while the person at the keyboard played the variant.
+        self.pushRange = False
+        Engine.setPushRange(False)
 
         # The assistant, and what it has been asked for. The count is what the saved game's
         # header line reports: a record that does not say a game was played with help is a
@@ -3059,6 +3475,7 @@ class RoyalsWindow:
         self.passes = 0
         self.selected = None
         self.moveArray = []
+        self.pushLandings = {}
         self.legalOrigins = set()
         self.lastMove = []
         # what the last move moved, as Engine.moveFlights reports it -- the arrows drawn
@@ -3079,10 +3496,20 @@ class RoyalsWindow:
         self.record = []
         self.review = None
 
-        # Whether this game began from a position somebody built rather than from entering.
-        # It gates SAVE and REVIEW, both for the same reason -- see startPosition.
+        # Whether this game began from a position somebody built rather than from entering,
+        # and if so which one. They decide what a saved file's header carries and where the
+        # review walker starts -- see startFromPosition.
         self.fromPosition = False
+        self.startBoard = None
+        self.startTurn = 0
         self.firstTurn = 0
+
+        # Whether play is being held, and whether the take-back warning has been given. Both
+        # per game: a new game is a new decision about both, and clearing them here is what
+        # keeps a hold from surviving NEW GAME into a game that never asked for one.
+        self.paused = False
+        self.rewindWarned = False
+        self.refreshHold()
 
         Engine.koReset()
         artificialPlayer.newGame()
@@ -3102,6 +3529,12 @@ class RoyalsWindow:
         # can call advance twice: a pause that fires late, a click that arrives while the
         # computer is thinking.
         if self.aiBusy: return
+
+        # Held. Every turn in the game comes through here, in both phases, so one guard on
+        # this line is the whole of holding one -- no search is started and no turn is set
+        # up, which is also what stops the board being clickable, since legalOrigins is only
+        # ever filled in by playStep.
+        if self.paused: return
 
         if self.phase == "entering": self.enterStep()
         elif self.phase == "play": self.playStep()
@@ -3283,6 +3716,7 @@ class RoyalsWindow:
 
         self.legalOrigins = set(m[0] for m in moves)
         self.setStatus(sideName(contr) + " to move", contr)
+        self.refreshHold()
 
         if self.humanSides[contr]:
             self.setHint("Click one of the outlined squares.")
@@ -3327,13 +3761,13 @@ class RoyalsWindow:
             self.hintRow.pack(fill="x", pady=(6, 0))
 
     def askDepth(self):
-        if not self.assist or self.phase != "play" or self.aiBusy: return
+        if not self.assist or self.phase != "play" or self.aiBusy or self.paused: return
         if not self.humanSides[self.contr]: return
         self.showAssist("depth")
         self.setHint("Deeper is stronger and slower — 10 is about half a minute.")
 
     def askEngine(self, depth):
-        if not self.assist or self.phase != "play" or self.aiBusy: return
+        if not self.assist or self.phase != "play" or self.aiBusy or self.paused: return
         if not self.humanSides[self.contr]: return
 
         self.showAssist(None)
@@ -3435,6 +3869,7 @@ class RoyalsWindow:
             self.log("Ko — move taken back.", "grey")
             self.selected = None
             self.moveArray = []
+            self.pushLandings = {}
             self.breakOpen = False
             self.redraw()
             return False
@@ -3468,6 +3903,7 @@ class RoyalsWindow:
         self.freeCheck.setEnabled(False)
         self.setStatus(text, contr)
         self.setHint("Game finished.")
+        self.refreshHold()
         if contr is None: self.log("Game finished. " + text, "grey")
         else: self.log("Game finished. " + text, "black" if contr else "white")
         self.redraw()
@@ -3555,18 +3991,15 @@ class RoyalsWindow:
         helped = ("  %d move%s from the engine" % (self.hintsTaken,
                                                    "" if self.hintsTaken == 1 else "s")
                   if self.hintsTaken else "")
-        return "%s  %s  %s  %d plies%s" % (
-            datetime.date.today().isoformat(), who, how, len(self.record), helped)
+        # Unlike everything else here, this one is *also* on the file's real lines -- the
+        # `turn` and `board` the reader acts on. Saying it in the note as well is for the
+        # person who opens the file in an editor and wants to know in words why it has two
+        # lines an ordinary record does not.
+        began = "  from a position set up by hand" if self.fromPosition else ""
+        return "%s  %s  %s  %d plies%s%s" % (
+            datetime.date.today().isoformat(), who, how, len(self.record), helped, began)
 
     def saveGame(self):
-        # The button is greyed for this, and the rule is stated here as well: greying is what
-        # a screen does, and a method that only worked because nothing called it wrongly is
-        # one edit away from writing a file that replays as a different game.
-        if self.fromPosition:
-            self.setHint("A game begun from a set-up position has no record format yet — "
-                         "the record assumes a game started with entering. Save the position "
-                         "instead, from the setup screen.")
-            return
         if not self.record:
             self.setHint("Nothing to save yet — the game has not started.")
             return
@@ -3582,7 +4015,17 @@ class RoyalsWindow:
             # encode_game decodes every token on the way past, so a recorder that has
             # written one down wrong is caught here, with the ply named -- rather than
             # producing a file that fails to open later with nothing left to say why.
-            text = N.encode_game(self.record, notes=[self.recordNote()])
+            #
+            # The board and the side go in for a game that began from a position, and for
+            # no other: an ordinary game's file is the one this has always written, down to
+            # the byte, because its move list says everything about who played what.
+            # And the rules, for the same reason and with the same discipline: a game under
+            # a non-standard rule that did not say so would replay with every ranged push
+            # clamped to one square -- a board that validates, a game nobody played.
+            text = N.encode_game(self.record, notes=[self.recordNote()],
+                                 board=self.startBoard if self.fromPosition else None,
+                                 turn=self.startTurn if self.fromPosition else None,
+                                 rules=(N.RULE_PUSH_RANGE,) if self.pushRange else ())
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(text)
         except (OSError, N.NotationError) as error:
@@ -3605,6 +4048,10 @@ class RoyalsWindow:
         try:
             with open(path, encoding="utf-8") as handle:
                 text = handle.read()
+            # The rules the file names, so the window plays on under them rather than under
+            # whatever the last game used. Record.read has already walked the record under
+            # them; this is what makes PLAY ON agree with the walk.
+            _tokens, _board, _turn, fileRules = N.decode_record(text)
             moves, spots = Record.read(text)
         except (OSError, UnicodeDecodeError, N.NotationError, Record.RecordError) as error:
             messagebox.showerror("Royals", "That file could not be read.\n\n%s" % (error,),
@@ -3623,6 +4070,24 @@ class RoyalsWindow:
         self.buildGame()
         self.resetGameState()
         self.record = list(moves)
+
+        self.pushRange = N.RULE_PUSH_RANGE in fileRules
+        Engine.setPushRange(self.pushRange)
+        if self.pushRange:
+            self.log("This game was played with pushes that travel.", "grey")
+
+        # A file that began from a position says so, and the window has to remember: saving
+        # it again must write the same two lines, and PLAY ON has to know there is no
+        # entering phase behind it. `read` has already walked it from the right board --
+        # spots[0] is that board, and its phase is how the two kinds are told apart.
+        # `spots[1].side` is who played the first ply, which for a game with no entering
+        # phase is the side its `turn` line named. Safe to index: a record with no moves in
+        # it was refused above.
+        if spots[0].phase == Record.PHASE_PLAYING:
+            self.fromPosition = True
+            self.startBoard = spots[0].board
+            self.startTurn = spots[1].side
+            self.turn = self.firstTurn = self.startTurn
         self.viewReady = True
 
         name = path.rsplit("/", 1)[-1]
@@ -3666,12 +4131,6 @@ class RoyalsWindow:
 
     def startReview(self):
         """Walk back through the game in this window."""
-        # record.positions replays from Entering_Board, so a game that did not start there
-        # would be walked as a different game entirely -- and convincingly, which is worse.
-        if self.fromPosition:
-            self.setHint("A game begun from a set-up position cannot be reviewed: the walker "
-                         "replays from the entering board, which is not where this one began.")
-            return
         if not self.record:
             self.setHint("Nothing to review yet — no moves have been made.")
             return
@@ -3681,7 +4140,9 @@ class RoyalsWindow:
             self.setHint("Wait for the computer to finish its move.")
             return
         try:
-            spots = Record.positions(self.record)
+            spots = Record.positions(self.record, self.startBoard if self.fromPosition
+                                     else None,
+                                     self.startTurn if self.fromPosition else None)
         except Record.RecordError as error:
             # Only reachable if the recorder above has a bug, which is exactly when it is
             # worth saying so loudly rather than showing a plausible wrong game.
@@ -3710,11 +4171,13 @@ class RoyalsWindow:
         self.prisVar.set(0)
 
         self.showReviewRow(True)
+        self.refreshHold()
         self.reviewGoTo(len(spots) - 1)
 
     def exitReview(self):
         review, self.review = self.review, None
         self.showReviewRow(False)
+        self.refreshHold()
 
         if review and review["resume"]:
             for name, value in review["resume"].items():
@@ -3749,13 +4212,299 @@ class RoyalsWindow:
         self.reviewPly.configure(text="ply %d of %d" % (at, last))
 
         if at == 0:
-            self.setStatus("Before the first piece was entered", None)
+            self.setStatus(reviewStartLabel(self.fromPosition), None)
         else:
             self.setStatus("%s   %s" % (reviewLabel(spot, len(self.enterSteps)),
                                         spot.token), spot.side)
+
+        # Both only make sense where the next ply would be a move. Inside the opening there
+        # is a placement to make instead -- which is a different thing than PLAY ON offers,
+        # and leaves a half-entered board with no side to move for SAVE BOARD to write down.
+        playable = at >= self.enterPlies()
+        self.playOnButton.setEnabled(playable)
+        self.saveBoardButton.setEnabled(playable)
         self.setHint("%s — ← and → step through it, Home and End jump to either end. "
                      "Drag to turn the board." % review["title"])
         self.redraw()
+
+    # How many plies this game opened with before anybody moved: twelve placements, or none
+    # at all for a game that began from a position. The same number record.turn_of_ply takes,
+    # and the one place the window works it out.
+    def enterPlies(self):
+        return 0 if self.fromPosition else len(self.enterSteps)
+
+    # Which side moves at ply `at` -- the ply about to be made, not the one just made.
+    #
+    # **The distinction is the whole of it.** `spots[at].side` is who played the move that
+    # produced this board; a position file, and a game resumed here, needs the side whose
+    # turn it now is. They are never the same, so reaching for the nearer one writes boards
+    # that play out as the wrong side's and says nothing about it.
+    def sideToMoveAt(self, at):
+        return Record.side_of_ply(at, self.enterPlies(),
+                                  self.startTurn if self.fromPosition else 1)
+
+    ####### SAVE BOARD #######
+    # The board a review is showing, lifted out as a position file. The one people actually
+    # want is rarely a position anybody set up on purpose -- it is the one they noticed on
+    # the way back through a game -- and until this there was no way to keep it but to
+    # rebuild it square by square in the editor.
+
+    def saveBoard(self):
+        review = self.review
+        if not review:
+            return
+
+        at = review["at"]
+        if at < self.enterPlies():
+            self.setHint("Step past the opening first — a half-entered board has no side to "
+                         "move, so there is nothing to write on the position's `turn` line.")
+            return
+
+        spot = review["spots"][at]
+        name = self.writePositionFile(
+            spot.board, self.sideToMoveAt(at),
+            "Lifted from a game at %s." % reviewLabel(spot, len(self.enterSteps)).lower())
+        if name:
+            # Where it goes back in. There is no door for a position file on the first
+            # screen, so a hint that only said "Saved" would leave one nobody could open.
+            self.setHint("Saved the board to %s. Open it from SET UP A POSITION → LOAD, then "
+                         "USE THIS POSITION." % name)
+
+    ####### HOLDING PLAY, AND TAKING A MOVE BACK #######
+    # `paused` is a single flag read by `advance`, which every turn in the game goes through.
+    # Everything else here is about saying so on the screen and about what a hold makes
+    # possible: reviewing the game without it moving underneath, and giving a move back.
+
+    def togglePause(self):
+        if self.phase != "play" or self.review:
+            return
+        if self.paused:
+            self.resumePlay()
+        else:
+            self.pausePlay()
+
+    def pausePlay(self):
+        self.paused = True
+
+        # **The search that is already out.** It cannot be called off -- the worker thread
+        # has no interrupt -- so what happens instead is that its answer is dropped, by the
+        # generation token every deferred call already carries. Bumping it takes the pending
+        # pollAI with it, and the 400ms pass timer, and anything else `later` is holding,
+        # which is exactly the set of things that should not fire while the game is held.
+        #
+        # aiBusy has to be cleared here rather than left to pollAI, because pollAI's early
+        # return on a stale generation happens *before* the line that clears it. A hold that
+        # left it set would never lift: `advance` would return on the first guard for ever.
+        if self.aiBusy:
+            self.gameGen += 1
+            self.aiBusy = False
+            self.log(self.turnMark() + "Held mid-search — the computer will think again.",
+                     "grey")
+        else:
+            self.log(self.turnMark() + "Held.", "grey")
+
+        self.showAssist(None)
+        self.setStatus("Held — " + sideName(self.turn % 2) + " to move", self.turn % 2)
+        self.setHint("The game is held. REVIEW to walk back through it, REWIND to take a "
+                     "move back, or RESUME to carry on.")
+        self.refreshHold()
+        self.redraw()
+
+    def resumePlay(self):
+        self.paused = False
+        self.refreshHold()
+        self.log(self.turnMark() + "Resumed.", "grey")
+        # playStep sets the status, the hint and the legal origins over again for the turn
+        # that was held, and starts the computer thinking if it is its move. Re-running it
+        # for the same position is safe -- it reads the board and decides nothing it has not
+        # already decided -- and aiBusy is false by now, so no second search can start.
+        self.advance()
+
+    # What the two buttons say and whether they are live. Called from everywhere that can
+    # change either answer: the hold itself, the review opening and closing, and playStep.
+    def refreshHold(self):
+        # The buttons belong to the game screen's panel, and resetGameState is called by the
+        # editor too -- where that panel was destroyed with the frame it was in. A destroyed
+        # widget answers winfo_exists with 0 rather than raising, which is what makes this a
+        # guard and not a try block.
+        if self.rewindButton is None or not self.rewindButton.winfo_exists():
+            return
+
+        playing = self.phase == "play" and not self.review
+
+        if self.pauseButton is not None:
+            self.pauseButton.setText("RESUME" if self.paused else "PAUSE")
+            self.pauseButton.setEnabled(playing)
+
+        # There has to be a move to give back, and it has to be a move rather than a
+        # placement -- rewinding into the opening would land on one, which is the rule PLAY
+        # ON keeps for the same reason. And in a game with a computer in it, only while held:
+        # a take-back that resumed would hand the position straight back to the search.
+        self.rewindButton.setEnabled(
+            playing and len(self.record) > self.enterPlies()
+            and (self.paused or self.pauseButton is None))
+
+    ####### REWIND #######
+
+    def rewind(self):
+        if self.review:
+            self.setHint("Not while reviewing — the review has its own way back, and two of "
+                         "them at once is a board changing under somebody reading it.")
+            return
+        if self.phase != "play":
+            return
+
+        at = len(self.record) - 1
+        if at < self.enterPlies():
+            self.setHint("There is nothing to take back — the opening is not a move.")
+            return
+
+        # Once a game, and deliberately not once a press. PLAY ON asks every time because it
+        # can drop thirty plies; this drops one, and a dialog per undo is what makes an undo
+        # not worth using.
+        if not self.rewindWarned:
+            if not messagebox.askyesno(
+                    "Royals",
+                    "Take the last move back?\n\nIt is dropped from the record and the game "
+                    "carries on from before it. This is asked once a game; later take-backs "
+                    "will not ask again.",
+                    parent=self.root):
+                return
+            self.rewindWarned = True
+
+        try:
+            spots = Record.positions(self.record,
+                                     self.startBoard if self.fromPosition else None,
+                                     self.startTurn if self.fromPosition else None)
+        except Record.RecordError as error:
+            # Only reachable if the recorder has a bug, which is when it is worth saying so
+            # loudly rather than putting up a plausible wrong board.
+            messagebox.showerror("Royals", "This game's record is not readable.\n\n%s"
+                                 % (error,), parent=self.root)
+            return
+
+        token = self.record[at]
+        self.resumeAt(at, spots, list(self.record[:at]))
+        self.log(self.turnMark() + "Took back " + token + ".", "grey")
+
+        # **Not unpaused, and that is the point.** A take-back that resumed would hand the
+        # position straight back to the search that just answered it, and the computer would
+        # play the same move again while the player was still looking at it. `advance`
+        # returns on the hold, so what this does is redraw and wait. In a 2 player game
+        # nothing is ever held, so the same call simply gives the turn back.
+        self.setStatus(("Held — " if self.paused else "") + sideName(self.turn % 2)
+                       + " to move", self.turn % 2)
+        self.refreshHold()
+        self.advance()
+        self.redraw()
+
+    ####### PLAY ON #######
+    # The one door out of a review that does not put the game back as it was. It keeps the
+    # plies up to the position on screen, drops the rest, and hands the game back at that
+    # point -- same window, same players, same depths, no screen change.
+    #
+    # A prefix of a record is a record, which is what makes this a truncation rather than a
+    # new format: tests/test_record.py has held that property since before there was
+    # anything here to rely on it.
+
+    def playOn(self):
+        review = self.review
+        if not review:
+            return
+
+        at = review["at"]
+        enterPlies = self.enterPlies()
+        if at < enterPlies:
+            self.setHint("Step past the opening first — PLAY ON resumes at a move, and "
+                         "inside the twelve placements there is a placement to make instead.")
+            return
+
+        # Only when there is something to lose. Forking from the end of the game is just
+        # carrying on with it, and asking about that would be noise.
+        dropped = len(review["moves"]) - at
+        if dropped and not messagebox.askyesno(
+                "Royals",
+                "Play on from here?\n\nThe %d ply%s after this one will be dropped from the "
+                "record and replaced by whatever is played next."
+                % (dropped, "" if dropped == 1 else "ies"),
+                parent=self.root):
+            return
+
+        self.resumeAt(at, review["spots"], list(review["moves"][:at]))
+
+        # Not exitReview: that restores the snapshot this exists to discard.
+        self.review = None
+        self.showReviewRow(False)
+
+        self.log(self.turnMark() + "Played on from here%s."
+                 % ("" if not dropped else
+                    ", dropping %d later ply%s" % (dropped, "" if dropped == 1 else "ies")),
+                 "grey")
+
+        # The hold, if there was one, is over: the whole point of picking a position to carry
+        # on from is carrying on. REWIND is the other caller and does the opposite -- see
+        # there for why.
+        self.paused = False
+        self.refreshHold()
+
+        # playStep recomputes the selection, the legal origins and the rest, and starts the
+        # computer thinking if the fork landed on its side. That is the seamless part.
+        self.viewReady = True
+        self.advance()
+
+    # Put the game back at ply `at` of its own record: the board, the counter, the passes and
+    # the ko history. `spots` is the walk the ply is being read out of, and `record` the
+    # prefix that is being kept.
+    #
+    # Two callers, PLAY ON and REWIND, and one copy of this on purpose. What makes it worth
+    # extracting rather than writing twice is the ko rebuild below, which is the only part
+    # that fails without saying so.
+    def resumeAt(self, at, spots, record):
+        enterPlies = self.enterPlies()
+
+        self.record = record
+        self.board = spots[at].board
+        self.lastMove = list(spots[at].squares)
+        self.lastFlights = spots[at].flights
+        self.phase = "play"
+        self.selected = None
+        self.moveArray = []
+        self.breakOpen = False
+
+        # The turn counter, and it has to satisfy two things at once: `turn % 2` is the side
+        # to move, and turnMark has to print the number record.turn_of_ply gives this ply.
+        # The two modes count from different places -- an ordinary game's turn opens at 1
+        # after the placements, a position game's at whichever side moved first -- which is
+        # the same split startPlay and startFromPosition already make at the start of a
+        # game. This is that arithmetic at ply N instead of at ply 0.
+        self.turn = (self.firstTurn + at) if self.fromPosition else (at - enterPlies + 1)
+        self.passes = self.trailingPasses(self.record, enterPlies)
+
+        # **The ko history is rebuilt from the prefix, and this is the part that would fail
+        # silently.** Every board of the playing phase up to and including this one, in the
+        # order they were stood in -- which is exactly what startPlay records at the end of
+        # entering, extended to a game resumed in the middle. Without it the resumed game
+        # accepts a repetition it should refuse, and nothing on the screen says so.
+        #
+        # The entering boards are deliberately not in it: koRecord is not called during
+        # entering, and a review walker touches no ko state at all, so this is the driver
+        # doing what only the driver may do.
+        Engine.koReset()
+        for spot in spots[enterPlies:at + 1]:
+            Engine.koRecord(spot.board)
+
+    # How many plies in a row at the end of this record were passes, capped at two.
+    #
+    # Two in a row is how a game ends for want of legal moves, so this cannot be reset to
+    # zero on a fork -- a game already at one pass would get an extra life -- and it cannot
+    # be inherited either, since the fork may be nowhere near where the count stood.
+    def trailingPasses(self, record, enterPlies):
+        passes = 0
+        for token in reversed(record[enterPlies:]):
+            if token != N.PASS or passes == 2:
+                break
+            passes += 1
+        return passes
 
     def reviewStep(self, delta):
         if self.review: self.reviewGoTo(self.review["at"] + delta)
@@ -3889,6 +4638,13 @@ class RoyalsWindow:
             self.setupClick(square)
             return
 
+        # A held game takes no moves from the keyboard side either. `advance` not running is
+        # most of it -- legalOrigins is left as it was, so playClick would refuse anyway --
+        # but "most of it" is not a rule, and a hold that let one side go on playing while
+        # the other was stopped would be a strange thing to have to discover.
+        if self.paused:
+            return
+
         if self.phase == "entering":
             if self.humanSides[self.entryChooser]: self.enterClick(square)
             return
@@ -3915,11 +4671,11 @@ class RoyalsWindow:
         if square is None: return True
         # Nothing on a reviewed board answers a click, so every double click on one is free
         # to mean "straighten this up" -- which is the whole point of the shortcut.
-        if self.aiBusy or self.phase in ("over", "review"): return True
+        if self.aiBusy or self.paused or self.phase in ("over", "review"): return True
 
-        # Every square answers a click on the editor screen, so none of them is free to mean
-        # "straighten the board up" -- a double click there places two pieces, which is what
-        # a person double clicking a palette onto a square is asking for.
+        # Every square answers a click on the editor screen -- a click chooses the square the
+        # panel is editing, and an empty one is as worth choosing as any other -- so none of
+        # them is free to mean "straighten the board up".
         if self.phase == "setup": return False
 
         if self.phase == "entering":
@@ -3998,6 +4754,15 @@ class RoyalsWindow:
                 self.playHuman("free" if freeing else "push", square)
                 return
 
+            # A push that travels comes to rest further along the ray, so the square clicked
+            # is not the square shoved. landingsFor turns it back into the direction and the
+            # distance; freeing is always one square, so it is never in here.
+            landing = self.pushLandings.get(square - 1)
+            if landing is not None:
+                target, step = landing
+                self.playHuman("push", target + 1, step)
+                return
+
         # not a destination, so read it as picking a different piece
         if square in self.legalOrigins:
             self.select(square)
@@ -4038,11 +4803,49 @@ class RoyalsWindow:
 
     # Reads the moves out of the engine for the square in hand. Called again whenever the
     # prisoner checkbox moves, because carrying them changes what is legal.
+    # Every square a push out of the selected stack could come to rest on, as
+    # `{landing square: (adjacent square, distance)}`.
+    #
+    # Under the standard rules that is the adjacent square at distance 1 and this is a longer
+    # way of saying `moveArray[1]`. Under the push-range variant a direction offers a run of
+    # squares, and the player picks the distance by picking which one to click -- so the
+    # marks and the click handler both read it from here rather than each working it out.
+    #
+    # **On a 7-wide torus two directions can reach one square**, at distances summing to
+    # seven. The shorter wins, which is the same tie-break moveFlights already applies to a
+    # jump that could have arrived either way round -- and for the same reason: it is the
+    # trip a person watching the board would say they made.
+    def landingsFor(self):
+        landings = {}
+        if not self.moveArray or self.selected is None: return landings
+
+        board = self.board
+        spaces = Hasher.Parse_Board(board)
+        for target in self.moveArray[1]:
+            direction = Engine.PUSHFROM[self.selected][target + 1]
+            if direction is None: continue
+
+            ceiling = 1
+            if Engine.PUSH_RANGE:
+                pRange = Engine.getLegalPushLength(board, self.selected, board[self.selected - 1],
+                                                   direction, self.contr, self.movingPris,
+                                                   False, spaces)
+                ceiling = Engine.pushMaxTravel(board, self.selected, board[self.selected - 1],
+                                               direction, pRange, spaces)
+
+            ray = Engine.PUSHRAY[self.selected][direction]
+            for step in range(1, ceiling + 1):
+                landing = ray[step - 1]
+                if landing not in landings or step < landings[landing][1]:
+                    landings[landing] = (target, step)
+        return landings
+
     def refreshMoves(self):
         movingPris = bool(self.prisVar.get()) and self.hasPris
         tOrigin = artificialPlayer.makeOrigin(self.board, self.selected, movingPris, self.spyBreak)
         self.moveArray = Engine.checkMoves(self.board, tOrigin, self.contr)
         self.movingPris = movingPris
+        self.pushLandings = self.landingsFor()
 
         self.breakOpen = False
         if self.moveArray:
@@ -4087,15 +4890,20 @@ class RoyalsWindow:
         self.view.fit(self.viewW, self.viewH)
         self.requestRedraw()
 
-    def playHuman(self, kind, square):
+    def playHuman(self, kind, square, travel = 1):
         origin = self.selected
         if kind == "jump":
             board = Engine.exeMove(self.board, origin, square, self.contr, self.movingPris)
         else:
             board = Engine.exePush(self.board, origin, square, self.contr, self.movingPris,
-                                   kind == "free")
+                                   kind == "free", True, travel)
 
+        # The distance goes in the move only where it is more than one square, which is the
+        # shape listMoves emits and the shape encode_move writes -- so what is logged, what is
+        # recorded and what the search would have offered are all one thing.
         move = (origin, kind, square - 1, self.movingPris)
+        if kind == "push" and travel > 1:
+            move = move + (travel,)
         # logged before commit, so a move the ko rule takes back reads as the move
         # followed by the note taking it back, and a move that ends the game doesn't
         # print after the result.
@@ -4642,6 +5450,12 @@ class RoyalsWindow:
                 self.drawTarget(v, wx, wy, zTop, "push", tone, tag)
             elif target in self.moveArray[5]:
                 self.drawTarget(v, wx, wy, zTop, "free", tone, tag)
+            elif target in self.pushLandings:
+                # A push that travels can come to rest well down the ray, and each square it
+                # could stop on is a different move. They wear the push ring like the square
+                # next door does, because that is what they are -- the same push, stopped
+                # somewhere else.
+                self.drawTarget(v, wx, wy, zTop, "push", tone, tag)
 
     # the corners of a square inset by the same margin all round
     def inset(self, wx, wy, r):

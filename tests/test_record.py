@@ -11,6 +11,8 @@ different game. So the contract is that they agree ply for ply, which is what mo
 file checks. It is the same reason the two engines answer to golden_moves.txt.
 """
 
+import random
+
 import pytest
 
 from royals_engine import hasher as Hasher
@@ -216,3 +218,124 @@ def test_the_servers_positions_agree_about_the_numbering_too():
 
     for a, b in zip(mine, theirs):
         assert (a.phase, a.turn) == (b.phase, b.turn), "ply %d" % a.ply
+
+
+# ---------------------------------------------------------------------------
+# A record that did not begin with entering
+# ---------------------------------------------------------------------------
+# A game begun from a position set up by hand has no placements in front of it and either
+# side may have moved first, so the two facts a move list cannot carry -- where it started
+# and who started -- travel in the record's `turn` and `board` lines. Everything below is
+# the same set of claims the tests above make about an ordinary record, made again about
+# this one, because "both kinds behave the same way" is the whole contract.
+
+STUDY = "d4:0,0,1,4,0,0,0,0|e4:1,0,1,0,0,0,0,0|e5:0,0,0,0,1,0,0,0"
+
+
+def position_game(side, turns=8, seed=5):
+    """(the board it starts from, whose move it is, a move list played out from there).
+
+    Ko-filtered for the reason `recorded_game` is: without it this produces move lists that
+    are good notation and that the engine's walk applies happily, but that no game could
+    have contained -- and the server's walk, which re-derives legality, then refuses them.
+    A generator of "games" that are not games makes real disagreements look like test bugs.
+
+    The history opens on the starting board, which is what makes undoing back into the
+    set-up position illegal, and is exactly what both walkers have to do for themselves.
+    """
+    start = N.decode_board(STUDY)
+    board = start
+    rng = random.Random(seed)
+
+    Engine.koReset()
+    AI.newGame()
+    Engine.koRecord(board)
+
+    tokens = []
+    contr = side
+    for _ in range(turns):
+        legal = []
+        for move in AI.listAllMoves(board, contr):
+            after = AI.performOneStep(board, contr, move)
+            if not Engine.koBreaks(after):
+                legal.append((move, after))
+        if not legal:
+            tokens.append(N.PASS)
+        else:
+            move, board = legal[rng.randrange(len(legal))]
+            Engine.koRecord(board)
+            tokens.append(N.encode_move(move))
+        contr = 1 - contr
+
+    return start, side, tokens
+
+
+@pytest.mark.parametrize("side", [0, 1])
+def test_a_position_record_is_walked_from_the_board_it_names(side):
+    board, turn, moves = position_game(side)
+    spots = R.positions(moves, board, turn)
+
+    assert len(spots) == len(moves) + 1
+    assert spots[0].board == board
+    # Ply 0 is "playing" rather than "entering": there is no opening to be before.
+    assert (spots[0].phase, spots[0].turn) == (R.PHASE_PLAYING, 0)
+    for index, spot in enumerate(spots[1:]):
+        assert (spot.phase, spot.turn) == (R.PHASE_PLAYING, index + 1)
+        assert spot.side == (turn + index) % 2, "ply %d" % spot.ply
+
+
+def test_the_numbering_rule_is_the_old_one_with_its_constants_filled_in():
+    steps = len(R.ENTER_STEPS)
+    # Left alone, exactly what it always computed.
+    assert R.side_of_ply(steps) == 1 and R.side_of_ply(steps + 1) == 0
+    assert R.side_of_ply(steps, steps, 1) == R.side_of_ply(steps)
+    # And with no opening, from either side.
+    assert [R.side_of_ply(i, 0, 0) for i in range(4)] == [0, 1, 0, 1]
+    assert [R.side_of_ply(i, 0, 1) for i in range(4)] == [1, 0, 1, 0]
+    assert R.turn_of_ply(0, 0) == (R.PHASE_PLAYING, 1)
+    assert R.turn_of_ply(6, 0) == (R.PHASE_PLAYING, 7)
+
+
+def test_a_position_record_survives_its_file():
+    board, turn, moves = position_game(1)
+    text = N.encode_game(moves, notes=["a study"], board=board, turn=turn)
+
+    back, spots = R.read(text)
+    assert back == moves
+    assert [s.board for s in spots] == [s.board for s in R.positions(moves, board, turn)]
+
+
+def test_a_placement_in_a_position_record_is_refused():
+    board = N.decode_board(STUDY)
+    with pytest.raises(R.RecordError, match="no entering phase"):
+        R.positions(["@Rd3"], board, 0)
+
+
+def test_half_a_start_position_is_refused():
+    with pytest.raises(R.RecordError):
+        R.positions([], N.decode_board(STUDY), None)
+
+
+@pytest.mark.parametrize("side", [0, 1])
+def test_the_two_walks_agree_about_a_position_game(side):
+    """The reason both walkers learned this rather than only the one the desktop uses.
+
+    They disagree in ways a board comparison would not show, so the ko history each builds
+    is checked too: the server's walk refuses a repetition, and it can only know about one
+    if it seeded its history with the board the game began from.
+    """
+    web = pytest.importorskip("royals_web.game")
+
+    board, turn, moves = position_game(side, turns=12)
+    mine = R.positions(moves, board, turn)
+    theirs, game = web.positions(moves, board, turn)
+
+    assert len(mine) == len(theirs)
+    for a, b in zip(mine, theirs):
+        assert a.board == b.board, "ply %d" % a.ply
+        assert list(a.squares) == b.last_move, "ply %d" % a.ply
+        assert (a.phase, a.turn) == (b.phase, b.turn), "ply %d" % a.ply
+
+    # The starting board is in the ko history, which is what makes undoing back into the
+    # set-up position illegal.
+    assert board in game.ko_boards

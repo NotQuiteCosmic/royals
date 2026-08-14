@@ -65,6 +65,14 @@ def window(gui):
     gui.view.persp = False
     gui.view.setAngles(royals_gui.YAW_DEF, royals_gui.PITCH_DEF)
 
+    # A position built on the editor screen outlives a game on purpose -- NEW GAME then START
+    # GAME plays the same study again -- which means it also outlives a *test*, and the window
+    # is session-scoped. One test's study would be the next one's opening, and the failure
+    # would surface as a board nobody in that file had ever mentioned. Only DISCARD clears it
+    # in the application; here the fixture does the discarding.
+    gui.pendingBoard = None
+    gui.pendingTurn = 0
+
     gui.buildSetup()
     gui.errors = []
     gui.root.report_callback_exception = lambda *a: gui.errors.append(a)

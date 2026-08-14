@@ -57,6 +57,12 @@ LETTER_TO_KIND = {v: k for k, v in KIND_TO_LETTER.items()}
 
 PASS = "--"
 PRIS_SUFFIX = "*"
+
+# How far a push travelled, for the push-range variant: `Pd4d5>3`. Absent means one square,
+# which is what every push meant before the variant existed and what every token written
+# before it still means.
+TRAVEL_SUFFIX = ">"
+
 ENTER_PREFIX = "@"
 
 # A square code occupies 13 bits, and Hasher.UNPACK is exactly 8192 entries long.
@@ -106,12 +112,18 @@ def alg_to_index(text):
 # ---------------------------------------------------------------------------
 
 def encode_move(move):
-    """Engine move tuple -> 'Jd3f5'. `None` means a pass."""
+    """Engine move tuple -> 'Jd3f5'. `None` means a pass.
+
+    A push under the push-range variant carries how far it travelled: `Pd4d5>3`. **Absent
+    means one square**, so every token ever written before that rule existed still says what
+    it always said, and a reader that has not been taught the suffix fails on it rather than
+    quietly dropping it -- which would replay a three-square push as a one-square one.
+    """
     if move is None:
         return PASS
 
     try:
-        origin, kind, target, pris = move
+        origin, kind, target, pris = move[:4]
     except (TypeError, ValueError):
         raise NotationError("not a move tuple: %r" % (move,))
 
@@ -126,11 +138,20 @@ def encode_move(move):
         # A break scatters the whole square, so it has no carrying-prisoners variant.
         return head + DIR_LETTERS[target]
 
-    return head + index_to_alg(target) + (PRIS_SUFFIX if pris else "")
+    # The distance rides between the destination and the prisoner star, so the star stays
+    # last and `text[:-1]` on the way back in goes on meaning what it meant.
+    far = ""
+    if kind == "push" and len(move) > 4 and move[4] and int(move[4]) > 1:
+        far = TRAVEL_SUFFIX + str(int(move[4]))
+
+    return head + index_to_alg(target) + far + (PRIS_SUFFIX if pris else "")
 
 
 def decode_move(text):
-    """'Jd3f5' -> engine move tuple. `'--'` gives back None."""
+    """'Jd3f5' -> engine move tuple, or a five-tuple where a push carries a distance.
+
+    `'--'` gives back None.
+    """
     if not isinstance(text, str):
         raise NotationError("notation must be a string, got %r" % (type(text).__name__,))
 
@@ -163,10 +184,25 @@ def decode_move(text):
                                 % (rest, "".join(DIR_LETTERS)))
         return (origin, kind, LETTER_TO_DIR[rest], False)
 
+    travel = None
+    if TRAVEL_SUFFIX in rest:
+        if kind != "push":
+            raise NotationError("only a push travels; %r cannot carry a distance" % (kind,))
+        rest, _, far = rest.partition(TRAVEL_SUFFIX)
+        if not far.isdigit():
+            raise NotationError("%r is not a push distance" % (far,))
+        travel = int(far)
+        if travel < 2:
+            # 1 is spelled by leaving the suffix off, and two spellings of one move would
+            # mean a record that does not round-trip to itself.
+            raise NotationError("a distance of %d is written by omitting the suffix" % (travel,))
+
     if len(rest) != 2:
         raise NotationError("%r does not name a destination square" % (rest,))
 
-    return (origin, kind, alg_to_index(rest), pris)
+    if travel is None:
+        return (origin, kind, alg_to_index(rest), pris)
+    return (origin, kind, alg_to_index(rest), pris, travel)
 
 
 # ---------------------------------------------------------------------------
@@ -178,16 +214,22 @@ def move_to_json(move):
     if move is None:
         return {"kind": "pass"}
 
-    origin, kind, target, pris = move
+    origin, kind, target, pris = move[:4]
     if kind == "break":
         return {"kind": "break",
                 "origin": square_to_alg(origin),
                 "dir": DIR_LETTERS[target]}
 
-    return {"kind": kind,
-            "origin": square_to_alg(origin),
-            "target": index_to_alg(target),
-            "pris": bool(pris)}
+    out = {"kind": kind,
+           "origin": square_to_alg(origin),
+           "target": index_to_alg(target),
+           "pris": bool(pris)}
+    # How far a push travelled, present only where it is more than one square -- so a
+    # standard game's frame is the frame it has always been and no client has to learn a
+    # field it will never see.
+    if kind == "push" and len(move) > 4 and move[4] and int(move[4]) > 1:
+        out["travel"] = int(move[4])
+    return out
 
 
 def move_from_json(obj):
@@ -209,7 +251,21 @@ def move_from_json(obj):
             raise NotationError("%r is not a direction" % (letter,))
         return (origin, kind, LETTER_TO_DIR[letter], False)
 
-    return (origin, kind, alg_to_index(obj.get("target")), bool(obj.get("pris", False)))
+    target = alg_to_index(obj.get("target"))
+    pris = bool(obj.get("pris", False))
+
+    far = obj.get("travel")
+    if far is None:
+        return (origin, kind, target, pris)
+
+    # Assume every field is hostile: a distance is a small whole number on a push and
+    # nothing else. Absent means one square, so a client that has never heard of the
+    # variant sends what it always sent and means what it always meant.
+    if kind != "push":
+        raise NotationError("only a push travels; %r cannot carry a distance" % (kind,))
+    if not isinstance(far, int) or isinstance(far, bool) or far < 2 or far > 6:
+        raise NotationError("%r is not a push distance (2 to 6, or absent for one)" % (far,))
+    return (origin, kind, target, pris, far)
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +348,7 @@ def decode_ply(token):
     return PLY_MOVE, decode_move(text)
 
 
-def encode_game(moves, notes=()):
+def encode_game(moves, notes=(), board=None, turn=None, rules=()):
     """A move list -> the text of a game record.
 
     `moves` is a list of RAN tokens -- exactly what `Game.moves` holds and what the
@@ -303,9 +359,32 @@ def encode_game(moves, notes=()):
     which ply was at fault.
 
     `notes` are free-text lines for the header. They are dropped on read, so anything a
-    reader must have has to be in the tokens -- which it is: the entering placements are
-    plies like any other, and a pass is written down rather than implied.
+    reader must have has to be in the tokens -- which it is for an ordinary game: the
+    entering placements are plies like any other, and a pass is written down rather than
+    implied.
+
+    **`board` and `turn` are the exception, and the reason they are not notes.** A game that
+    began from a position set up by hand has no entering plies, so the move list alone no
+    longer says which side played which ply -- `record.side_of_ply` derives that from the
+    index and from a twelve-ply opening that this game never had. Those two facts go in real
+    `turn` and `board` lines, in the same syntax `encode_position` writes, and a reader that
+    has not been taught about them fails on the first one instead of quietly replaying the
+    game from the entering board as somebody else's. They come as a pair or not at all.
+
+    A game that did start with entering writes neither line and its file is byte for byte
+    the file this function has always produced.
+
+    `rules` names the optional rules the game was played under -- see RULES_KEY. A game under
+    the standard rules passes none and writes no line.
     """
+    if (board is None) != (turn is None):
+        raise NotationError("a start position is a board and a side to move, or neither")
+
+    for rule in rules:
+        if rule not in KNOWN_RULES:
+            raise NotationError("%r is not a rule this engine knows (one of %s)"
+                                % (rule, ", ".join(KNOWN_RULES)))
+
     tokens = []
     for index, token in enumerate(moves):
         try:
@@ -318,6 +397,13 @@ def encode_game(moves, notes=()):
     lines = [MAGIC]
     for note in notes:
         lines.extend(_comment(note))
+    if rules:
+        lines.append("%s %s" % (RULES_KEY, " ".join(rules)))
+    if board is not None:
+        if turn not in SIDE_TO_NAME:
+            raise NotationError("side is 0 or 1, got %r" % (turn,))
+        lines.append("%s %s" % (TURN_KEY, SIDE_TO_NAME[turn]))
+        lines.append("%s %s" % (BOARD_KEY, encode_board(board)))
     lines.extend(_wrap(tokens))
     return "\n".join(lines) + "\n"
 
@@ -344,27 +430,86 @@ def _wrap(tokens):
         yield " ".join(line)
 
 
-def decode_game(text):
-    """The text of a game record -> its move list.
+def decode_record(text):
+    """Game record text -> (moves, start board or None, side or None, the rules it names).
 
-    Comments are dropped and the rest is split on whitespace, which means the result is
-    precisely what `moves.split()` gives in game.replay and what the database column
-    holds. The file and the stored record are therefore the same string, and round-tripping
-    is a property of the format rather than an agreement between two pieces of code.
+    Comments are dropped and everything that is not a header line is split on whitespace,
+    which means the move list is precisely what `moves.split()` gives in game.replay and
+    what the database column holds. The file and the stored record are therefore the same
+    string, and round-tripping is a property of the format rather than an agreement between
+    two pieces of code.
 
     Every token is decoded before returning, so a truncated, corrupted or hand-edited file
     fails here -- with the offending ply named -- rather than replaying into a position
     nobody played to.
+
+    **The two header keywords are why this is line-aware where it used to split the whole
+    file at once.** `turn red` and `board d4:...` say where a game that did not begin with
+    entering began; see encode_game. A line is a header line if its first word is one of
+    them, and a move token can never be either, so nothing is ambiguous. Their order is not
+    enforced, for the reason decode_position does not enforce its own: a hand-edited file
+    should not fail for something that does not matter.
     """
     if not isinstance(text, str):
         raise NotationError("a game record is text, got %r" % (type(text).__name__,))
 
     tokens = []
+    board = None
+    turn = None
+    rules = ()
+
     for line in text.splitlines():
         # A '#' can never occur inside a token, so anything from one to the end of the
         # line is a comment wherever it appears. Strictly more permissive than
         # whole-line comments, and unambiguous for the same reason.
-        tokens.extend(line.split(COMMENT, 1)[0].split())
+        body = line.split(COMMENT, 1)[0]
+        head = body.split(None, 1)
+        if not head:
+            continue
+
+        key = head[0].lower()
+        if key == TURN_KEY:
+            if turn is not None:
+                raise NotationError("two `turn` lines")
+            if len(head) < 2:
+                raise NotationError("`turn` needs a side: turn blue, or turn red")
+            name = head[1].strip().lower()
+            if name not in NAME_TO_SIDE:
+                raise NotationError("%r is not a side -- blue or red" % (head[1].strip(),))
+            turn = NAME_TO_SIDE[name]
+            continue
+
+        if key == BOARD_KEY:
+            if board is not None:
+                raise NotationError("two `board` lines -- a game begins from one position")
+            if len(head) < 2:
+                raise NotationError("`board` needs a position after it")
+            board = decode_board(head[1].strip())
+            continue
+
+        if key == RULES_KEY:
+            if rules:
+                raise NotationError("two `rules` lines")
+            named = head[1].split() if len(head) > 1 else []
+            if not named:
+                raise NotationError("`rules` needs at least one rule after it")
+            for rule in named:
+                if rule.lower() not in KNOWN_RULES:
+                    # Loudly, and this is the point of the line existing: a game played under
+                    # a rule this engine does not have is not a game it can replay, and
+                    # guessing produces a convincing wrong answer.
+                    raise NotationError(
+                        "this record was played under %r, which this engine does not know "
+                        "(it knows %s)" % (rule, ", ".join(KNOWN_RULES)))
+            rules = tuple(r.lower() for r in named)
+            continue
+
+        tokens.extend(body.split())
+
+    if (board is None) != (turn is None):
+        raise NotationError(
+            "a game that begins from a position needs both a `board` line and a `turn` "
+            "line, and this one has only %s" % (TURN_KEY if turn is not None else BOARD_KEY,))
 
     for index, token in enumerate(tokens):
         try:
@@ -373,7 +518,26 @@ def decode_game(text):
             raise NotationError("ply %d (%r) is not playable notation: %s"
                                 % (index + 1, token, exc)) from exc
 
-    return tokens
+    return tokens, board, turn, rules
+
+
+def decode_game(text):
+    """The text of an ordinary game record -> its move list.
+
+    The narrow reader, kept because most callers only ever want the moves and because a
+    caller that has *not* been taught about start positions must not be handed one silently.
+    A record that carries a `board` line is refused here rather than having its board
+    dropped: dropping it would replay the game from the entering board, which is a different
+    game and a convincing one. Use decode_record for both kinds.
+    """
+    moves, board, _turn, rules = decode_record(text)
+    if rules:
+        raise NotationError("this record was played under %s, which decode_game cannot "
+                            "represent -- read it with decode_record" % (", ".join(rules),))
+    if board is not None:
+        raise NotationError("this record begins from a position set up by hand, which "
+                            "decode_game cannot represent -- read it with decode_record")
+    return moves
 
 
 def entry_from_json(obj):
@@ -507,6 +671,24 @@ ALG_SEP = ":"
 
 POSITION_MAGIC = "# Royals position 1"
 TURN_KEY = "turn"
+
+# A position file's board line is bare, because there is nothing else it could be. A game
+# record's cannot be: its other bare lines are the move list. So the keyed form exists for
+# encode_game, and decode_position accepts it too -- one spelling that reads the same in
+# both files is worth more than the two characters it costs the format that could go
+# without it.
+BOARD_KEY = "board"
+
+# Which optional rules a game was played under, as a `rules push-range` line. A game under the
+# standard rules writes nothing, so its file is byte for byte the file it has always been.
+#
+# **It is a real line rather than a note for the same reason `turn` and `board` are.** The move
+# list cannot say which rules produced it: replay a push-range game with the variant off and
+# every ranged push is clamped to one square -- a plausible board, a different game, and
+# nothing anywhere to say so. A reader that does not know a name fails on it instead.
+RULES_KEY = "rules"
+RULE_PUSH_RANGE = "push-range"
+KNOWN_RULES = (RULE_PUSH_RANGE,)
 
 # The engine's own names for the sides, and what a file is written with. The desktop calls
 # them White and Black on its buttons, so both are accepted on the way in -- a person
@@ -643,6 +825,9 @@ def decode_position(text):
 
         if board_line is not None:
             raise NotationError("two board lines -- a position file holds one position")
+        # `board d4:...` as well as a bare `d4:...`, so a line lifted out of a game record
+        # reads here unchanged.
+        body = head[1].strip() if head[0].lower() == BOARD_KEY and len(head) > 1 else body
         board_line = body
 
     if board_line is None:

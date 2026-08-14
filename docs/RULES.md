@@ -245,6 +245,45 @@ your square, held.
   move only.
 - A royal is never taken prisoner.
 
+## An optional rule: pushes that travel
+
+Off by default. The desktop's opening screen has a **RULES** box that turns it on for a game.
+
+> **A push carries as far as your strength beats what you are shoving, and you choose how
+> far.**
+
+The distance may be anything from one square up to
+
+```
+your strength − the total weight of the line you are shoving + 1
+```
+
+so four pawns shoving a lone pawn may travel one, two, three or four squares — the formula
+sets a ceiling and you pick beneath it. Which pushes are *legal* does not change: a ceiling of
+at least one is exactly the ordinary rule that your strength must cover the line.
+
+Three things bound it:
+
+- **The line is rigid.** Everything in the push travels the same distance, and the whole thing
+  stops short if the pieces being shoved would run into something that was not part of the
+  push.
+- **The pushing stack may not leave the board**, though the pieces it shoves may and wrap as
+  usual. So a stack on `e4` shoving right travels at most two, to `g4`, while the pawn ahead
+  of it goes `f4` → `a4`.
+- **A lone spy shoves anything, whatever it weighs, and moves it exactly one.** Without that
+  the rule would make a completed six untouchable — a spy's strength of 1 against a weight of
+  6 is less than nothing — and since a spy's shattering push is the only answer to a finished
+  stack, the game would have no endgame. Freeing likewise stays a one-square move.
+
+A game played under this rule says so in its file, and each travelling push records how far it
+went (`Pd4d5>3`). A reader that does not know the rule refuses the file rather than replaying
+it as an ordinary game, which it would otherwise do convincingly — every push clamped to one
+square, every piece still accounted for. The browser version does not offer the rule and will
+not open such a record.
+
+The variant has its own rules contract, [tests/golden_push_moves.txt](../tests/golden_push_moves.txt),
+held to the same standard as the ordinary one: both engines emit it byte for byte.
+
 ## Reading and writing moves
 
 Moves are recorded in RAN, one token per ply:
@@ -267,8 +306,8 @@ the only module permitted to know how a move is packed.
 
 ### Writing a position down
 
-A game record is its moves, and it always starts from the entering board. A **position** is
-the other thing you may want to write down — an endgame worth studying, a puzzle, a board to
+A game record is its moves, and unless it says otherwise it starts from the entering board.
+A **position** is the other thing you may want to write down — an endgame worth studying, a puzzle, a board to
 start a game from — and it has a file of its own:
 
 ```
@@ -283,13 +322,29 @@ One line per board, one square per `|`-separated group, and eight numbers per sq
 are left out; an empty board is written `-empty-`. Comments and the header are dropped on
 read, so everything a reader needs is on the two real lines.
 
-The desktop's **SET UP A POSITION** screen reads and writes these, and plays from them. A
-position may be a study rather than a full army — four pieces and no dragons is fine — but a
-board no square could hold, five pawns for one side or two royals on a square, is refused.
+The desktop's **SET UP A POSITION** screen reads and writes these, and plays from them.
+Reviewing a game writes them too: **SAVE BOARD** lifts the position on screen straight out of
+the game, with whoever is to move at that ply on its `turn` line, and SET UP A POSITION →
+LOAD is the way back in. A position may be a study rather than a full army — four pieces and
+no dragons is fine — but a board no square could hold, five pawns for one side or two royals
+on a square, is refused.
 
-A game begun from a position **cannot be saved or reviewed**: a record numbers its plies from
-the twelve entering placements, and a game that never had them has no place in the format.
-Save the position instead.
+A game begun from a position saves and reviews like any other, and its file carries the
+board it started on. A record derives each ply's side from its index and from a twelve-ply
+opening, so those two facts -- where it began and who moved first -- are the ones a move list
+cannot supply on its own. They go on two real lines at the top:
+
+```
+# Royals 1
+turn red
+board d4:0,0,1,4,0,0,0,0|e4:1,0,1,0,0,0,0,0|e5:0,0,0,0,1,0,0,0
+Je4f5 Pd4d3 --
+```
+
+Both lines or neither, and an ordinary game writes neither -- its file is unchanged. They are
+lines rather than comments on purpose: comments are dropped on read, so a reader that did not
+know about them would replay the game from the entering board and show a different one
+without a word. A keyword line makes that reader stop instead.
 
 ---
 

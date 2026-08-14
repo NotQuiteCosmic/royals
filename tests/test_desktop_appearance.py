@@ -66,19 +66,23 @@ def test_the_screen_lets_the_window_shrink_again(window):
     """buildGame sets a floor of 820x620 and nothing else ever lifts it, so a window that has
     held a game could not shrink for the rest of the session.
 
-    Asserted against the menu's own floor rather than against 1: `wm minsize` is a request,
-    and macOS Tk answers 72 whatever it is asked for. What matters is that this screen is as
-    free to shrink as the screen it is a sibling of.
+    Asserted against this screen's own floor rather than against 1: `wm minsize` is a request,
+    and macOS Tk answers 72 whatever it is asked for. Against its own rather than the setup
+    screen's, because the two no longer share one -- the menu measures itself and sets a real
+    floor so it stops changing shape as options come and go, and this screen still asks for
+    nothing. What matters is what it always did: that the game's floor does not outlive the
+    game.
     """
-    window.root.update()
-    menu = window.root.minsize()
+    window.buildAppearance(); window.root.update()
+    floor = window.root.minsize()
 
+    window.buildSetup()
     window.modeVar.set(0); window.entryVar.set(1)
     window.startGame(); window.root.update()
     assert window.root.minsize()[0] >= 820, "the game screen should set a floor"
 
     window.buildAppearance(); window.root.update()
-    assert window.root.minsize() == menu
+    assert window.root.minsize() == floor, "the game's floor outlived the game"
 
 
 def test_leaving_a_game_for_the_screen_drops_what_the_game_left_running(window):
@@ -357,7 +361,14 @@ def test_the_preset_list_scrolls_without_making_the_screen_taller(window):
 # tall display, which is off the bottom once a menu bar and a title bar are counted. The
 # ceilings below are deliberately loose: this is here to catch the screen walking off the
 # display again, not to pin a layout to the pixel.
-SETUP_MAX_H = 800
+#
+# The height moved once since, from 800 to 860, when the RULES box arrived: the fullest
+# arrangement went 690 -> 800 and sitting exactly on the ceiling is not a pass worth having.
+# **Raising it is allowed and re-recording it on every failure is not.** A real control
+# earning thirty pixels is a different thing from a paragraph quietly growing, and the way to
+# tell them apart is that the first comes with a reason. 860 still leaves two hundred pixels
+# of margin on the display this was measured on.
+SETUP_MAX_H = 860
 SETUP_MAX_W = 820
 
 
@@ -392,24 +403,68 @@ def test_the_tallest_the_setup_screen_gets_is_still_short_enough(window):
     assert window.errors == []
 
 
-def test_a_mode_that_cannot_use_a_control_does_not_reserve_room_for_it(window):
-    """Greying keeps a control's space; hiding gives it back. Both happen here, and the
-    point of the second is that the screen is shorter for it -- if these two ever measure
-    the same, the collapsing has silently stopped working."""
+def test_the_window_does_not_change_shape_as_options_come_and_go(window):
+    """The controls collapsing is the point; the window moving with them is not.
+
+    Hiding what a mode cannot use is what got this screen back onto the display, and it left
+    the window resizing every time PLAYERS was touched -- three settings apart, a menu that
+    jumps twice on the way past. settleSetupSize measures the fullest arrangement once and
+    makes it the floor, so a mode that asks for less gets the floor instead.
+
+    The frame's *requested* size still varies, and it should: that is the collapsing working.
+    What must not vary is the window.
+    """
     window.buildSetup()
+    window.root.update()
+    settled = window.root.geometry().split("+")[0]
+
+    seen = {}
+    for mode in (0, 1, 2):
+        window.modeVar.set(mode)
+        window.refreshSetup()
+        window.root.update()
+        seen[mode] = (window.root.geometry().split("+")[0], setupSize(window)[1])
 
     window.modeVar.set(2)
     window.splitDepthVar.set(1)
     window.refreshSetup()
-    _w, tallest = setupSize(window)
+    window.root.update()
 
-    window.modeVar.set(0)          # two humans: the whole COMPUTER box is beside the point
-    window.refreshSetup()
-    _w, shortest = setupSize(window)
+    for mode, (geometry, _height) in seen.items():
+        assert geometry == settled, "mode %d moved the window to %s" % (mode, geometry)
+    assert window.root.geometry().split("+")[0] == settled
 
-    assert shortest < tallest - 100, (
-        "2 player should be much shorter than 0 player with a split depth, got %d vs %d"
-        % (shortest, tallest))
+    # ...and the collapsing really is still happening underneath, or the test above would
+    # hold just as well for a screen that had stopped hiding anything at all.
+    assert seen[0][1] < seen[2][1] - 100, (
+        "2 player should request much less room than 0 player, got %d vs %d"
+        % (seen[0][1], seen[2][1]))
+    assert window.errors == []
+
+
+def test_the_menu_can_be_resized_and_stays_centred(window):
+    """It could not be, and that was the bug behind the bug: `resizable(False, False)` also
+    takes away the green button, so when the screen outgrew the display there was no way to
+    reach the bottom of it -- not by dragging, not by full screen, and there is no scrollbar.
+    """
+    window.buildSetup()
+    window.root.update()
+    assert window.root.resizable() == (True, True)
+
+    body = window.frame.pack_slaves()[0]
+    window.root.geometry("1400x950")
+    window.root.update()
+    assert window.root.geometry().startswith("1400x9"), "the window refused to be resized"
+    assert window.frame.winfo_width() > 1300, "the frame did not grow with the window"
+    assert body.winfo_width() < 900, "the body stretched instead of staying its own size"
+
+    # The body is centred in the slack rather than left in the corner, and that is asserted
+    # here as `expand` rather than as a coordinate on purpose: **this root is withdrawn**, and
+    # a withdrawn window resizes its frame but does not re-place the packed child inside it --
+    # measured, body sits at x=30 withdrawn and x=376 mapped, for the same 1400px window. The
+    # position is real and cannot be read here, so read what produces it instead.
+    assert body.pack_info()["expand"] in (1, "1", True)
+    assert not body.pack_info()["fill"] or body.pack_info()["fill"] == "none"
     assert window.errors == []
 
 
@@ -435,4 +490,52 @@ def test_the_controls_come_back_when_the_mode_comes_back(window):
 
     assert after == before, "the boxes came back in a different order"
     assert "YOUR SIDE" in " ".join(after)
+    assert window.errors == []
+
+
+def test_a_control_that_changes_no_layout_repacks_nothing(window):
+    """The setup screen blanked out when the RULES box was clicked, and this is why.
+
+    `showRows` used to forget and re-pack every widget it managed on every call, so one
+    `refreshSetup` unmapped and remapped all eleven boxes and groups -- usually rebuilding the
+    layout that was already there. An unmapped and remapped LabelFrame comes back unpainted on
+    macOS Tk until something forces a redraw, so a click that changed nothing visible blanked
+    the screen until the window lost focus and got it back.
+
+    Asserted as churn rather than as appearance because a repaint is not observable from here:
+    a withdrawn test root never paints at all. What can be observed is the cause.
+    """
+    window.buildSetup()
+    window.root.update_idletasks()
+
+    forgotten = []
+    real = tk.Pack.pack_forget
+
+    def counting(self, *a, **kw):
+        forgotten.append(self)
+        return real(self, *a, **kw)
+
+    tk.Pack.pack_forget = counting
+    try:
+        # the rule is not something refreshSetup decides, so neither value can move a box
+        for value in (1, 0, 1):
+            window.pushRangeVar.set(value)
+            window.refreshSetup()
+        assert forgotten == [], \
+            "toggling a control that changes no visibility repacked %d widgets" % len(forgotten)
+
+        # and a control that *does* decide something repacks only its own column
+        window.modeVar.set(1)
+        window.refreshSetup()
+        forgotten.clear()
+        window.modeVar.set(1)          # the same value: still nothing to do
+        window.refreshSetup()
+        assert forgotten == [], "re-choosing the current mode repacked the screen"
+
+        window.modeVar.set(0)          # 1 player -> 2 player really does hide YOUR SIDE
+        window.refreshSetup()
+        assert forgotten, "hiding a box should repack the column that holds it"
+    finally:
+        tk.Pack.pack_forget = real
+
     assert window.errors == []

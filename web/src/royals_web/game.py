@@ -719,7 +719,7 @@ class Position:
     turn: int                   # 1-based within the phase; 0 before anything
 
 
-def positions(moves):
+def positions(moves, board=None, turn=None):
     """Walk a move list and return (every position it passed through, the game it made).
 
     `len(moves) + 1` positions: the board before any ply, then one after each.
@@ -731,25 +731,48 @@ def positions(moves):
     they rebuild from scratch as they go; `Engine.koTrack` is not involved, here or
     anywhere else outside an AI worker. A review of one game cannot disturb another.
 
+    `board` and `turn` are what `notation.decode_record` read off a game that began from a
+    position somebody set up: there is no entering phase, and either side may be the one to
+    move. They are the same pair `royals_engine.record.positions` takes, and the two walks
+    have to agree about them as they agree about everything else -- tests/test_record.py.
+
     The returned game is the one the moves alone describe, which is not quite the one that
     was played: a resignation leaves no trace in a move list, so a caller holding the
     stored game should report *its* ending rather than this one's.
     """
+    if (board is None) != (turn is None):
+        raise ReplayError("a start position is a board and a side to move, or neither")
+
     stored = list(moves)
+    enter_plies = len(ENTER_STEPS) if board is None else 0
 
     game = Game(id="", mode="human", ai_depth=None, entry_seed=0, entry_noise=0.5,
-                board=Hasher.Entering_Board(),
+                board=Hasher.Entering_Board() if board is None else board,
                 seats={BLUE: Seat(kind=HUMAN, claimed=True),
                        RED: Seat(kind=HUMAN, claimed=True)})
-    _seek_entry_step(game)
+    if board is None:
+        _seek_entry_step(game)
+    else:
+        # What _start_play does at the end of the placements, done to a position nobody
+        # played to. The ko history starting *on* the board is the part that matters: it is
+        # what makes a first move that undoes back into the set-up position illegal, and
+        # skipping it would let this walk accept a repetition the engine's walk refuses --
+        # a disagreement between the two that no board comparison would show.
+        game.phase = "playing"
+        game.entry_side = game.entry_piece = None
+        game._ko_set = set()
+        game.ko_boards = []
+        game._record_ko(game.board)
+        game.turn = turn
+        game.passes = 0
 
     spots = [Position(ply=0, board=game.board, last_move=[],
-                      phase=R.PHASE_ENTERING, turn=0)]
+                      phase=R.PHASE_ENTERING if enter_plies else R.PHASE_PLAYING, turn=0)]
 
     def note(g):
-        phase, turn = R.turn_of_ply(len(spots) - 1)
+        phase, turn_number = R.turn_of_ply(len(spots) - 1, enter_plies)
         spots.append(Position(ply=len(spots), board=g.board, last_move=list(g.last_move),
-                              phase=phase, turn=turn))
+                              phase=phase, turn=turn_number))
 
     _walk(game, stored, note)
 

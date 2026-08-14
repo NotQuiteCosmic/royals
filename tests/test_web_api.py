@@ -2122,3 +2122,77 @@ def test_the_page_numbers_the_move_list_from_what_the_server_sends(client):
     numbering = source[source.index("function plyMarker"):]
     numbering = numbering[:numbering.index("\n}")]
     assert "12" not in numbering, numbering
+
+
+# ---------------------------------------------------------------------------
+# Reviewing a game that began from a position
+# ---------------------------------------------------------------------------
+# The browser cannot create one -- there is no set-up screen here -- but it can be handed
+# one: the desktop writes these files and /api/review is the other half of the download
+# button. So the endpoint has to read a record whose first ply is not a placement, and the
+# page has to be told the two things it cannot work out for itself.
+
+POSITION_STUDY = "d4:0,0,1,4,0,0,0,0|e4:1,0,1,0,0,0,0,0|e5:0,0,0,0,1,0,0,0"
+
+
+def position_record(side=1, moves=("Je4f5",)):
+    from royals_engine import notation as N
+    return N.encode_game(list(moves), notes=["set up by hand"],
+                         board=N.decode_board(POSITION_STUDY), turn=side)
+
+
+@pytest.mark.parametrize("side", [0, 1])
+def test_a_record_that_began_from_a_position_reviews(client, side):
+    from royals_engine import notation as N
+
+    first = "Jd4e3" if side == 0 else "Je4f5"
+    res = client.post("/api/review", json={"record": position_record(side, [first])})
+    assert res.status_code == 200, res.text
+    body = res.json()
+
+    # No opening to be inside, so the page is told so rather than assuming twelve.
+    assert body["enterSteps"] == 0
+    assert body["firstSide"] == side
+    assert [p["phase"] for p in body["positions"]] == ["playing", "playing"]
+    assert [p["turn"] for p in body["positions"]] == [0, 1]
+
+    # And it really walked from the board the file named.
+    from royals_web import game as G
+    assert body["positions"][0]["board"] == G.board_to_json(N.decode_board(POSITION_STUDY))
+
+
+def test_an_ordinary_record_still_says_twelve_and_red(client):
+    game, _boards = played_out_with_boards()
+    body = client.post("/api/review", json={"record": " ".join(game.moves)}).json()
+    assert body["enterSteps"] == len(G.ENTER_STEPS)
+    assert body["firstSide"] == 1, "whoever entered second opens, and that is red"
+
+
+def test_a_position_record_with_an_impossible_board_is_refused(client):
+    """The board arrives from a stranger, so validate_board is the ceiling on it."""
+    bad = "# Royals 1\nturn red\nboard d4:0,0,0,4,0,0,0,0|e5:0,0,0,1,0,0,0,0\nJd4e3"
+    res = client.post("/api/review", json={"record": bad})
+    assert res.status_code == 422, res.text
+    assert "too many" in res.json()["detail"]
+
+
+def test_a_position_record_creates_nothing_either(client):
+    before = len(store)
+    assert client.post("/api/review", json={"record": position_record()}).status_code == 200
+    assert len(store) == before
+
+
+def test_the_page_skips_the_header_when_it_counts_plies():
+    """countPlies in app.js mirrors decode_record's rules so a file is not refused for
+    four words of header it does not contain plies in.
+
+    Checked by reading the source, the way the REVIEW_MAX_PLIES pin above is: the two
+    keyword names are the thing that must not drift, and they live in both files.
+    """
+    from royals_engine import notation as N
+    from royals_web.main import STATIC_DIR
+
+    source = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    for keyword in (N.TURN_KEY, N.BOARD_KEY):
+        assert '"%s"' % keyword in source, \
+            "app.js does not know about the %r header line" % (keyword,)

@@ -28,7 +28,7 @@ it is wrapped in a subshell, so the next line still begins where the last one di
 at the top of a block silently breaks every line under it.
 
 ```bash
-(cd tests && python3 regress.py check all)    # the goldens
+(cd tests && python3 regress.py check all)    # the goldens, all four
 python3 -m pytest tests/ -q                   # the unit tests
 python3 -m py_compile engine/src/royals_engine/*.py apps/*/*.py    # quick syntax check
 ```
@@ -40,31 +40,34 @@ which is what CI runs:
 cargo test --manifest-path engine-rs/Cargo.toml
 cargo run --release --manifest-path engine-rs/Cargo.toml --bin royals-golden \
   | diff - tests/golden_moves.txt                 # must be silent
+cargo run --release --manifest-path engine-rs/Cargo.toml --bin royals-golden -- --push-range \
+  | diff - tests/golden_push_moves.txt            # the variant, same standard
 ROYALS_NO_ACCEL=1 python3 -m pytest tests/ -q     # the pure-Python path
 (cd tests && ROYALS_NO_ACCEL=1 python3 regress.py check all)   # must match the compiled run
 python3 engine-rs/tests/wasm_parity.py            # the browser's copy
 ```
 
 Expected green state: `golden_enter.txt` 445 lines, `golden_moves.txt` 13,051 lines,
-`golden_search.txt` 245 lines identical — **from both implementations** — and 500 tests passing
-(23 accel, 24 break rules, 19 carry rules, 7 delayed win, 26 desktop appearance,
-13 desktop assist, 15 desktop lifecycle, 15 desktop record, 28 engine-purity, 19 entering,
-4 flights, 66 notation, 38 position setup, 22 projection, 18 record, 45 theme, 105 web API,
-13 win horizon). With
-`ROYALS_NO_ACCEL=1` it is 497 passed and 3 skipped; the skips are the tests that need the
+`golden_push_moves.txt` 12,365 lines, `golden_search.txt` 245 lines identical — **from both
+implementations** — and 604 tests passing
+(23 accel, 24 break rules, 19 carry rules, 7 delayed win, 28 desktop appearance,
+13 desktop assist, 27 desktop lifecycle, 29 desktop record, 28 engine-purity, 19 entering,
+4 flights, 101 notation, 53 position setup, 22 projection, 12 push range, 26 record,
+45 theme, 111 web API, 13 win horizon). With
+`ROYALS_NO_ACCEL=1` it is 601 passed and 3 skipped; the skips are the tests that need the
 wheel, and skipping is
-correct — not having it is a supported configuration. **87 of them drive a real tkinter
+correct — not having it is a supported configuration. **130 of them drive a real tkinter
 window** and skip on a headless runner, which is also correct. Counting the files that hold
 them stopped being useful once three of them came to be part display and part not — the
 figure is every test taking the `window` fixture, and
 `python3 -m pytest tests/ --fixtures-per-test` is how to re-count it. They share one root,
 from `tests/conftest.py`, and that is not a tidiness measure -- see the note there.
 
-`cargo test` is 35, and `royals-golden` must emit `golden_moves.txt` byte for byte. A
+`cargo test` is 36, and `royals-golden` must emit `golden_moves.txt` byte for byte. A
 Python-only run proves almost nothing about what a browser or a wheel-equipped machine will do.
-Note what that 35 leaves out: the seven tests in `engine-rs/src/wasm.rs` are behind
+Note what that 36 leaves out: the seven tests in `engine-rs/src/wasm.rs` are behind
 `--features wasm` and a bare `cargo test` never compiles them, including the one asserting the
-move-kind order `static/engine.js` decodes with. **`cargo test --features wasm` is 42 and does
+move-kind order `static/engine.js` decodes with. **`cargo test --features wasm` is 43 and does
 compile them** — they build for the host perfectly well, the gate is about what ships in the
 module. CI's `rust:` job runs both, in that order. `wasm_parity.py` is still what guards the
 shipped artifact, which is a different question from whether the code is correct.
@@ -80,10 +83,10 @@ cursor is left open makes the next `commit` fail. Everything in `persist.py` goe
 `_run`/`_query`, which close theirs. Don't add a bare `self._conn.execute`.
 
 The web API tests call `pytest.importorskip("fastapi")`, so without `pip install -e ./web`
-they skip silently and the run reports 385 passed and 11 skipped, not 500. Ten of those
-eleven are individual tests; the eleventh is the whole of `test_web_api.py`, because a module
-that skips at import is one item however many tests it holds — which is why 105 tests can
-vanish and the total only fall by 115. Six of the ten are the cross-checks in
+they skip silently and the run reports 481 passed and 13 skipped, not 604. Twelve of those
+thirteen are individual tests; the thirteenth is the whole of `test_web_api.py`, because a
+module that skips at import is one item however many tests it holds — which is why 111 tests
+can vanish and the total only fall by 123. Eight of the twelve are the cross-checks in
 `test_record.py` and `test_desktop_record.py` that hold the engine's record walker — and its
 move numbering — against the server's, and they are the ones most worth noticing the absence
 of. The other four are the game-loop half of `test_delayed_win.py`, which is marked rather
@@ -121,6 +124,17 @@ Re-recording to make a red build green is the single most expensive mistake avai
 converts the one property that makes two implementations worth maintaining into a file that
 merely describes whatever the code currently does.
 
+`golden_push_moves.txt` is the same contract for the **push-range variant** — an optional rule
+a game opts into, where a push travels a distance the mover chooses instead of the one square
+it has always moved. Two rule sets, two contracts, and the variant is held to exactly the
+standard the original is: both engines emit it byte for byte, and
+`royals-golden --push-range` is the Rust half. It exists rather than the rule simply moving
+`golden_moves.txt` because the standard game is still the game — turning an optional rule on
+must not silently rewrite what the ordinary rules say a move does.
+
+**If `golden_moves.txt` moves while you are working on the variant, the rule has leaked out
+from behind its flag.** That is a bug in the flagging, not a re-record.
+
 `golden_search.txt` (node counts) is expected to churn; `python3 regress.py write search`
 re-records just that one, and that is routine.
 
@@ -136,19 +150,29 @@ See [docs/PORTING.md](docs/PORTING.md) before writing any second implementation 
 
 ## Game records, and the second thing two implementations answer to
 
-A game is archived as its **move list and nothing else** — RAN tokens, one per ply, which is
-the same string `persist.py` stores in a column and the same one `game.replay` parses. A file
-is that string with a `#` header on it that is dropped on read, so round-tripping is a
-property of the format rather than an agreement between two pieces of code. `notation.py`
-owns it (`encode_game`, `decode_game`, `decode_ply`).
+A game is archived as its **move list and almost nothing else** — RAN tokens, one per ply,
+which is the same string `persist.py` stores in a column and the same one `game.replay`
+parses. A file is that string with a `#` header on it that is dropped on read, so
+round-tripping is a property of the format rather than an agreement between two pieces of
+code. `notation.py` owns it (`encode_game`, `decode_record`, `decode_ply`).
 
 **Every ply is written down, including the ones where nothing happened.** A side with nowhere
 to enter and a side with no legal move both record `--`. This is not bookkeeping: the side of
-every ply is *derived* from its index — the entering phase is exactly `len(enteringSequence())`
-plies whatever happens in it, and play alternates from there — so a record missing one still
-reads, still replays, and replays every later move as the **other side's**, into a real
-position nobody played to. It is the one failure this whole area can produce that does not
-announce itself.
+every ply is *derived* from two numbers — how many plies the game opened with before anybody
+moved, and who moved first — so a record missing one still reads, still replays, and replays
+every later move as the **other side's**, into a real position nobody played to. It is the
+one failure this whole area can produce that does not announce itself.
+
+For a game that began the usual way both numbers are constants: `len(enteringSequence())`
+plies whatever happens in the opening, and red first, because whoever entered second opens.
+**A game begun from a position set up by hand has neither**, so its file carries them on two
+real lines — `turn red` and `board d4:0,0,1,4,…` — and `record.turn_of_ply`, `side_of_ply`
+and both walkers take them as arguments defaulting to the constants. The lines are lines
+rather than comments precisely because comments are dropped: a reader that did not know about
+them would replay the game from the entering board and show a different one convincingly,
+which is the failure above wearing a different hat. `decode_game` refuses such a file outright
+and names `decode_record`; an ordinary game's file is unchanged, byte for byte, and
+`tests/test_notation.py` asserts that rather than hoping it.
 
 **There are two walks of a move list, on purpose.**
 
@@ -170,11 +194,13 @@ ply. `ply` is the right handle for code and the wrong number to put in front of 
 `record.turn_of_ply` turns one into the other and is the only place that rule is written:
 `("entering", 1..12)` or `("playing", 1..N)`, where the second is the engine's own `turn`
 counter, which is why `turn % 2` gives the side and why **move 1 is red's** — whoever entered
-second opens.
+second opens. A game begun from a position passes `enterPlies=0` and is "playing" from ply 1,
+with the side its `board`/`turn` header named.
 
 Everything that shows a number goes through it. `record.Position` and `game.Position` both
-carry `phase` and `turn`; the review JSON sends them per position plus `enterSteps`, so
-`app.js` derives the boundary rather than carrying a 12; the desktop's `turnMark` numbers the
+carry `phase` and `turn`; the review JSON sends them per position plus `enterSteps` and
+`firstSide`, so `app.js` derives the boundary and the colours rather than carrying a 12 and a
+parity; the desktop's `turnMark` numbers the
 game log from `enterIndex`/`turn`, which are the same two counters. `tests/test_record.py`
 holds `turn_of_ply` against a live game's `turn`, and `tests/test_desktop_record.py` holds the
 log's numbering against both.
@@ -220,7 +246,7 @@ was arrived at the hard way. Match that. A comment explaining a performance deci
 rule's edge case is in keeping here; a comment restating what the line does is not.
 
 Numbers in prose follow one rule: **exact where the reader is meant to check it, rounded into
-words where it is only conveying scale.** "500 tests, and 385 means you forgot the web package"
+words where it is only conveying scale.** "572 tests, and 449 means you forgot the web package"
 is a check and has to be exact. "thirteen thousand lines", "about thirty-six times faster" are
 rhetoric, and a rounded word is still true two commits later where a digit is not. Every count
 in this file is the first kind, which is why they live here and nowhere else.
@@ -230,8 +256,8 @@ in this file is the first kind, which is why they live here and nowhere else.
 Every figure above comes from something that already runs. From the repo root:
 
 ```bash
-python3 -m pytest tests/ -q                      # the total, and 500 vs 385 above
-ROYALS_NO_ACCEL=1 python3 -m pytest tests/ -q    # the 497 passed / 3 skipped split
+python3 -m pytest tests/ -q                      # the total, and 604 vs 481 above
+ROYALS_NO_ACCEL=1 python3 -m pytest tests/ -q    # the 601 passed / 3 skipped split
 (cd tests && python3 regress.py check all)       # the three golden line counts
 cargo test --manifest-path engine-rs/Cargo.toml  # the 35
 python3 engine-rs/tests/wasm_parity.py           # prints its own question count
@@ -241,7 +267,7 @@ For the per-file breakdown, `python3 -m pytest tests/<file> --collect-only -q` �
 `def test_` undercounts badly, because several files parametrise (`test_accel.py` reads as 11
 and collects 23).
 
-The 379 is the awkward one: it needs a checkout where `./web` was never installed, and no
+The 449 is the awkward one: it needs a checkout where `./web` was never installed, and no
 pytest flag simulates that. A stub on `PYTHONPATH` does reproduce it, but only if you get two
 things right, both of which give a plausible wrong answer rather than an error.
 
@@ -251,7 +277,7 @@ printf 'raise ModuleNotFoundError("No module named %s", name="fastapi")\n' "'fas
   > /tmp/noweb/fastapi.py
 printf 'raise ModuleNotFoundError("No module named %s", name="royals_web")\n' "'royals_web'" \
   > /tmp/noweb/royals_web/__init__.py
-PYTHONPATH=/tmp/noweb python3 -m pytest tests/ -q      # 379 passed, 11 skipped
+PYTHONPATH=/tmp/noweb python3 -m pytest tests/ -q      # 449 passed, 13 skipped
 ```
 
 **It has to be `ModuleNotFoundError`, not `ImportError`.** `importorskip` skips on the former

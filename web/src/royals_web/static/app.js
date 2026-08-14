@@ -868,12 +868,21 @@ el.save.addEventListener("click", () => {
 
 // -- reading one back --------------------------------------------------------
 
-// The same two rules notation.decode_game applies: everything from a '#' to the end of its
-// line is a comment, and what is left is split on whitespace. Nothing is *validated* here
-// -- the server decodes every token and names the first bad one. This only counts, so that
-// a file too long to upload is explained without being uploaded.
+// The same rules notation.decode_record applies: everything from a '#' to the end of its
+// line is a comment, a line whose first word is `turn` or `board` says where a game that
+// did not begin with entering began, and what is left is split on whitespace. Nothing is
+// *validated* here -- the server decodes every token and names the first bad one. This only
+// counts, so that a file too long to upload is explained without being uploaded.
+//
+// The two header words have to be skipped rather than counted: four words of header on a
+// record already near the limit would refuse a file the server would have accepted.
+const RECORD_KEYWORDS = new Set(["turn", "board"]);
+
 function countPlies(text) {
-  return text.split("\n").map((line) => line.split("#")[0]).join(" ")
+  return text.split("\n")
+             .map((line) => line.split("#")[0])
+             .filter((line) => !RECORD_KEYWORDS.has(line.trim().split(/\s+/)[0].toLowerCase()))
+             .join(" ")
              .split(/\s+/).filter(Boolean).length;
 }
 
@@ -897,6 +906,10 @@ async function beginReview(request, live) {
     result: body.result,
     termination: body.termination,
     enterSteps: body.enterSteps,
+    // Where the opening ends and who made the first ply of play. Both come from the server
+    // rather than being assumed here, because a record that began from a position set up by
+    // hand has no opening and either side may have moved first. See plySide.
+    firstSide: body.firstSide,
     // Opens at the end, which is the position somebody who has just finished a game is
     // already looking at, and is one keypress from the start either way.
     at: body.positions.length - 1,
@@ -1067,13 +1080,22 @@ function plyMarker(index) {
 
 // Which side played ply `i`, or null when nothing sensible can be said.
 //
-// The parity holds because the entering phase is exactly twelve plies whatever happens in
-// it -- a side with nowhere to place still writes down a "--" -- so the first move of play
-// is always ply 12 and always red's. It does NOT hold *within* the entering phase, where
-// blue places first, so a placement is left uncoloured rather than confidently miscoloured.
+// Two numbers decide it, and the server sends both: where the opening ends, and who made
+// the first ply of play. For an ordinary game they are 12 and red -- the entering phase is
+// exactly twelve plies whatever happens in it, because a side with nowhere to place still
+// writes down a "--", and whoever entered second opens. A record that began from a position
+// set up by hand has 0 and whichever side its `turn` line named, which is why this reads
+// them rather than assuming the parity: it used to be `i % 2 === 0 ? 1 : 0`, which is the
+// same expression with those two constants already substituted in.
+//
+// The parity does NOT hold *within* the entering phase, where blue places first, so a
+// placement is left uncoloured rather than confidently miscoloured.
 function plySide(i) {
   if (i < 0 || !review || (review.moves[i] || "").startsWith("@")) return null;
-  return i % 2 === 0 ? 1 : 0;
+  const enterSteps = review.enterSteps || 0;
+  if (i < enterSteps) return null;
+  const firstSide = review.firstSide === undefined ? 1 : review.firstSide;
+  return (firstSide + i - enterSteps) % 2;
 }
 
 window.addEventListener("popstate", () => { route(); });
@@ -1329,8 +1351,12 @@ function renderMoveList() {
     mark.className = "ply-mark";
     mark.textContent = plyMarker(i);
     li.append(mark, document.createTextNode(ran));
-    if (ran.startsWith("@")) li.className = "enter";
-    else li.className = SIDE_NAME[i % 2 === 0 ? 1 : 0];
+    // plySide when there is a review to read the two numbers off, and the old parity when
+    // there is not -- a game in progress in this window began with entering by definition,
+    // since the browser has no way to start one from a position.
+    const side = review ? plySide(i) : (i % 2 === 0 ? 1 : 0);
+    if (ran.startsWith("@") || side === null) li.className = "enter";
+    else li.className = SIDE_NAME[side];
     if (review) {
       // Ply n produced position n, so the datum is the index into `positions`.
       li.dataset.ply = String(i + 1);

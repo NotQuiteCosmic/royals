@@ -37,6 +37,25 @@ pub mod wasm;
 
 pub use board::{Board, Square, BOARD_SQUARES, EMPTY_BOARD};
 
+/// Whether the push-range variant is in force. Mirrors `royals_engine.engine.PUSH_RANGE`, and
+/// the Python side sets it through `set_push_range` at the start of a game.
+///
+/// **It may change between games and never within one.** A search that saw it move would play
+/// one half of its tree by one rule set and the other half by another, and the disagreement
+/// would be blamed on the rules rather than on the harness. `Relaxed` is right for exactly
+/// that reason: the value is not synchronising anything, because nothing is allowed to write
+/// it while a search is running.
+static PUSH_RANGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[inline]
+pub fn push_range() -> bool {
+    PUSH_RANGE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_push_range(on: bool) {
+    PUSH_RANGE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// What a move does. The Python side carries these as the strings `"jump"`, `"push"`,
 /// `"break"` and `"free"`; anything crossing the FFI or reaching a golden emitter converts
 /// with [`MoveKind::as_str`].
@@ -91,11 +110,24 @@ pub struct Move {
     pub kind: MoveKind,
     pub target: u8,
     pub moving_pris: bool,
+    /// How far a push travels. **1 for every move under the standard rules**, and for every
+    /// move that is not a push under any rules -- so widening the struct for the push-range
+    /// variant leaves a standard game's move list identical value for value.
+    ///
+    /// That matters more than it looks: `Move` is the key of the killer and history tables,
+    /// so a field that varied where it used to be constant would change move ordering and
+    /// with it every node count in `golden_search.txt`.
+    pub travel: u8,
 }
 
 impl Move {
     pub const fn new(origin: u8, kind: MoveKind, target: u8, moving_pris: bool) -> Move {
-        Move { origin, kind, target, moving_pris }
+        Move { origin, kind, target, moving_pris, travel: 1 }
+    }
+
+    /// A push that travels further than one square. Only the push-range variant makes one.
+    pub const fn pushing(origin: u8, target: u8, moving_pris: bool, travel: u8) -> Move {
+        Move { origin, kind: MoveKind::Push, target, moving_pris, travel }
     }
 
     /// The 1-based destination square, for the three kinds that have one. A break scatters

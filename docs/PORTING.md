@@ -237,6 +237,47 @@ It returns an **empty list** — not a six-list of empties — when there are no
 
 *(Implemented in `engine-rs/src/exec.rs`.)*
 
+### The push-range variant
+
+An optional rule, off by default, that a game opts into. A port may skip it -- but if it
+implements it, it answers to `tests/golden_push_moves.txt` exactly as it answers to
+`golden_moves.txt`, and both files must come out byte for byte.
+
+```
+ceiling = strength − the total weight of the shoved line + 1
+```
+
+and the mover picks any distance from 1 up to it, so **one push becomes up to six moves**.
+Legality is untouched: a ceiling of at least 1 is the existing `strength >= weight`.
+
+Three clips, in this order, and each can only shorten:
+
+1. **the collision** — offset `pRange` is the empty square the line stopped on; the front may
+   travel one square for each free square from there on.
+2. **the pusher's edge** — the ray wraps and the pusher may not, so it stops at the last
+   square reachable without the file or rank folding over. *Only the pusher.* The shoved
+   pieces are further along the same ray and wrap freely.
+3. two exceptions that are not arithmetic at all: **a lone spy** shoves any weight and moves
+   it exactly one, and **freeing** stays one square.
+
+The spy exception is load-bearing rather than cosmetic. Drop it and the formula makes a
+completed six untouchable — strength 1 against weight 6 — and since a spy's shattering push is
+the only answer to a finished stack, the delayed-win rule becomes unreachable.
+
+Two things a port will get wrong if it is not told:
+
+- **Absent distance means one square, not the ceiling.** A move with no distance on it is an
+  old one, a hand-built one, or one read back off a record written before the rule existed,
+  and all three meant one square. Defaulting to the ceiling replays every one of them as the
+  longest push available: a board that validates, a game nobody played.
+- **Distance 1 has exactly one spelling** — the plain four-element move, whatever the ceiling.
+  Two spellings of one move means the two engines emit different move lists for the same
+  position, and `golden_push_moves.txt` catches it on the first ranged push.
+
+Widening the move type is the other trap. Add the distance as a field that is **1 for every
+standard move**, or move ordering shifts and `golden_search.txt` moves with it — the move is
+the key of the killer and history tables.
+
 ### `exePush` — build all payloads, then commit ascending
 
 The shuffle is two passes on purpose. Grab every square the push needs *before* touching

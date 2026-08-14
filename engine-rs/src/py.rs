@@ -55,8 +55,27 @@ use crate::movegen;
 use crate::search;
 use crate::{Move, MoveKind};
 
-/// A move as Python spells it: `(origin, kind, target, movingPris)`.
-type PyMove = (u8, String, u8, bool);
+/// A move as Python spells it: `(origin, kind, target, movingPris)`, and under the push-range
+/// variant `(origin, kind, target, movingPris, travel)`.
+///
+/// **Two arities, and that is the contract rather than an accident.** `ai.listMoves` emits the
+/// fifth element only where the ceiling is above one, so a standard game's move list is the
+/// four-tuple it has always been and nothing reading one can tell this rule exists. The
+/// variants are tried longest-first, because a four-tuple would also match a prefix of five.
+#[derive(FromPyObject)]
+enum PyMoveIn {
+    Ranged((u8, String, u8, bool, u8)),
+    Plain((u8, String, u8, bool)),
+}
+
+impl PyMoveIn {
+    fn parts(&self) -> (u8, &str, u8, bool, u8) {
+        match self {
+            PyMoveIn::Ranged((o, k, t, p, v)) => (*o, k.as_str(), *t, *p, *v),
+            PyMoveIn::Plain((o, k, t, p)) => (*o, k.as_str(), *t, *p, 1),
+        }
+    }
+}
 
 // ---- conversions -------------------------------------------------------------------------
 
@@ -107,39 +126,47 @@ fn check_side(contr: u8) -> PyResult<u8> {
 /// Reject a move that is not one, matching `ai.checkMove` exactly -- including which of
 /// `ValueError` and `IndexError` each failure earns, since a caller that catches one and not
 /// the other must not care which engine answered.
-fn to_move(m: &PyMove) -> PyResult<Move> {
-    let kind = MoveKind::from_str(&m.1)
-        .ok_or_else(|| PyValueError::new_err(format!("{:?} is not a move kind", m.1)))?;
+fn to_move(m: &PyMoveIn) -> PyResult<Move> {
+    let (origin, kind_str, target, moving_pris, travel) = m.parts();
 
-    if m.0 < 1 || m.0 > 49 {
+    let kind = MoveKind::from_str(kind_str)
+        .ok_or_else(|| PyValueError::new_err(format!("{:?} is not a move kind", kind_str)))?;
+
+    if origin < 1 || origin > 49 {
         return Err(pyo3::exceptions::PyIndexError::new_err(format!(
             "origin {} is off the board (squares run 1 to 49)",
-            m.0
+            origin
         )));
     }
 
     // A break's target is a direction index into pushDirs, not a square. The asymmetry is the
     // engine's oldest trap -- see docs/PORTING.md -- so the bound depends on the kind.
     if kind == MoveKind::Break {
-        if m.2 as usize >= board::PUSH_DIRS.len() {
+        if target as usize >= board::PUSH_DIRS.len() {
             return Err(pyo3::exceptions::PyIndexError::new_err(format!(
                 "break direction {} is not one of 0 to {}",
-                m.2,
+                target,
                 board::PUSH_DIRS.len() - 1
             )));
         }
-    } else if m.2 > 48 {
+    } else if target > 48 {
         return Err(pyo3::exceptions::PyIndexError::new_err(format!(
             "target {} is off the board (0-based squares run 0 to 48)",
-            m.2
+            target
         )));
     }
 
-    Ok(Move::new(m.0, kind, m.2, m.3))
+    Ok(Move { origin, kind, target, moving_pris, travel: travel.max(1) })
 }
 
-fn from_move(m: Move) -> PyMove {
-    (m.origin, m.kind.as_str().to_string(), m.target, m.moving_pris)
+/// Back to Python, with the fifth element present only where it means something. See
+/// [`PyMoveIn`] -- a standard game's moves come back the shape they always have.
+fn from_move(py: Python<'_>, m: Move) -> PyObject {
+    if m.travel <= 1 {
+        (m.origin, m.kind.as_str(), m.target, m.moving_pris).into_py(py)
+    } else {
+        (m.origin, m.kind.as_str(), m.target, m.moving_pris, m.travel).into_py(py)
+    }
 }
 
 // ---- the pure ones -----------------------------------------------------------------------
@@ -147,13 +174,13 @@ fn from_move(m: Move) -> PyMove {
 // of it has to be serialised against anything.
 
 #[pyfunction]
-fn list_all_moves(board: Vec<u16>, contr: u8) -> PyResult<Vec<PyMove>> {
+fn list_all_moves(py: Python<'_>, board: Vec<u16>, contr: u8) -> PyResult<Vec<PyObject>> {
     let contr = check_side(contr)?;
     let board = to_board(board)?;
     let spaces = movegen::parse_board(&board);
     Ok(movegen::list_all_moves(&board, contr, &spaces)
         .into_iter()
-        .map(from_move)
+        .map(|m| from_move(py, m))
         .collect())
 }
 
@@ -162,7 +189,7 @@ fn perform_one_step<'py>(
     py: Python<'py>,
     board: Vec<u16>,
     contr: u8,
-    mv: PyMove,
+    mv: PyMoveIn,
 ) -> PyResult<Bound<'py, PyTuple>> {
     let contr = check_side(contr)?;
     let board = to_board(board)?;
@@ -241,14 +268,14 @@ fn choose_move(
     depth: i32,
     ko_boards: Vec<Vec<u16>>,
     table_limit: usize,
-) -> PyResult<(Score, Option<PyMove>, u64)> {
+) -> PyResult<(Score, Option<PyObject>, u64)> {
     let contr = check_side(contr)?;
     let board = to_board(board)?;
     let (score, mv, nodes) = with_game(py, ko_boards, table_limit, move |game| {
         let (score, mv) = game.choose_move(&board, contr, depth);
         (score, mv, game.calc_count)
     })?;
-    Ok((score, mv.map(from_move), nodes))
+    Ok((score, mv.map(|m| from_move(py, m)), nodes))
 }
 
 #[pyfunction]
@@ -260,14 +287,14 @@ fn take_turn<'py>(
     depth: i32,
     ko_boards: Vec<Vec<u16>>,
     table_limit: usize,
-) -> PyResult<(Bound<'py, PyTuple>, Option<PyMove>, Score, u64)> {
+) -> PyResult<(Bound<'py, PyTuple>, Option<PyObject>, Score, u64)> {
     let contr = check_side(contr)?;
     let board = to_board(board)?;
     let (next, mv, score, nodes) = with_game(py, ko_boards, table_limit, move |game| {
         let (next, mv, score) = game.take_turn(&board, contr, depth);
         (next, mv, score, game.calc_count)
     })?;
-    Ok((from_board(py, &next), mv.map(from_move), score, nodes))
+    Ok((from_board(py, &next), mv.map(|m| from_move(py, m)), score, nodes))
 }
 
 /// Forget everything learned about the game just played.
@@ -279,6 +306,17 @@ fn take_turn<'py>(
 #[pyfunction]
 fn new_game() {
     search::new_game();
+}
+
+/// Choose the rule set for the game about to be played, mirroring `Engine.setPushRange`.
+///
+/// **Between games and never within one.** `Engine.setPushRange` calls this so the two halves
+/// cannot disagree: without it the Python would play the variant and this side the standard
+/// game, and the only symptom would be a computer answering a four-square push as though it
+/// had been one square.
+#[pyfunction]
+fn set_push_range(on: bool) {
+    crate::set_push_range(on);
 }
 
 // ---- module ------------------------------------------------------------------------------
@@ -296,5 +334,6 @@ fn royals_accel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(choose_move, m)?)?;
     m.add_function(wrap_pyfunction!(take_turn, m)?)?;
     m.add_function(wrap_pyfunction!(new_game, m)?)?;
+    m.add_function(wrap_pyfunction!(set_push_range, m)?)?;
     Ok(())
 }

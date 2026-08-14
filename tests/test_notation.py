@@ -488,3 +488,203 @@ def test_real_positions_pass_the_piece_count_invariant():
     for seed in (3, 11, 57):
         for board in sweep_positions(seed, turns=12):
             N.validate_board(board)
+
+
+# ---------------------------------------------------------------------------
+# A record that begins from a position
+# ---------------------------------------------------------------------------
+# Two facts a move list cannot carry -- the board a game began from and who moved first --
+# and they go in real `turn` and `board` lines rather than in the header comments. The
+# reason is the test after the round trip: comments are dropped, so a reader that had not
+# been taught about them would replay the game from the entering board and show a different
+# one, convincingly. A keyword line makes that reader fail instead.
+
+STUDY_BOARD = "d4:0,0,1,4,0,0,0,0|e4:1,0,1,0,0,0,0,0|e5:0,0,0,0,1,0,0,0"
+
+
+def test_an_ordinary_record_is_the_file_it_has_always_been():
+    """The compatibility claim, stated as an assertion rather than as a hope.
+
+    Every game saved before the format learned about start positions has to go on reading,
+    and every game saved after it has to be the same bytes as before. Nothing is written
+    unless a board is handed in.
+    """
+    text = N.encode_game(RECORDED, notes=["a note"])
+    assert "turn " not in text and "board " not in text
+    assert text.splitlines()[0] == N.MAGIC
+    assert N.decode_game(text) == RECORDED
+    assert N.decode_record(text) == (RECORDED, None, None, ())
+
+
+@pytest.mark.parametrize("side", [0, 1])
+def test_a_start_position_survives_the_round_trip(side):
+    board = N.decode_board(STUDY_BOARD)
+    text = N.encode_game(["Je4f5"], notes=["a study"], board=board, turn=side)
+
+    moves, back, turn, _rules = N.decode_record(text)
+    assert moves == ["Je4f5"]
+    assert back == board
+    assert turn == side
+
+
+def test_a_reader_that_has_not_been_taught_refuses_rather_than_dropping_the_board():
+    """The whole reason the two facts are not in comments.
+
+    decode_game is every caller that only ever meant an ordinary record. Handed one that
+    began somewhere else it has to fail, because the alternative -- returning the moves and
+    letting the caller walk them from the entering board -- is a different game shown
+    without a word.
+    """
+    text = N.encode_game(["Je4f5"], board=N.decode_board(STUDY_BOARD), turn=1)
+    with pytest.raises(N.NotationError, match="decode_record"):
+        N.decode_game(text)
+
+
+@pytest.mark.parametrize("what, text", [
+    ("a board with no turn", "# Royals 1\nboard " + STUDY_BOARD + "\nJe4f5"),
+    ("a turn with no board", "# Royals 1\nturn red\nJe4f5"),
+    ("two turn lines",  "turn red\nturn blue\nboard " + STUDY_BOARD),
+    ("two board lines", "turn red\nboard " + STUDY_BOARD + "\nboard " + STUDY_BOARD),
+    ("a turn with no side", "turn\nboard " + STUDY_BOARD),
+    ("an unknown side", "turn green\nboard " + STUDY_BOARD),
+    ("a board with nothing after it", "turn red\nboard"),
+    ("a board that no square could hold", "turn red\nboard d4:0,0,1,5,1,0,0,0"),
+    ("a board with five pawns for a side",
+     "turn red\nboard d4:0,0,0,4,0,0,0,0|e5:0,0,0,1,0,0,0,0"),
+])
+def test_a_broken_header_is_refused(what, text):
+    with pytest.raises(N.NotationError):
+        N.decode_record(text)
+
+
+def test_encoding_half_a_start_position_is_refused():
+    with pytest.raises(N.NotationError):
+        N.encode_game([], board=N.decode_board(STUDY_BOARD))
+    with pytest.raises(N.NotationError):
+        N.encode_game([], turn=1)
+
+
+def test_a_note_cannot_smuggle_a_header_line_into_a_record():
+    """The same claim the existing note tests make about tokens, made about the two
+    keywords -- a note is a comment however many line breaks somebody types into it."""
+    text = N.encode_game(["Je4f5"], notes=["oops\nturn red\nboard " + STUDY_BOARD])
+    moves, board, turn, _rules = N.decode_record(text)
+    assert moves == ["Je4f5"]
+    assert board is None and turn is None
+
+
+def test_a_position_file_reads_its_board_line_keyed_or_bare():
+    board = N.decode_board(STUDY_BOARD)
+    bare = N.encode_position(board, 1)
+    assert N.decode_position(bare) == (board, 1)
+    assert N.decode_position("turn red\n%s %s" % (N.BOARD_KEY, STUDY_BOARD)) == (board, 1)
+
+
+# ---------------------------------------------------------------------------
+# The push-range variant: a distance on a push, and the rules line
+# ---------------------------------------------------------------------------
+# Both exist for one reason. A push under the variant may travel up to six squares, and the
+# move list, the token and the record all have to agree about which distance was played --
+# because the failure is silent otherwise. A distance dropped on the way to disk replays as
+# some other distance, and the piece counts still add up, so nothing downstream objects.
+
+def test_a_push_carries_how_far_it_went():
+    for far in (2, 3, 4, 5, 6):
+        move = (25, "push", 31, False, far)
+        token = N.encode_move(move)
+        assert token == "Pd4d5%s%d" % (N.TRAVEL_SUFFIX, far)
+        assert N.decode_move(token) == move
+
+
+def test_one_square_is_written_by_leaving_the_suffix_off():
+    """One move, one spelling. Two ways to write a one-square push would mean a record that
+    does not round-trip to itself, and a golden that could record the same move twice."""
+    assert N.encode_move((25, "push", 31, False)) == "Pd4d5"
+    assert N.encode_move((25, "push", 31, False, 1)) == "Pd4d5"
+    assert N.decode_move("Pd4d5") == (25, "push", 31, False)
+
+    with pytest.raises(N.NotationError, match="omitting"):
+        N.decode_move("Pd4d5%s1" % (N.TRAVEL_SUFFIX,))
+
+
+def test_an_old_token_still_means_what_it_always_meant():
+    """The compatibility claim. Every push written before this rule existed said one square,
+    and must go on saying one square -- not "as far as it can", which is what the in-memory
+    default used to be and what would have replayed those files as different games."""
+    assert N.decode_move("Pd4d5") == (25, "push", 31, False)
+    assert N.decode_move("Pd4d5*") == (25, "push", 31, True)
+
+
+def test_the_distance_rides_before_the_prisoner_star():
+    move = (25, "push", 31, True, 3)
+    assert N.encode_move(move) == "Pd4d5%s3*" % (N.TRAVEL_SUFFIX,)
+    assert N.decode_move(N.encode_move(move)) == move
+
+
+@pytest.mark.parametrize("what, token", [
+    ("a jump that travels",   "Jd4d5>3"),
+    ("a free that travels",   "Fd4d5>3"),
+    ("a break that travels",  "Bd4r>3"),
+    ("a distance of nothing", "Pd4d5>"),
+    ("a distance that is not a number", "Pd4d5>x"),
+])
+def test_only_a_push_carries_a_distance(what, token):
+    with pytest.raises(N.NotationError):
+        N.decode_move(token)
+
+
+def test_a_record_says_which_rules_it_was_played_under():
+    text = N.encode_game(["Pd4d5>3"], rules=(N.RULE_PUSH_RANGE,))
+    assert "%s %s" % (N.RULES_KEY, N.RULE_PUSH_RANGE) in text
+    assert N.decode_record(text) == (["Pd4d5>3"], None, None, (N.RULE_PUSH_RANGE,))
+
+
+def test_a_standard_record_says_nothing_about_rules():
+    """The compatibility claim again, one level up: a game under the standard rules writes
+    the file it has always written, byte for byte."""
+    text = N.encode_game(["Je4f5"])
+    assert N.RULES_KEY not in text
+    assert N.decode_record(text)[3] == ()
+
+
+def test_a_rule_this_engine_does_not_know_is_refused():
+    """The whole point of the line. A game played under a rule we do not have is not a game
+    we can replay, and replaying it anyway produces a plausible board and a different game."""
+    with pytest.raises(N.NotationError, match="does not know"):
+        N.decode_record("# Royals 1\nrules teleporting\nJe4f5")
+    with pytest.raises(N.NotationError):
+        N.encode_game([], rules=("teleporting",))
+    with pytest.raises(N.NotationError, match="needs at least one"):
+        N.decode_record("# Royals 1\nrules\nJe4f5")
+    with pytest.raises(N.NotationError, match="two `rules`"):
+        N.decode_record("# Royals 1\nrules push-range\nrules push-range\nJe4f5")
+
+
+def test_decode_game_refuses_a_variant_record():
+    """The narrow reader must not silently hand back a variant game's moves as an ordinary
+    game's -- the same reason it refuses a record that begins from a set-up position."""
+    text = N.encode_game(["Pd4d5>3"], rules=(N.RULE_PUSH_RANGE,))
+    with pytest.raises(N.NotationError, match="decode_record"):
+        N.decode_game(text)
+
+
+def test_the_json_frame_carries_the_distance_too():
+    plain = N.move_to_json((25, "push", 31, False))
+    assert "travel" not in plain, "a standard push should send the frame it always sent"
+    assert N.move_from_json(plain) == (25, "push", 31, False)
+
+    ranged = N.move_to_json((25, "push", 31, False, 4))
+    assert ranged["travel"] == 4
+    assert N.move_from_json(ranged) == (25, "push", 31, False, 4)
+
+
+@pytest.mark.parametrize("what, frame", [
+    ("a jump",            {"kind": "jump", "origin": "d4", "target": "d5", "travel": 3}),
+    ("a distance of one", {"kind": "push", "origin": "d4", "target": "d5", "travel": 1}),
+    ("a string",          {"kind": "push", "origin": "d4", "target": "d5", "travel": "3"}),
+    ("a bool",            {"kind": "push", "origin": "d4", "target": "d5", "travel": True}),
+    ("out of range",      {"kind": "push", "origin": "d4", "target": "d5", "travel": 99}),
+])
+def test_a_hostile_distance_off_the_wire_is_refused(what, frame):
+    with pytest.raises(N.NotationError):
+        N.move_from_json(frame)

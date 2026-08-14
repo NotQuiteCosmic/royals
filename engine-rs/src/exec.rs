@@ -18,7 +18,7 @@
 //!   it.
 
 use crate::board::{build_space, mod_space, Board};
-use crate::movegen::{check_break, get_legal_push_length, parse_board, would_free};
+use crate::movegen::{check_break, get_legal_push_length, parse_board, push_max_travel, would_free};
 use crate::tables::{BREAKRAY, PUSHFROM, PUSHRAY, UNPACK};
 use crate::{Move, MoveKind};
 
@@ -219,6 +219,12 @@ pub fn exe_break(board: &Board, input_square: u8, direction: usize, _contr: u8) 
 /// `shatter` is whether a lone spy's shove goes on to scatter what it displaced. Always true
 /// in play; `moveFlights` (which stays in Python) turns it off to get at the board in between
 /// the shuffle and that scatter, which is the only place the scatter can be measured from.
+///
+/// `travel` is how far the mover chose to go. **`None` means one square, not the ceiling** --
+/// a move that does not mention a distance is an old one, a hand-built one, or one read back
+/// off a record written before this rule existed, and every one of those meant the one square
+/// a push has always moved. Clamped rather than trusted: a push travelling further than the
+/// rules allow would produce a board no search had ever scored.
 pub fn exe_push(
     board: &Board,
     origin: u8,
@@ -227,6 +233,7 @@ pub fn exe_push(
     moving_pris: bool,
     free_pris: bool,
     shatter: bool,
+    travel: Option<u8>,
 ) -> Board {
     // not neighbours, so there is no push to make
     let direction = match PUSHFROM[origin as usize][destination as usize] {
@@ -241,6 +248,15 @@ pub fn exe_push(
     if p_range == 0 {
         return *board;
     }
+
+    let ceiling = push_max_travel(&spaces, origin, input_data, direction, p_range, free_pris);
+    if ceiling == 0 {
+        return *board;
+    }
+    let travel = match travel {
+        None => 1,
+        Some(t) => (t as usize).clamp(1, ceiling),
+    };
 
     let o = UNPACK[input_data as usize];
 
@@ -268,7 +284,7 @@ pub fn exe_push(
 
     // grab every square the shuffle needs before touching anything
     let mut payloads = [0u16; PAYLOAD_SLOTS];
-    for n in 0..p_range + 2 {
+    for n in 0..p_range + travel + 1 {
         payloads[n] = board[line(n)];
     }
 
@@ -285,16 +301,28 @@ pub fn exe_push(
             new_payloads[2] = Some(packed(adj.side, adj.dragon, adj.spy, adj.pawns, adj.royal, 0, 0, 0));
             new_payloads[1] = Some(packed(contr, 0, adj.cap_spy, adj.cap_pawns, 0, 0, 0, 0));
         } else {
-            new_payloads[d + 1] = Some(payloads[d]);
-            new_payloads[d] = Some(0);
+            new_payloads[d + travel] = Some(payloads[d]);
+            // Only vacate what nothing else is going to land on. At travel 1 the square ahead
+            // always takes this one's place so the write order settled it; at range the line
+            // leaves a gap behind it, and a blanket zero here would erase a square the stack
+            // behind had already been written into.
+            for gap in d..(d + travel).min(p_range + 1) {
+                if new_payloads[gap].is_none() {
+                    new_payloads[gap] = Some(0);
+                }
+            }
         }
     }
 
     // and now the pushing stack itself steps forward
     if moving_pris {
         // the whole square travels, prisoners included
-        new_payloads[1] = Some(payloads[0]);
-        new_payloads[0] = Some(0);
+        new_payloads[travel] = Some(payloads[0]);
+        for gap in 0..travel {
+            if new_payloads[gap].is_none() {
+                new_payloads[gap] = Some(0);
+            }
+        }
     } else {
         // freed pieces may already be standing on the destination, so merge rather than set
         let mut new_spy = o.spy;
@@ -303,7 +331,13 @@ pub fn exe_push(
             new_spy += adj.cap_spy;
             new_pawns += adj.cap_pawns;
         }
-        new_payloads[1] = Some(packed(contr, o.dragon, new_spy, new_pawns, o.royal, 0, 0, 0));
+        new_payloads[travel] =
+            Some(packed(contr, o.dragon, new_spy, new_pawns, o.royal, 0, 0, 0));
+        for gap in 1..travel {
+            if new_payloads[gap].is_none() {
+                new_payloads[gap] = Some(0);
+            }
+        }
         // prisoners left behind go free, standing back up as a stack of their own side
         new_payloads[0] = Some(packed(1 - contr, 0, o.cap_spy, o.cap_pawns, 0, 0, 0, 0));
     }
@@ -323,7 +357,10 @@ pub fn exe_push(
     // has nothing left for a second -- so the stack it displaced is now sitting two squares
     // out, and it scatters onward from there.
     if shatter && o.spy != 0 && o.captors == 1 {
-        return exe_break(&cells, line(2) as u8 + 1, direction, contr);
+        // 1 + travel rather than a hard 2, for the reason Python says it that way: a lone
+        // spy's travel is pinned to 1 by the rule rather than by this arithmetic, and a
+        // literal 2 would go on looking right if that exception were ever dropped.
+        return exe_break(&cells, line(1 + travel) as u8 + 1, direction, contr);
     }
 
     cells
@@ -343,10 +380,11 @@ pub fn perform_one_step(board: &Board, contr: u8, mv: Move) -> Board {
     match mv.kind {
         MoveKind::Jump => exe_move(board, mv.origin, mv.target + 1, contr, mv.moving_pris),
         MoveKind::Push => {
-            exe_push(board, mv.origin, mv.target + 1, contr, mv.moving_pris, false, true)
+            exe_push(board, mv.origin, mv.target + 1, contr, mv.moving_pris, false, true,
+                     Some(mv.travel))
         }
         MoveKind::Free => {
-            exe_push(board, mv.origin, mv.target + 1, contr, mv.moving_pris, true, true)
+            exe_push(board, mv.origin, mv.target + 1, contr, mv.moving_pris, true, true, None)
         }
         MoveKind::Break => exe_break(board, mv.origin, mv.target as usize, contr),
     }
@@ -382,7 +420,7 @@ mod tests {
     #[test]
     fn shoving_the_jailer_carries_the_prisoner_along() {
         // The plain push: everything moves up one and the captured pawn stays captured.
-        let after = exe_push(&jailer(), 25, 26, 0, false, false, true);
+        let after = exe_push(&jailer(), 25, 26, 0, false, false, true, None);
         assert_eq!(
             occupied(&after),
             vec![
@@ -396,7 +434,7 @@ mod tests {
     fn freeing_leaves_the_jailer_empty_handed() {
         // The other branch onto the same square: the pawn stands back up and joins the stack
         // that walked in, and the jailer is shoved on alone.
-        let after = exe_push(&jailer(), 25, 26, 0, false, true, true);
+        let after = exe_push(&jailer(), 25, 26, 0, false, true, true, None);
         assert_eq!(
             occupied(&after),
             vec![
@@ -415,7 +453,7 @@ mod tests {
         board[24] = build_space(0, 0, 1, 0, 0, 0, 0, 0).unwrap();
         board[25] = build_space(1, 0, 0, 2, 0, 0, 0, 0).unwrap();
 
-        let after = exe_push(&board, 25, 26, 0, false, false, true);
+        let after = exe_push(&board, 25, 26, 0, false, false, true, None);
         assert_eq!(
             occupied(&after),
             vec![
@@ -426,7 +464,7 @@ mod tests {
         );
 
         // and with the scatter turned off, the displaced stack is still whole two out
-        let held = exe_push(&board, 25, 26, 0, false, false, false);
+        let held = exe_push(&board, 25, 26, 0, false, false, false, None);
         assert_eq!(
             occupied(&held),
             vec![

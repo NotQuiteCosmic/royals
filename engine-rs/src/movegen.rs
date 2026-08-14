@@ -16,7 +16,7 @@
 
 use crate::board::{Board, Square, HEADINGS, PUSH_DIRS};
 use crate::exec::Piece;
-use crate::tables::{BREAKRAY, JUMPRAY, PUSHRAY, UNPACK};
+use crate::tables::{BREAKRAY, JUMPRAY, PUSHFROM, PUSHRAY, UNPACK};
 use crate::{Move, MoveKind};
 
 /// All 49 squares unpacked, in board order. One walk of the board serves a whole node: every
@@ -260,6 +260,102 @@ pub fn get_legal_push_length(
     // Runaway backstop -- a push can't outrun the board. Falling off the end of the ray means
     // PUSH_REACH squares in a row were occupied and paid for, which is not a position.
     0
+}
+
+/// The furthest a push may travel: 1 under the standard rules, and under the push-range
+/// variant the ceiling the mover chooses beneath.
+///
+/// Mirrors `Engine.pushMaxTravel`. Legality has already been decided by the time this is
+/// asked -- `get_legal_push_length` said yes, so strength covers the line and the distance
+/// below is at least 1 before anything clips it.
+///
+/// * **the pusher's edge** — the ray wraps and the pusher may not, so it stops at the last
+///   square it can reach without the file or rank folding over. Only the pusher is clipped:
+///   the shoved pieces are further along the same ray and wrap freely, which is what makes
+///   "the pushing stack can't go off the edge, though pushed pieces can" a rule about one
+///   square rather than about the line.
+/// * **a collision** — offset `p_range` is the empty square the line stopped on. Past it
+///   there may be anything, and at range the front of the line reaches it, so the distance is
+///   cut to leave the front on the last free square before whatever it met.
+pub fn push_max_travel(
+    spaces: &Spaces,
+    input_space: u8,
+    input_data: u16,
+    dir_index: usize,
+    p_range: usize,
+    free_pris: bool,
+) -> usize {
+    if !crate::push_range() {
+        return 1;
+    }
+    if p_range == 0 {
+        return 0;
+    }
+
+    let origin = UNPACK[input_data as usize];
+
+    // A lone spy shoves anything and moves it one. It is the only thing that can touch a
+    // finished six, so this exception is what keeps the endgame alive.
+    if origin.spy != 0 && origin.captors == 1 {
+        return 1;
+    }
+
+    // Freeing stays a one-square move: the freed pieces stand up into the square the pusher
+    // walks onto, and at range there is no such square.
+    if free_pris {
+        return 1;
+    }
+
+    let ray = &PUSHRAY[input_space as usize][dir_index];
+    if ray.is_empty() {
+        return 0;
+    }
+    let ray = ray.as_slice();
+
+    let strength: i32 =
+        if origin.pris_count != 0 { origin.strength as i32 } else { origin.captors as i32 };
+    let mut line_weight: i32 = 0;
+    for n in 0..p_range {
+        line_weight += spaces[ray[n] as usize].weight as i32;
+    }
+
+    let mut distance = strength - line_weight + 1;
+    if distance < 1 {
+        return 0;
+    }
+
+    let mut room: i32 = 0;
+    for n in p_range..ray.len() {
+        if spaces[ray[n] as usize].occupied {
+            break;
+        }
+        room += 1;
+        if room >= distance {
+            break;
+        }
+    }
+    if room < distance {
+        distance = room;
+    }
+    if distance < 1 {
+        return 0;
+    }
+
+    let dir = PUSH_DIRS[dir_index];
+    let x = (input_space as i32 - 1) % 7;
+    let y = (input_space as i32 - 1) / 7;
+    let mut reach: i32 = 0;
+    while reach < distance
+        && (0..7).contains(&(x + dir[0] * (reach + 1)))
+        && (0..7).contains(&(y + dir[1] * (reach + 1)))
+    {
+        reach += 1;
+    }
+    if reach < distance {
+        distance = reach;
+    }
+
+    distance.max(0) as usize
 }
 
 /// How many squares a break out of `input_space` would cover, 0 meaning no break.
@@ -544,12 +640,42 @@ pub fn make_poss_list(spaces: &Spaces, contr: u8) -> Vec<(u8, bool)> {
 
 /// Flattens a [`CheckMoves`] into moves out of one square, in the order the contract fixes:
 /// **jumps, pushes, breaks, frees**.
-pub fn list_moves(found: &CheckMoves, origin: u8, moving_pris: bool, into: &mut Vec<Move>) {
+pub fn list_moves(
+    found: &CheckMoves,
+    origin: u8,
+    moving_pris: bool,
+    into: &mut Vec<Move>,
+    board: &Board,
+    spaces: &Spaces,
+    contr: u8,
+) {
     for &target in found.jumps.as_slice() {
         into.push(Move::new(origin, MoveKind::Jump, target, moving_pris));
     }
+    // Under the push-range variant a push is one move per distance it may travel, so a
+    // four-strength stack shoving a lone pawn offers four. Off the variant every ceiling is 1
+    // and this emits exactly the one move it always has, in the same order.
     for &target in found.pushes.as_slice() {
-        into.push(Move::new(origin, MoveKind::Push, target, moving_pris));
+        let mut ceiling = 1usize;
+        if crate::push_range() {
+            if let Some(direction) = PUSHFROM[origin as usize][target as usize + 1] {
+                let direction = direction as usize;
+                let p_range = get_legal_push_length(
+                    spaces, origin, board[origin as usize - 1], direction, contr, moving_pris,
+                    false,
+                );
+                ceiling =
+                    push_max_travel(spaces, origin, board[origin as usize - 1], direction,
+                                    p_range, false);
+            }
+        }
+        if ceiling <= 1 {
+            into.push(Move::new(origin, MoveKind::Push, target, moving_pris));
+        } else {
+            for step in 1..=ceiling {
+                into.push(Move::pushing(origin, target, moving_pris, step as u8));
+            }
+        }
     }
     // a break scatters the whole square, so there is no carrying-prisoners variant of one
     if !moving_pris {
@@ -582,7 +708,7 @@ pub fn list_all_moves(board: &Board, contr: u8, spaces: &Spaces) -> Vec<Move> {
             // breaking out is the only thing check_moves will offer back
             let t_origin = make_origin(board, origin, false, true);
             if let Some(found) = check_moves(&t_origin, contr, spaces) {
-                list_moves(&found, origin, false, &mut everything);
+                list_moves(&found, origin, false, &mut everything, board, spaces, contr);
             }
             continue;
         }
@@ -593,7 +719,7 @@ pub fn list_all_moves(board: &Board, contr: u8, spaces: &Spaces) -> Vec<Move> {
         for &moving_pris in carrying {
             let t_origin = make_origin(board, origin, moving_pris, false);
             if let Some(found) = check_moves(&t_origin, contr, spaces) {
-                list_moves(&found, origin, moving_pris, &mut everything);
+                list_moves(&found, origin, moving_pris, &mut everything, board, spaces, contr);
             }
         }
     }
