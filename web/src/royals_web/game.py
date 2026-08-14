@@ -20,14 +20,19 @@ derived by subtracting it from one. Two people playing each other has no such fi
 question a request answers is not "is this the human's turn" but "is the side to move
 the seat this token belongs to". Nothing about the rules changed; only who may ask.
 
-One thing worth knowing before changing anything here: **validating a move needs no
-engine globals at all.** AI.listAllMoves and AI.performOneStep are pure, and the ko rule
-is enforced by testing membership of a plain set that this module owns. Engine.koTrack
-and the transposition table are touched in exactly one place in the whole web app --
-inside an AI worker process, in ai_pool.py. That is what makes concurrent games safe
-here without refactoring the engine.
+One thing worth knowing before changing anything here: **validating a move needs one
+engine global and no others.** The ko rule is enforced by testing membership of a plain
+set that this module owns; Engine.koTrack and the transposition table are touched in
+exactly one place in the whole web app -- inside an AI worker process, in ai_pool.py.
+
+The exception is the push-range rule. `Engine.PUSH_RANGE` is a module global mirrored
+into the compiled engine's own static, and `AI.listAllMoves`/`AI.performOneStep` read it
+rather than taking it as an argument -- so the two functions that reach them here set it
+first and put it back afterwards. See `_rules` below, which is where the whole of that
+discipline lives. It is deliberately not a thing call sites do for themselves.
 """
 
+import contextlib
 import secrets
 import time
 import uuid
@@ -109,7 +114,47 @@ class GameOver(Exception):
 # Legality -- the single source of truth
 # ---------------------------------------------------------------------------
 
-def legal_moves(board, contr, ko_boards):
+@contextlib.contextmanager
+def _rules(push_range):
+    """Hold the engine to one game's rule set for the length of one engine call.
+
+    `Engine.PUSH_RANGE` is a module global, mirrored into the compiled engine's own static
+    by `setPushRange`. The desktop gets away with that because it plays one game at a time;
+    a server does not, and two games in one process would otherwise share whichever rule set
+    was set last.
+
+    **The two functions below are the only users of this, and that is the design rather than
+    an accident.** Both are synchronous, so the flag is set and put back inside one stretch
+    of the event loop that nothing else can interleave with -- there is no `await` between
+    them and so no way for another request to observe the value mid-call. A context manager
+    wrapped around a *call site* would not have that property: `main._advance` loops with
+    `await pool.take_turn(...)` in it, and holding the rule set across that await is exactly
+    the bug this shape makes unavailable.
+
+    Restored in a `finally` for the same reason `royals_engine.record.positions` does it: a
+    request that raised part way through a variant game would otherwise leave the rule
+    switched on for whatever the process did next.
+    """
+    was = Engine.PUSH_RANGE
+    Engine.setPushRange(push_range)
+    try:
+        yield
+    finally:
+        Engine.setPushRange(was)
+
+
+def _apply(board, contr, move, *, push_range=False):
+    """Play one move and return the board it makes, under this game's rules.
+
+    `AI.performOneStep` on its own is the standard game: `pushMaxTravel` short-circuits to
+    one square when the flag is off, so a ranged push would be silently clamped and the
+    board that came back would be a position nobody played to.
+    """
+    with _rules(push_range):
+        return AI.performOneStep(board, contr, move)
+
+
+def legal_moves(board, contr, ko_boards, *, push_range=False):
     """Every move `contr` may actually play here.
 
     The ko filter is not optional and not a detail. A side can have moves in the sense
@@ -127,9 +172,16 @@ def legal_moves(board, contr, ko_boards):
     is a superset of this: every legal move, plus any that the ko filter above strikes off.
     It is drawn immediately and then reconciled against this one, which can only ever take
     squares away. Deciding and answering are different jobs; this is the one that decides.
+
+    `push_range` is which rule set to decide under, and it is keyword-only so that a call
+    site has to name it. Deciding what is legal is what this function is for, and the rule
+    set is part of that -- so it belongs in the signature rather than in whatever the
+    process global happened to be. tests/test_web_api.py checks by AST that every call in
+    the web package passes it.
     """
-    return [m for m in AI.listAllMoves(board, contr)
-            if AI.performOneStep(board, contr, m) not in ko_boards]
+    with _rules(push_range):
+        return [m for m in AI.listAllMoves(board, contr)
+                if AI.performOneStep(board, contr, m) not in ko_boards]
 
 
 def entering_options(board, contr, piece):
@@ -195,6 +247,13 @@ class Game:
     # because a game between two people is created before either of them has entered anything
     # -- there is nothing in an empty move list to tell the two openings apart.
     random_entry: bool = False
+
+    # The push-range variant: a push carries as far as the mover's strength beats what it
+    # shoves, and the mover picks the distance. Stored for the same reason random_entry is,
+    # and more sharply -- a move list only betrays the variant once a ranged push has
+    # actually been played, so a game that has one and has not used it yet is
+    # indistinguishable from a standard game by its moves alone.
+    push_range: bool = False
 
     # side -> Seat. Always both sides; for an ai game one of them is the computer.
     seats: dict = field(default_factory=dict)
@@ -490,7 +549,7 @@ def play_move(game, move, side=None):
     if side is not None and side != contr:
         raise IllegalMove("it is %s's turn" % SIDE_NAMES[contr])
 
-    legal = legal_moves(game.board, contr, game.ko_set())
+    legal = legal_moves(game.board, contr, game.ko_set(), push_range=game.push_range)
 
     if move is None:
         # A pass is legal only when there is genuinely nothing to play.
@@ -518,7 +577,7 @@ def play_move(game, move, side=None):
         raise IllegalMove("that is not a legal move")
 
     game.passes = 0
-    new_board = AI.performOneStep(game.board, contr, move)
+    new_board = _apply(game.board, contr, move, push_range=game.push_range)
 
     game.board = new_board
     game.moves.append(N.encode_move(move))
@@ -719,7 +778,7 @@ class Position:
     turn: int                   # 1-based within the phase; 0 before anything
 
 
-def positions(moves, board=None, turn=None):
+def positions(moves, board=None, turn=None, rules=()):
     """Walk a move list and return (every position it passed through, the game it made).
 
     `len(moves) + 1` positions: the board before any ply, then one after each.
@@ -736,6 +795,14 @@ def positions(moves, board=None, turn=None):
     move. They are the same pair `royals_engine.record.positions` takes, and the two walks
     have to agree about them as they agree about everything else -- tests/test_record.py.
 
+    `rules` is the fourth thing `decode_record` reads, and it is the same argument
+    `royals_engine.record.positions` takes, for the same reason: without it a push-range
+    game replays with the variant off, every ranged push clamps to one square, and the
+    boards handed back are a game nobody played -- convincingly, since the piece counts all
+    still add up. It goes onto the throwaway Game below rather than being held open around
+    the walk, so `_walk` -> `place`/`play_move` -> `legal_moves` carries it the same way a
+    live game does, through exactly one path.
+
     The returned game is the one the moves alone describe, which is not quite the one that
     was played: a resignation leaves no trace in a move list, so a caller holding the
     stored game should report *its* ending rather than this one's.
@@ -743,11 +810,16 @@ def positions(moves, board=None, turn=None):
     if (board is None) != (turn is None):
         raise ReplayError("a start position is a board and a side to move, or neither")
 
+    for rule in rules:
+        if rule not in N.KNOWN_RULES:
+            raise ReplayError("%r is not a rule this engine knows" % (rule,))
+
     stored = list(moves)
     enter_plies = len(ENTER_STEPS) if board is None else 0
 
     game = Game(id="", mode="human", ai_depth=None, entry_seed=0, entry_noise=0.5,
                 board=Hasher.Entering_Board() if board is None else board,
+                push_range=N.RULE_PUSH_RANGE in rules,
                 seats={BLUE: Seat(kind=HUMAN, claimed=True),
                        RED: Seat(kind=HUMAN, claimed=True)})
     if board is None:
@@ -857,7 +929,7 @@ def moves_from(game, origin, moving_pris=False):
         return []
 
     contr = game.turn % 2
-    legal = legal_moves(game.board, contr, game.ko_set())
+    legal = legal_moves(game.board, contr, game.ko_set(), push_range=game.push_range)
     return [m for m in legal
             if m[AI.MOVE_ORIGIN] == origin and bool(m[AI.MOVE_PRIS]) == bool(moving_pris)]
 
@@ -868,7 +940,8 @@ def movable_origins(game):
         return []
     contr = game.turn % 2
     return sorted({m[AI.MOVE_ORIGIN]
-                   for m in legal_moves(game.board, contr, game.ko_set())})
+                   for m in legal_moves(game.board, contr, game.ko_set(),
+                                        push_range=game.push_range)})
 
 
 def to_json(game, viewer_side=None, include_legal=True):
@@ -927,7 +1000,7 @@ def to_json(game, viewer_side=None, include_legal=True):
 
     if game.phase == "playing" and include_legal:
         contr = game.turn % 2
-        legal = legal_moves(game.board, contr, game.ko_set())
+        legal = legal_moves(game.board, contr, game.ko_set(), push_range=game.push_range)
         state["mustPass"] = not legal
         if awaiting_you:
             state["origins"] = [N.square_to_alg(s)

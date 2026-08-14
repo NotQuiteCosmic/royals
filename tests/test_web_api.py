@@ -7,6 +7,8 @@ when passing isn't allowed, and a board the client would like to substitute for 
 real one.
 """
 
+import pathlib
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -2196,3 +2198,204 @@ def test_the_page_skips_the_header_when_it_counts_plies():
     for keyword in (N.TURN_KEY, N.BOARD_KEY):
         assert '"%s"' % keyword in source, \
             "app.js does not know about the %r header line" % (keyword,)
+
+
+# ---------------------------------------------------------------------------
+# The push-range variant, and the one engine global the web app touches
+#
+# `Engine.PUSH_RANGE` is a module global mirrored into the compiled engine's own static.
+# The desktop gets away with that because it plays one game at a time; this server does
+# not. game.py answers by setting it inside the two functions that reach the engine and
+# putting it back afterwards -- so what these tests hold is not "the variant works" (the
+# goldens do that) but "one game's rule set cannot become another game's".
+# ---------------------------------------------------------------------------
+
+def variant_record():
+    """A one-move record of a push that travels three squares, and the board it makes."""
+    board = list(Hasher.EMPTY_BOARD)
+    for alg, spec in (("b4", (0, 0, 0, 4, 0)), ("c4", (1, 0, 0, 1, 0)),
+                      ("a1", (0, 0, 0, 0, 1)), ("g7", (1, 0, 0, 0, 1))):
+        board[Hasher.AlgebraToSquare(alg) - 1] = Hasher.Build_Space(*spec)
+    board = tuple(board)
+
+    was = Engine.PUSH_RANGE
+    Engine.setPushRange(True)
+    try:
+        move = next(m for m in AI.listAllMoves(board, 0)
+                    if m[0] == Hasher.AlgebraToSquare("b4") and m[1] == "push"
+                    and len(m) > 4 and m[4] == 3)
+        played = AI.performOneStep(board, 0, move)
+    finally:
+        Engine.setPushRange(was)
+
+    text = N.encode_game([N.encode_move(move)], board=board, turn=0,
+                         rules=(N.RULE_PUSH_RANGE,))
+    return text, played
+
+
+def test_positions_replays_a_variant_record_under_its_own_rules():
+    text, played = variant_record()
+    moves, board, turn, rules = N.decode_record(text)
+
+    spots, _game = G.positions(moves, board, turn, rules)
+    assert spots[-1].board == played
+
+
+def test_the_same_record_without_its_rules_line_is_refused_outright():
+    """Why /api/review may not simply ignore the header -- and the one place this walk is
+    stricter than the engine's.
+
+    `royals_engine.record.positions` applies plies without generating moves, so stripping
+    the header there produces a *different board*: every ranged push clamps to one square
+    and the piece counts still add up (tests/test_push_range.py). This walk goes through
+    `play_move`, which re-derives legality, and under the standard rules a five-tuple push
+    is not in `legal_moves` at all -- so the record is refused rather than quietly
+    re-interpreted. Both walks reject the file; only this one can say why.
+    """
+    text, _played = variant_record()
+    stripped = "\n".join(l for l in text.splitlines()
+                         if not l.startswith(N.RULES_KEY + " "))
+
+    moves, board, turn, rules = N.decode_record(stripped)
+    assert rules == ()
+    with pytest.raises(G.ReplayError):
+        G.positions(moves, board, turn, rules)
+
+
+def test_a_walk_puts_the_rule_flag_back():
+    text, _played = variant_record()
+    moves, board, turn, rules = N.decode_record(text)
+
+    was = Engine.PUSH_RANGE
+    G.positions(moves, board, turn, rules)
+    assert Engine.PUSH_RANGE is was, "the walk left the rule switched on"
+
+
+def test_a_walk_that_raises_puts_the_rule_flag_back():
+    """The leak that would matter most, because nothing downstream would report it."""
+    text, _played = variant_record()
+    moves, board, turn, rules = N.decode_record(text)
+
+    was = Engine.PUSH_RANGE
+    with pytest.raises(Exception):
+        G.positions(moves + ["Ja1b2"], board, turn, rules)
+    assert Engine.PUSH_RANGE is was, "a failed walk left the rule switched on"
+
+
+def test_positions_refuses_a_rule_it_does_not_know():
+    with pytest.raises(G.ReplayError):
+        G.positions([], rules=("teleporting-dragons",))
+
+
+def test_an_ambient_push_range_does_not_reach_a_standard_game():
+    """Nothing may read the process-wide value. `ROYALS_PUSH_RANGE=1` in the environment
+    sets it at import, and a standard game served by that process must be unaffected."""
+    board = list(Hasher.EMPTY_BOARD)
+    for alg, spec in (("b4", (0, 0, 0, 4, 0)), ("c4", (1, 0, 0, 1, 0))):
+        board[Hasher.AlgebraToSquare(alg) - 1] = Hasher.Build_Space(*spec)
+    board = tuple(board)
+
+    was = Engine.PUSH_RANGE
+    Engine.setPushRange(True)
+    try:
+        standard = G.legal_moves(board, 0, set())
+    finally:
+        Engine.setPushRange(was)
+
+    assert all(len(m) == 4 for m in standard), \
+        "a standard game saw the ambient rule set"
+    assert Engine.PUSH_RANGE is was
+
+
+def test_two_games_with_different_rules_do_not_share_a_rule_set():
+    """The test that would have caught the design flaw. Two games in one process, asked
+    alternately, each has to get its own answer."""
+    board = list(Hasher.EMPTY_BOARD)
+    for alg, spec in (("b4", (0, 0, 0, 4, 0)), ("c4", (1, 0, 0, 1, 0))):
+        board[Hasher.AlgebraToSquare(alg) - 1] = Hasher.Build_Space(*spec)
+    board = tuple(board)
+
+    for _ in range(3):
+        plain = G.legal_moves(board, 0, set(), push_range=False)
+        ranged = G.legal_moves(board, 0, set(), push_range=True)
+        assert all(len(m) == 4 for m in plain), "the standard game saw the variant"
+        assert any(len(m) > 4 for m in ranged), "the variant game saw the standard rules"
+        assert len(ranged) > len(plain)
+
+
+# ---------------------------------------------------------------------------
+# The discipline itself, checked by reading the source
+#
+# In the shape of test_engine_purity.py, and here rather than there because that file is
+# scoped to the engine directory by its own test_engine_directory_is_where_we_think.
+# ---------------------------------------------------------------------------
+
+def _web_sources():
+    from royals_web.main import STATIC_DIR
+    package = STATIC_DIR.parent
+    return sorted(p for p in package.rglob("*.py"))
+
+
+def test_the_rule_context_is_used_in_exactly_two_places():
+    """`_rules` is a scoping device, not a convenience. The moment a third caller appears
+    the argument that makes it safe -- that it is only ever held inside one synchronous
+    engine call -- stops being checkable by reading two functions."""
+    import ast
+
+    source = (pathlib.Path(G.__file__)).read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=G.__file__)
+
+    holders = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name) \
+                    and inner.func.id == "_rules":
+                holders.add(node.name)
+
+    assert holders == {"legal_moves", "_apply"}, \
+        "the rule set is held somewhere new: %s" % (sorted(holders),)
+
+
+def test_the_rule_set_is_never_held_across_an_await():
+    """The property that makes a process global safe here. A `with _rules(...)` containing
+    an await would hand the event loop to another request mid-call, and that request would
+    play by this game's rules."""
+    import ast
+
+    for path in _web_sources():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.With, ast.AsyncWith)):
+                continue
+            uses_rules = any(
+                isinstance(item.context_expr, ast.Call)
+                and isinstance(item.context_expr.func, ast.Name)
+                and item.context_expr.func.id == "_rules"
+                for item in node.items)
+            if not uses_rules:
+                continue
+            for inner in ast.walk(node):
+                assert not isinstance(inner, ast.Await), \
+                    "%s holds the rule set across an await, at line %d" % (path.name, node.lineno)
+
+
+def test_every_call_to_legal_moves_names_its_rule_set():
+    """What makes the keyword-only default safe. Omitting `push_range` is not an error, it
+    is a game quietly played by the standard rules -- so the check is that no call site in
+    the package omits it."""
+    import ast
+
+    for path in _web_sources():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else \
+                (func.attr if isinstance(func, ast.Attribute) else None)
+            if name != "legal_moves":
+                continue
+            assert any(kw.arg == "push_range" for kw in node.keywords), \
+                "%s:%d calls legal_moves without naming push_range" % (path.name, node.lineno)

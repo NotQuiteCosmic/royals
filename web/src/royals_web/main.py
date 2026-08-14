@@ -453,7 +453,10 @@ async def _advance(game):
             continue
 
         contr = game.turn % 2
-        legal = G.legal_moves(game.board, contr, game.ko_set())
+        # The one call in the web app that hands legal_moves a board rather than a game, so
+        # the one that has to name the rule set itself. Everything else in game.py already
+        # holds the Game and reads game.push_range from it.
+        legal = G.legal_moves(game.board, contr, game.ko_set(), push_range=game.push_range)
         if not legal:
             G.play_move(game, None, side=contr)
             continue
