@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS games (
     entry_seed   INTEGER NOT NULL,
     entry_noise  REAL    NOT NULL,
     random_entry INTEGER NOT NULL DEFAULT 0,
+    push_range   INTEGER NOT NULL DEFAULT 0,
     moves        TEXT    NOT NULL,
     ply          INTEGER NOT NULL,
     seat0_kind   TEXT    NOT NULL,
@@ -93,7 +94,7 @@ CREATE INDEX IF NOT EXISTS games_updated ON games (updated_at);
 
 COLUMNS = (
     "id", "version", "mode", "ai_depth", "entry_seed", "entry_noise", "random_entry",
-    "moves", "ply",
+    "push_range", "moves", "ply",
     "seat0_kind", "seat0_hash", "seat0_claimed", "seat0_name",
     "seat1_kind", "seat1_hash", "seat1_claimed", "seat1_name",
     "invite_hash", "result", "termination", "created_at", "updated_at",
@@ -113,6 +114,12 @@ def to_row(game):
         # joined yet has an empty move list, and an empty move list looks the same either
         # way -- so whether the pieces are to be dealt has to be written down.
         "random_entry": int(game.random_entry),
+        # The other setting the move list cannot speak for, and it is worse than
+        # random_entry rather than merely similar: a variant game betrays itself only once
+        # a ranged push has actually been played, so a game that has the rule and has not
+        # used it yet is indistinguishable from a standard one by its moves. Derived rather
+        # than stored, it would silently become a standard game on the next load.
+        "push_range": int(game.push_range),
         "moves": " ".join(game.moves),
         # Stored, not derived, and that is the point: a prefix of a legal game replays
         # perfectly, so the length is the one thing the move list cannot check itself.
@@ -135,6 +142,7 @@ def from_row(row):
         id=row["id"], mode=row["mode"], ai_depth=row["ai_depth"],
         entry_seed=row["entry_seed"], entry_noise=row["entry_noise"],
         random_entry=bool(row["random_entry"]),
+        push_range=bool(row["push_range"]),
         moves=row["moves"], ply=row["ply"],
         seats={
             G.BLUE: G.Seat(kind=row["seat0_kind"], token_hash=row["seat0_hash"],
@@ -227,7 +235,11 @@ class Database:
         for column, ddl in (("seat0_name", "TEXT"), ("seat1_name", "TEXT"),
                             # The default is what an older row means: every game written
                             # before this column existed had its squares picked by hand.
-                            ("random_entry", "INTEGER NOT NULL DEFAULT 0")):
+                            ("random_entry", "INTEGER NOT NULL DEFAULT 0"),
+                            # Likewise: every game written before this column existed was
+                            # played under the standard rules, because they were the only
+                            # ones this server offered.
+                            ("push_range", "INTEGER NOT NULL DEFAULT 0")):
             if column not in have:
                 log.info("migrating %s: adding games.%s", self.path, column)
                 self._run(f"ALTER TABLE games ADD COLUMN {column} {ddl}")

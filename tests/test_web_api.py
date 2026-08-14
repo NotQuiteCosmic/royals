@@ -892,7 +892,10 @@ def played_out(seed=2, plies=20, **kwargs):
         if game.phase != "playing":
             break
         contr = game.turn % 2
-        legal = G.legal_moves(game.board, contr, game.ko_set())
+        # push_range, because played_out takes **kwargs and a caller may well ask for a
+        # variant game -- in which case generating its moves under the standard rules would
+        # quietly play a different game than the one it built.
+        legal = G.legal_moves(game.board, contr, game.ko_set(), push_range=game.push_range)
         G.play_move(game, rng.choice(legal) if legal else None, side=contr)
     return game
 
@@ -2431,3 +2434,131 @@ def test_a_standard_review_says_it_has_no_rules(client, game):
     res = client.post("/api/review", json={"record": position_record()})
     assert res.status_code == 200, res.text
     assert res.json()["rules"] == []
+
+
+def test_an_older_database_gains_the_push_range_column(tmp_path):
+    """The same migration the random_entry column needed, and the same trap: SCHEMA's
+    CREATE TABLE IF NOT EXISTS does nothing to a table that already exists, so without a
+    line in _migrate the column appears only in databases created after it."""
+    import sqlite3
+    from royals_web.persist import Database, SCHEMA
+
+    path = str(tmp_path / "old.db")
+    old = sqlite3.connect(path)
+    old.executescript(SCHEMA.replace("    push_range   INTEGER NOT NULL DEFAULT 0,\n", ""))
+    old.commit()
+    old.close()
+
+    assert "push_range" not in _columns(path)
+
+    db = Database(path)
+    try:
+        assert "push_range" in _columns(path)
+        game = G.new_game(mode="human", side=0, push_range=True)[0]
+        db.save(game)
+        back = db.load(game.id)
+        assert back.push_range is True, "the rule set did not survive a round trip"
+    finally:
+        db.close()
+
+
+def test_a_variant_game_is_created_and_says_so(client):
+    res = client.post("/api/games",
+                      json={"mode": "ai", "side": 0, "difficulty": "novice",
+                            "noise": 0.5, "pushRange": True})
+    assert res.status_code == 200, res.text
+    assert res.json()["state"]["rules"] == [N.RULE_PUSH_RANGE]
+
+
+def test_a_game_created_without_the_flag_is_the_standard_game(client, game):
+    assert game["rules"] == []
+
+
+def _in_play(client, push_range=False):
+    """A human-vs-human game past the entering phase: (state, headers of whoever moves)."""
+    made = client.post("/api/games",
+                       json={"mode": "human", "side": 0, "pushRange": push_range}).json()
+    blue = {"X-Royals-Seat": made["seatToken"]}
+    joined = client.post("/api/games/%s/join" % made["state"]["id"],
+                         json={"invite": made["inviteToken"]}).json()
+    red = {"X-Royals-Seat": joined["seatToken"]}
+
+    state = enter_all(client, joined["state"], {0: blue, 1: red})
+    return state, (blue if state["sideToMove"] == 0 else red)
+
+
+def _a_push(client, state, headers):
+    """The first push the side to move has, as the server offers it."""
+    fresh = client.get("/api/games/%s" % state["id"], headers=headers).json()
+    for origin in fresh["origins"]:
+        moves = client.get("/api/games/%s/moves?origin=%s" % (state["id"], origin),
+                           headers=headers).json()["moves"]
+        for m in moves:
+            if m["kind"] == "push":
+                return m
+    return None
+
+
+def test_a_travel_sent_to_a_standard_game_is_refused(client):
+    """It fails safe rather than being ignored. Under the standard rules the five-tuple is
+    not in legal_moves at all, so the move is refused instead of quietly played as one
+    square -- and being played as one square is the failure that would matter, because
+    nothing downstream would report it."""
+    state, headers = _in_play(client)
+    push = _a_push(client, state, headers)
+    assert push, "no push to test with"
+    assert "travel" not in push, "a standard game offered a distance"
+
+    res = client.post("/api/games/%s/move" % state["id"],
+                      json={"kind": "push", "origin": push["origin"],
+                            "target": push["target"], "travel": 3},
+                      headers=headers)
+    assert res.status_code == 422, res.text
+
+
+def test_the_request_model_carries_a_distance_through_to_the_engine():
+    """The whole point of MoveIn.travel, tested where the failure would actually happen.
+
+    Without the field pydantic drops it while validating the body -- before
+    move_from_json is ever reached -- and the five-tuple never forms. The move is then a
+    one-square push: well-formed, legal, accepted, and not the move that was clicked.
+    Nothing downstream reports it, which is why this is worth a test of its own rather
+    than being left to an end-to-end case.
+
+    The two lines below are exactly what main.py's move handler does with the body.
+    """
+    from royals_web.main import MoveIn
+
+    body = MoveIn(kind="push", origin="b4", target="c4", travel=3)
+    dumped = body.model_dump(exclude_none=True, exclude={"expectedVersion"})
+    assert dumped.get("travel") == 3, "pydantic dropped the distance"
+
+    move = N.move_from_json(dumped)
+    assert len(move) == 5 and move[4] == 3, "the distance did not reach the engine tuple"
+
+    # and a push with no distance is still the four-tuple it has always been, so a client
+    # that has never heard of the variant sends what it always sent
+    plain = MoveIn(kind="push", origin="b4", target="c4")
+    plain_dump = plain.model_dump(exclude_none=True, exclude={"expectedVersion"})
+    assert "travel" not in plain_dump
+    assert len(N.move_from_json(plain_dump)) == 4
+
+
+def test_a_distance_the_notation_refuses_is_refused_here_too(client):
+    """MoveIn declares `travel` with no constraints on purpose -- move_from_json is the one
+    place that rule lives, and a second looser copy would be the one that drifted. This is
+    the check that the bare declaration did not lose the validation along with it.
+
+    Asked of a *variant* game, so that a refusal is the notation's doing rather than
+    legality's: 3 would be accepted here, and 1, 0, 7 and -2 are refused for what they are.
+    """
+    state, headers = _in_play(client, push_range=True)
+    push = _a_push(client, state, headers)
+    assert push, "no push to test with"
+
+    for bad in (1, 0, 7, -2):
+        res = client.post("/api/games/%s/move" % state["id"],
+                          json={"kind": "push", "origin": push["origin"],
+                                "target": push["target"], "travel": bad},
+                          headers=headers)
+        assert res.status_code == 422, "travel=%r was accepted: %s" % (bad, res.text)

@@ -94,23 +94,31 @@ def _worker_init():
     AI.TABLE_LIMIT = SERVER_TABLE_LIMIT
 
 
-def _load_game_state(ko_boards):
-    """Make this worker's engine globals describe exactly one game, and no other."""
+def _load_game_state(ko_boards, push_range=False):
+    """Make this worker's engine globals describe exactly one game, and no other.
+
+    The push-range rule joins koTrack and the tables here rather than anywhere else for the
+    reason engine.py gives: it may change between games and never within one, and a search
+    that saw it move would score half its tree by one rule set and half by another. This is
+    where a game begins, so this is where it is chosen.
+    """
     Engine.koTrack.clear()
     Engine.koTrack.update(ko_boards)
     Engine.koGeneration = len(ko_boards)
+    Engine.setPushRange(push_range)
     AI.newGame()
 
 
 def _clear_game_state():
     Engine.koTrack.clear()
+    Engine.setPushRange(False)
     AI.newGame()
 
 
-def take_turn(board, contr, depth, ko_boards):
+def take_turn(board, contr, depth, ko_boards, push_range=False):
     """Choose and play one move. Returns (board, move, score, nodes, seconds)."""
     AI.TABLE_LIMIT = SERVER_TABLE_LIMIT
-    _load_game_state(ko_boards)
+    _load_game_state(ko_boards, push_range)
     try:
         started = time.monotonic()
         new_board, move, score = AI.takeTurn(board, contr, depth)
@@ -190,8 +198,8 @@ class AIPool:
             self._inflight -= 1
             self._permits.release()
 
-    async def take_turn(self, board, contr, depth, ko_boards):
-        return await self._run(take_turn, board, contr, depth, list(ko_boards))
+    async def take_turn(self, board, contr, depth, ko_boards, push_range=False):
+        return await self._run(take_turn, board, contr, depth, list(ko_boards), push_range)
 
     async def choose_entry(self, board, contr, piece, is_spy, seed, noise, step):
         # Entering is cheap, but it goes through the same pool so there is one code path

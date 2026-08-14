@@ -341,6 +341,10 @@ class NewGame(BaseModel):
     # the coercion -- it changes who chooses, not what is legal, and every square it produces
     # goes through the same `place` a clicked one does.
     randomEntry: bool = False
+    # The push-range variant. Like randomEntry there is nothing to validate beyond the
+    # coercion: it changes what a push may do, and every push it produces still goes through
+    # the same `legal_moves` an ordinary one does.
+    pushRange: bool = False
     # Optional[str], not `str = None`. Pydantic treats the latter as a required string
     # that happens to have a default: leaving the field out is fine, but *sending* null
     # is a validation error. A browser form with an empty box sends null, so the shape
@@ -372,6 +376,15 @@ class MoveIn(BaseModel):
     target: Optional[str] = Field(default=None, max_length=2)
     dir: Optional[str] = Field(default=None, max_length=1)
     pris: bool = False
+    # How far a push travels, under the push-range rule. **Declared with no constraints on
+    # purpose**: notation.move_from_json already validates it hostilely -- push-only, an int
+    # and not a bool, 2 to 6, absent meaning one square -- and one rule in one place is the
+    # whole point of that function. A second, looser copy here would be the one that drifted.
+    #
+    # It has to exist, though. Without the field pydantic drops it before move_from_json ever
+    # sees it, and every ranged push is played as a one-square push: legal, accepted, and the
+    # wrong move.
+    travel: Optional[int] = None
     # Optional, and only ever a safety net. A client that retries a move it already
     # landed -- a flaky phone connection is enough -- would otherwise play twice if the
     # position happens to make the same move legal again.
@@ -462,7 +475,7 @@ async def _advance(game):
             continue
 
         _, move, _, _, _ = await pool.take_turn(
-            game.board, contr, game.ai_depth, game.ko_boards)
+            game.board, contr, game.ai_depth, game.ko_boards, game.push_range)
         # takeTurn answers None when every move it has breaks ko; that is a pass.
         G.play_move(game, move, side=contr)
 
@@ -569,7 +582,8 @@ async def create_game(body: NewGame, request: Request):
 
     game, seat_token, invite_token = G.new_game(
         mode=body.mode, side=body.side, difficulty=body.difficulty,
-        entry_noise=body.noise, name=body.name, random_entry=body.randomEntry)
+        entry_noise=body.noise, name=body.name, random_entry=body.randomEntry,
+        push_range=body.pushRange)
     store.put(game)
     await _advance(game)
     store.put(game)     # again after advancing: the store is write-through from M3.2 on

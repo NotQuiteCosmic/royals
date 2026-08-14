@@ -351,7 +351,7 @@ class Game:
 
 
 def new_game(mode="ai", side=BLUE, difficulty=DEFAULT_DIFFICULTY, entry_noise=0.5,
-             entry_seed=None, rng=None, name=None, random_entry=False):
+             entry_seed=None, rng=None, name=None, random_entry=False, push_range=False):
     """Start a game and return (game, seat_token, invite_token).
 
     `side` is the side the *creator* takes, or "random". The tokens are returned here and
@@ -384,6 +384,7 @@ def new_game(mode="ai", side=BLUE, difficulty=DEFAULT_DIFFICULTY, entry_noise=0.
         entry_seed=int(entry_seed),
         entry_noise=entry_noise,
         random_entry=bool(random_entry),
+        push_range=bool(push_range),
         board=Hasher.Entering_Board(),
         invite_hash=S.hash_token(invite_token) if invite_token else None,
         seats={
@@ -661,7 +662,8 @@ class ReplayError(Exception):
 
 def replay(*, id, mode, ai_depth, entry_seed, entry_noise, moves, seats,
            invite_hash=None, result=None, termination=None, ply=None,
-           version=0, created_at=None, updated_at=None, random_entry=False):
+           version=0, created_at=None, updated_at=None, random_entry=False,
+           push_range=False):
     """Rebuild a game by playing its moves again through `place` and `play_move`.
 
     This is the load path, and it is a replay rather than a deserialization on purpose.
@@ -692,6 +694,7 @@ def replay(*, id, mode, ai_depth, entry_seed, entry_noise, moves, seats,
         id=id, mode=mode, ai_depth=ai_depth,
         entry_seed=int(entry_seed), entry_noise=float(entry_noise),
         random_entry=bool(random_entry),
+        push_range=bool(push_range),
         board=Hasher.Entering_Board(), seats=dict(seats), invite_hash=invite_hash,
     )
 
@@ -968,6 +971,9 @@ def to_json(game, viewer_side=None, include_legal=True):
                   for side, seat in game.seats.items()},
         "aiDepth": game.ai_depth,
         "randomEntry": game.random_entry,
+        # Which optional rules this game is played under, in the shape a record header uses
+        # rather than a bare boolean, so the page and the file say the same word.
+        "rules": [N.RULE_PUSH_RANGE] if game.push_range else [],
         "sideToMove": game.side_to_move,
         "awaitingYou": awaiting_you,
         "moves": list(game.moves),
