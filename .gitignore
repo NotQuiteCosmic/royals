@@ -33,4 +33,5 @@ main.pyc
 
 # Tuning runs and match results are outputs, not source; the pool and the book are tracked
 tuning/runs/
-tuning/results/
+tuning/results/*
+!tuning/results/verdicts.jsonl

@@ -177,3 +177,41 @@ def test_spsa_step_schedule_ends_at_r_end():
     run = P.SPSA("unit2", W.default(), ["GROUP_PENALTY"], iterations=1000, depth=1)
     n = run.iterations
     assert math.isclose(run.a_k("GROUP_PENALTY", n) / run.c_k("GROUP_PENALTY", n) ** 2, P.R_END)
+
+
+# ---------------------------------------------------------------------------
+# queue.py: finishes what is left, records each job once, does nothing twice
+# ---------------------------------------------------------------------------
+
+from tuning import queue as Q  # noqa: E402
+
+
+def test_queue_runs_to_completion_and_is_idempotent(tmp_path):
+    import json
+    book = tmp_path / "book.jsonl"
+    with open(book, "w") as f:
+        for seed in (3, 11):
+            f.write(json.dumps(O.make_opening(seed, noise=0.5).to_row()) + "\n")
+    a = tmp_path / "a.json"; b = tmp_path / "b.json"
+    W.save(W.default(), str(a)); W.save({"DIAG_WEIGHT": 0}, str(b))
+    out = tmp_path / "r.jsonl"
+    queue = tmp_path / "queue.jsonl"
+    verdicts = tmp_path / "verdicts.jsonl"
+    with open(queue, "w") as f:
+        f.write(json.dumps({"id": "m", "mode": "match", "a": str(a), "b": str(b), "depth": 1,
+                            "pairs": 2, "ply_cap": 4, "book": str(book), "out": str(out)}) + "\n")
+        f.write(json.dumps({"id": "s", "mode": "sprt", "a": str(a), "b": str(b), "depth": 1,
+                            "elo0": 0, "elo1": 10, "max_pairs": 2, "ply_cap": 4,
+                            "book": str(book), "out": str(out)}) + "\n")
+
+    recorded = Q.run(str(queue), str(verdicts), workers=2)
+    assert [v["id"] for v in recorded] == ["m", "s"]
+    assert recorded[0]["pairs"] == 2 and recorded[0]["target"] == 2
+    assert recorded[1]["sprt"] in ("H0", "H1", "inconclusive")
+    # the two jobs share a results file but not a tag, so neither borrowed the other's pairs
+    assert sum(1 for _ in open(out)) == 4
+    # a second run has nothing to do and records nothing
+    assert Q.run(str(queue), str(verdicts), workers=2) == []
+    assert len(Q.load_verdicts(str(verdicts))) == 2
+    for job in Q.load_jobs(str(queue)):
+        assert Q.progress_of(job)[0] is True
