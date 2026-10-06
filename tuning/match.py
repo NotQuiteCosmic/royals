@@ -26,6 +26,7 @@ import itertools
 import json
 import os
 import sys
+import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, FIRST_COMPLETED, wait
 
@@ -43,6 +44,24 @@ POOL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pool")
 # ---------------------------------------------------------------------------
 # Worker side
 # ---------------------------------------------------------------------------
+
+# A worker that outlives its parent is useless and expensive. Killing a run -- Ctrl-C, a
+# kill, a closed terminal -- takes the main process, but a spawned worker only finds out
+# when it next touches the result pipe, which is after the pair it is playing: on this
+# machine eight orphans ran for most of an hour at full CPU after their parent was gone,
+# with nobody to hand their games to. So every worker watches its parent and exits the
+# moment it is reparented to init. os._exit, because there is nothing to clean up and a
+# normal exit would wait on the pool's own machinery, which is what has just vanished.
+def _watch_parent(parent, interval = 2.0):
+    while True:
+        time.sleep(interval)
+        if os.getppid() != parent:
+            os._exit(0)
+
+
+def _worker_init():
+    threading.Thread(target = _watch_parent, args = (os.getppid(),), daemon = True).start()
+
 
 def play_pair(job):
     """Both games of one opening. `job` is a dict; everything in it must pickle."""
@@ -70,7 +89,7 @@ class Runner:
         self.pool = None
 
     def __enter__(self):
-        self.pool = ProcessPoolExecutor(max_workers=self.workers)
+        self.pool = ProcessPoolExecutor(max_workers=self.workers, initializer=_worker_init)
         return self
 
     def __exit__(self, *exc):
