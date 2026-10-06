@@ -226,11 +226,28 @@ Evidence against the original, self-play Elo:
 |---|---|---|
 | 3 | 1000 | +41 [+28, +54] |
 | 4 | 1112 | +21 [+10, +33] (SPRT [0, 5] accepted; measured on `theta16`, which `rounded` ties) |
-| 5 | see below | |
-| 6 | see below | |
+| 4 | 1390 | +19 [+9, +30] -- the adopted set itself, SPRT [0, 5] accepted (H1) |
+| 5 | 400 | +19 [−0.2, +38] (600-ply cap; 1 of 800 games capped) |
+| 6 | 40 | −4 [−59, +51] -- a sanity check, not a measurement: nothing alarming, no precision |
 
-Cost: the two gather terms turn the post-pass on at every leaf. Bench figures with the
-adopted defaults are below.
+Depth-6 games take about three minutes each, so 40 pairs was the budget; the interval is as
+wide as the effect being looked for is small. The depth-5 figure is the same size as depth
+4's and just grazes zero. Taken together, depths 3 through 5 say the gain is real and
+shrinks slowly with depth, as a tie-breaker's should: the deeper the search, the more often
+it can tell two moves apart by itself.
+
+Cost: the two gather terms turn the post-pass on at every leaf. Benched against the
+pre-tuning weights in the same session (CPython, depth 5, median of 5): 35,300 and 31,900
+nodes/s for the adopted defaults against 37,900 -- about 10% slower, at the top of the
+5–10% expected. At fixed depth that is wall time, not strength: the web's "royal" level
+goes from roughly 1.9 to 2.1 seconds a move. `candidateTerms` is the place to look if that
+ever matters.
+
+The depth-4 SPRT is also a lesson in SPRT windows: the adopted set read +36 Elo [+15, +57]
+after 359 pairs and +22 [+9, +35] after 882, both plainly positive, yet the test ran to 1390
+pairs before accepting, because with bounds at 0 and 5 Elo the log-likelihood ratio grows in
+proportion to a 5-Elo score difference however large the true effect is. A narrow window
+buys certainty about a small gain at the price of needing many games even for a big one.
 
 One bug caught on the way in: `ANY_POST` was a literal `False` recomputed only by
 `setWeights`, so with the new defaults the gather terms would have been skipped in the

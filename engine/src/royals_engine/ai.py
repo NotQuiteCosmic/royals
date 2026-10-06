@@ -217,7 +217,11 @@ INFINITY = WIN_SCORE * 1000
 # values the evaluator had always used (DIAG 250, GROUP 1500, PRISONER 800, stacks n*n*1000,
 # CAPTIVE 200, SPREAD 1500, ROYAL_SPY 5000), which tuning/pool/original.json keeps and every
 # gauntlet still plays against. The tuned set beats it by +41 Elo [+28, +54] over 1000
-# paired games at depth 3 and +21 [+10, +33] at depth 4 (self-play Elo, which runs hot).
+# paired games at depth 3, +19 [+9, +30] over 1390 at depth 4 (SPRT [0, 5] accepted) and
+# +19 [0, +38] over 400 at depth 5 (self-play Elo, which runs hot); 40 pairs at depth 6 read
+# -4 [-59, +51], a sanity check only. The gain shrinks slowly with depth, as a tie-breaker's
+# should. It costs about 10% of node rate, because the two gather terms turn the post-pass
+# on at every leaf -- wall time, not strength, at a fixed depth.
 # The whole gain comes from two places, found by ablation:
 #   - the two tiny gather terms at the bottom of this block, worth about +25 together;
 #   - the stack table bending away from the square law, worth about +15.

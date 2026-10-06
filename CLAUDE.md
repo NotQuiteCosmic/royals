@@ -23,16 +23,16 @@ Read [docs/RULES.md](docs/RULES.md) before reasoning about game logic and
 ```bash
 cd tests && PYTHONPATH=../engine/src python3 regress.py check all     # the goldens
 cd tests && PYTHONPATH=../engine/src pypy3 regress.py check all       # ...under PyPy too
-PYTHONPATH=engine/src:web/src python3 -m pytest tests/ -q             # 135 unit tests
+PYTHONPATH=engine/src:web/src python3 -m pytest tests/ -q             # 136 unit tests
 python3 -m py_compile engine/src/royals_engine/*.py apps/*/*.py tuning/*.py
 ```
 
 Expected green state: `golden.txt` 13,496 lines identical, `golden_search.txt` 245 lines
-identical, 135 tests passing (22 engine-purity, 51 notation, 22 web API, 27 weights,
-13 tuning harness).
+identical, 136 tests passing (22 engine-purity, 51 notation, 22 web API, 27 weights,
+14 tuning harness).
 
 The web API tests call `pytest.importorskip("fastapi")`, so without `web/src` on the path
-they skip silently and the run reports 113 passed, not 135. **Check the count, not just the
+they skip silently and the run reports 114 passed, not 136. **Check the count, not just the
 colour.** CI doesn't install the web package either, so the web layer is uncovered there.
 
 ### Tuning the evaluator

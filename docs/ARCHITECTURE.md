@@ -270,9 +270,10 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for the workflow. In short:
   (checked under the pre-tuning weights), the defaults are the tuned set, the candidate
   terms measure what they say. (27)
 - **`tests/test_tuning.py`** — the tuning harness at the two-second scale: openings replay,
-  a game records and replays, the statistics are right on known inputs. (13)
+  a game records and replays, the statistics are right on known inputs, the queue finishes
+  itself and does nothing twice. (14)
 
-135 in total. The web tests import `fastapi`, so the full suite needs the server installed
+136 in total. The web tests import `fastapi`, so the full suite needs the server installed
 (`pip install -e ./web`); the engine's own tests need nothing but the standard library,
 which is the point.
 

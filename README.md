@@ -185,6 +185,6 @@ rather than a second, subtly different implementation of the rulebook.
 | Desktop (tkinter) | Working. |
 | Terminal | Working. |
 | Web API + client | Working; games are in memory only, so they don't survive a restart. |
-| Tests | 135 altogether: 22 engine-purity, 51 notation, 22 web API, 27 evaluator weights, 13 tuning harness. |
+| Tests | 136 altogether: 22 engine-purity, 51 notation, 22 web API, 27 evaluator weights, 14 tuning harness. |
 | Evaluator tuning | Done once (Oct 2026): +41 self-play Elo at depth 3, +21 at depth 4. Harness in `tuning/`, results in `tuning/RESULTS.md`. |
 | Accounts, persistence | Not started. `store.py` is the seam Postgres goes behind. |

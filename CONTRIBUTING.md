@@ -37,12 +37,12 @@ your machine, `import royals_engine` finds that one, and the goldens test code y
 looking at. `PYTHONPATH=engine/src` (and `web/src` for the web tests) makes the checkout
 you are in the one that runs. `tuning/` does this for itself.
 
-Everything should be green before you commit. As of the last run: **135 unit tests pass,
+Everything should be green before you commit. As of the last run: **136 unit tests pass,
 `golden.txt` 13,496 lines identical, `golden_search.txt` 245 lines identical.**
 
-The 135 break down as 22 engine-purity, 51 notation, 22 web API, 27 evaluator weights and
-13 tuning harness. The web API tests call `pytest.importorskip("fastapi")`, so without the
-web package on the path they **skip silently** and you'll see 113 passed rather than 135.
+The 136 break down as 22 engine-purity, 51 notation, 22 web API, 27 evaluator weights and
+14 tuning harness. The web API tests call `pytest.importorskip("fastapi")`, so without the
+web package on the path they **skip silently** and you'll see 114 passed rather than 136.
 That is by design — the engine's tests must never need a third-party package — but it does
 mean a green run is not proof the server is green. Check the count.
 
