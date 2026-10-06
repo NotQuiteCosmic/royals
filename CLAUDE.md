@@ -15,19 +15,48 @@ Read [docs/RULES.md](docs/RULES.md) before reasoning about game logic and
 
 `python3`, not `python` — there is no `python` on this machine.
 
+**Pin the import path on every command.** The pip editable installs of `royals_engine` and
+`royals_web` on this machine point at a *different, diverged* checkout
+(`~/Documents/RoyalsClaude`); run against that engine, `golden_search.txt` fails at line 13.
+`pypy3` has no engine installed at all. So:
+
 ```bash
-cd tests && python3 regress.py check all      # the goldens
-python3 -m pytest tests/ -q                   # 95 unit tests
-python3 -m py_compile engine/src/royals_engine/*.py apps/*/*.py    # quick syntax check
+cd tests && PYTHONPATH=../engine/src python3 regress.py check all     # the goldens
+cd tests && PYTHONPATH=../engine/src pypy3 regress.py check all       # ...under PyPy too
+PYTHONPATH=engine/src:web/src python3 -m pytest tests/ -q             # 135 unit tests
+python3 -m py_compile engine/src/royals_engine/*.py apps/*/*.py tuning/*.py
 ```
 
 Expected green state: `golden.txt` 13,496 lines identical, `golden_search.txt` 245 lines
-identical, 95 tests passing (22 engine-purity, 51 notation, 22 web API).
+identical, 135 tests passing (22 engine-purity, 51 notation, 22 web API, 27 weights,
+13 tuning harness).
 
-The web API tests call `pytest.importorskip("fastapi")`, so without `pip install -e ./web`
-they skip silently and the run reports 73 passed, not 95. **Check the count, not just the
-colour.** CI doesn't install the web package either, so the web layer is currently
-uncovered there. Both packages are already installed editable in this environment.
+The web API tests call `pytest.importorskip("fastapi")`, so without `web/src` on the path
+they skip silently and the run reports 113 passed, not 135. **Check the count, not just the
+colour.** CI doesn't install the web package either, so the web layer is uncovered there.
+
+### Tuning the evaluator
+
+`tuning/` (stdlib-only, run it under `pypy3`, it puts its own checkout's engine on the path):
+
+```bash
+python3 tuning/bench.py [--set NAME=value]                 # nodes/s; CPython gates at 3%
+pypy3 -m tuning.match sprt --a tuning/pool/champ-001.json --b cand.json --elo0 0 --elo1 10
+pypy3 -m tuning.match gauntlet --challenger cand.json      # non-regression vs the pool
+pypy3 -m tuning.match tournament --players a.json b.json c.json
+pypy3 -m tuning.spsa --name run1 --iterations 20000        # tune; --resume to continue
+pypy3 -m tuning.scale --from results.jsonl --terms NEW_TERM # probe size for a 0-default term
+```
+
+Weights are `ai.WEIGHT_NAMES` / `getWeights` / `setWeights`, integers only. **A new
+evaluation term defaults to 0 and must leave `golden.txt` byte-identical until a tournament
+adopts it.** Adoption changes defaults, re-records the goldens, and only `eval` lines may
+move. Check it by comparing everything else, not by reading the diff -- `git diff` will show
+an unchanged move line as removed-and-added when the eval lines around it change:
+
+```bash
+diff <(git show HEAD:tests/golden.txt | grep -v '    eval') <(grep -v '    eval' tests/golden.txt)   # must print nothing
+```
 
 ## The rule that governs everything
 
@@ -52,7 +81,8 @@ Enforced by `tests/test_engine_purity.py`:
 3. **Python ≥ 3.10, not 3.12** — PyPy compatibility is deliberate and load-bearing.
 4. **Evaluator scores stay integers** (`SCALE = 1000`). Floats already caused a real bug:
    CPython and PyPy disagreed in the last place on a square root, flipping an alpha-beta
-   cutoff and changing the move played. Do not reintroduce them.
+   cutoff and changing the move played. Do not reintroduce them. `ai.setWeights` refuses
+   non-integers for the same reason.
 5. **Square arithmetic belongs to `notation.py`.** The move tuple is
    `(origin, kind, target, movingPris)` with a **1-based origin and a 0-based target** —
    except for breaks, where `target` is a direction index. No other module does arithmetic
@@ -65,7 +95,9 @@ Enforced by `tests/test_engine_purity.py`:
 - **Module-level globals** — `Engine.koTrack`, `Engine.koGeneration`, and the AI's
   transposition/killer/history tables. Fine for one game per process; a correctness hazard
   for two. Anything serving multiple games must load one game's state, run, and drop it —
-  see `web/src/royals_web/ai_pool.py`.
+  see `web/src/royals_web/ai_pool.py`. Two *evaluators* in one game is the same hazard: a
+  table entry is a score the weights in force when it was written produced, so
+  `tuning/game.py` keeps a table set per side and swaps them.
 - **Boards are tuples, not lists.** Hashable and immutable on purpose: that is what lets a
   board be its own key in the ko set and the transposition table, and it's why every
   executor returns a new board instead of mutating.

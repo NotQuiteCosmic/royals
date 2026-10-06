@@ -205,33 +205,260 @@ WIN_SCORE = 1000 * SCALE
 # enters the search at all. A win scaled by depth stays far below this.
 INFINITY = WIN_SCORE * 1000
 
-# The weights, in SCALE units. What a jump's worth of mobility is worth against the stacking
-# score: JUMPREACH is 4 in the middle of the board and 2 on the rim, so at a quarter point a
-# lone piece is worth up to half a point for where it stands and a stack of four up to two --
-# a nudge toward good ground, nowhere near enough to turn down a merge for it.
-DIAG_WEIGHT = SCALE // 4
-# holding a prisoner is worth 0.8, and each separate group costs 1.5
-PRISONER_WEIGHT = (SCALE * 4) // 5
-GROUP_PENALTY = (SCALE * 3) // 2
+####### The weights #######
+# Every number the evaluator multiplies by, in SCALE units, as a module global. They are
+# globals rather than literals so that the tuning harness (tuning/) can swap a whole set in
+# and out between one side's search and the other's -- see setWeights -- and they are read
+# into locals once at the top of evaluateSides, so the cost of that is one LOAD_GLOBAL per
+# weight per call against a loop over 49 squares.
+#
+# The defaults were tuned by self-play in October 2026 -- see tuning/RESULTS.md for every
+# game count and interval behind the numbers below. Until then they were the hand-tuned
+# values the evaluator had always used (DIAG 250, GROUP 1500, PRISONER 800, stacks n*n*1000,
+# CAPTIVE 200, SPREAD 1500, ROYAL_SPY 5000), which tuning/pool/original.json keeps and every
+# gauntlet still plays against. The tuned set beats it by +41 Elo [+28, +54] over 1000
+# paired games at depth 3 and +21 [+10, +33] at depth 4 (self-play Elo, which runs hot).
+# The whole gain comes from two places, found by ablation:
+#   - the two tiny gather terms at the bottom of this block, worth about +25 together;
+#   - the stack table bending away from the square law, worth about +15.
+# Everything else moved less than its own probe size over 20,000 paired games, twice, so the
+# hand tuning of those terms stands as it was.
+
+# What a jump's worth of mobility is worth against the stacking score: JUMPREACH is 4 in the
+# middle of the board and 2 on the rim, so at a quarter point a lone piece is worth up to half
+# a point for where it stands and a stack of four up to two -- a nudge toward good ground,
+# nowhere near enough to turn down a merge for it. Tuning left it exactly where it was;
+# taking it away costs 20 Elo [6, 34], so a nudge is what it is.
+DIAG_WEIGHT = 250
+
+# Holding a prisoner is worth about 0.8 apiece. The two kinds are weighted apart because they
+# are not alike -- a captive spy can break itself out and shatters its captor's stack when it
+# does; captive pawns are inert until a push frees them -- though tuning found no daylight
+# between them worth more than noise.
+PRISONER_PAWN_WEIGHT = 830
+PRISONER_SPY_WEIGHT = 800
+
+# each separate group costs about 1.5
+GROUP_PENALTY = 1480
+
+# What a standing stack of n pieces is worth, for n from 1 to 5. This was n*n*SCALE, a
+# square law, and the tuner bent it the same way in two independent runs: a 4-stack is worth
+# a little less than the square law said and a 2 and a 5 a little more. On its own the bend
+# is worth about 15 Elo at depth 3. Six is the win and is scored by WIN_SCORE, not from
+# here -- see STACK_VALUE below.
+STACK_1 = 1020
+STACK_2 = 4120
+STACK_3 = 8740
+STACK_4 = 15310
+STACK_5 = 25370
+
+# Pieces of yours being held cost this percentage of what the same stack would be worth
+# standing. 200 was the old "being held costs double": the group is counted as a stack for
+# its owner and then charged twice over, so its net worth is minus one stack. At 100
+# captivity would be neutral; below it, strangely, a comfort.
+CAPTIVE_PCT = 205
+
+# The spread penalty's multiplier, about 1.5 times the larger coordinate standard deviation.
+# It used to be baked into spreadPenalty as a 9 under the root -- see there for why pulling
+# it out as a weight changes nothing. This is the term that drives play: at 0 the evaluator
+# loses 114 Elo [74, 156], six times what losing the mobility term costs.
+SPREAD_WEIGHT = 1530
+
+# Royal and spy on one square short of a win cost this times the square of the group count.
+ROYAL_SPY_PENALTY = 5010
+
+####### Candidate terms #######
+# Things about a position the evaluator did not use to look at. Each is here because the
+# rules single the thing out, and each went in at 0 -- not computed, golden.txt untouched --
+# until the tournaments in tuning/RESULTS.md said what it was worth. Two earned a place, two
+# did not and stay at 0 for anyone who wants to try them at another depth.
+#
+# The two that earned a place are TINY, and that is the finding. Under the old weights only
+# 54% of a position's moves had distinct scores and the best move was an exact tie in 17.5%
+# of positions, left to board order to settle. Five thousandths of a point per piece per jump
+# towards the spy never outweighs a real term; it only says which of two otherwise-equal
+# moves is the one that gathers, and that is worth about 23 Elo. The same term at 100 --
+# where it starts outweighing real terms -- costs 42. Treat these as tie-breakers, not
+# positional terms, and don't be tempted to make them "meaningful".
+
+# The spy is the only square anyone can gather on: a spy can't jump onto anything and nothing
+# can jump onto a royal, so the pawns come to the spy and the royal comes last. This charges
+# each other group its lone-piece jump distance to the spy's square, per piece. JUMPDIST
+# knows what the spread penalty can't: a jump never changes square colour, so a group on the
+# other colour from the spy is UNREACHABLE (12) however near it stands, until a push moves it.
+# +23 Elo [+11, +35] alone at 5; -42 [-67, -17] at 100.
+SPY_DIST_WEIGHT = 5
+
+# Per piece, for a standing group the enemy could land on next ply: an enemy stack with no
+# spy in it, weighing at least as much as the group (prisoners and all, which is what a jump
+# has to beat), within its own jump reach. Ignores what stands in the way, which makes it an
+# over-estimate, but a consistent one. A leaf can't see the capture coming; this is a guess at
+# what the search would have seen one ply further on. At depth 3 the search sees it anyway:
+# -8 Elo [-21, +5] at 1000, and SPSA never lifted it off the floor. Off.
+THREAT_PENALTY = 0
+
+# Per pawn standing on the spy's square. Four pawns stacked anywhere else are a stack; four
+# pawns on the spy are two moves from a win -- or so the argument went. -45 Elo [-71, -19]
+# at 1000: paying for pawns already on the spy made the engine sit on them. Off.
+SPY_STACK_WEIGHT = 0
+
+# Per piece standing on the other colour from the spy. The same fact SPY_DIST_WEIGHT charges
+# at a distance of 12, pulled out on its own so the two can be weighed apart. +20 Elo
+# [+10, +31] alone at 31, and still +12 [+1, +23] at 500; with SPY_DIST_WEIGHT alongside the
+# pair add little over either alone, so this is belt to the other's braces.
+WRONG_COLOUR_PENALTY = 31
+
+# The tunables, by name. This tuple is the single list: getWeights and setWeights work off it
+# and the harness stores weight sets keyed by these names, so a new weight is added here and
+# nowhere else needs telling.
+WEIGHT_NAMES = (
+    "DIAG_WEIGHT", "GROUP_PENALTY", "PRISONER_PAWN_WEIGHT", "PRISONER_SPY_WEIGHT",
+    "STACK_1", "STACK_2", "STACK_3", "STACK_4", "STACK_5",
+    "CAPTIVE_PCT", "SPREAD_WEIGHT", "ROYAL_SPY_PENALTY",
+    "SPY_DIST_WEIGHT", "THREAT_PENALTY", "SPY_STACK_WEIGHT", "WRONG_COLOUR_PENALTY",
+)
+
+# Where each weight is allowed to go. The search reads any score at or beyond WIN_SCORE as
+# a won game and refuses to file it in the table, so the evaluation of a real position has
+# to stay well short of it: these ranges are roughly three times the defaults, which keeps
+# any position that can actually arise a long way under WIN_SCORE // 2. Signs are fixed --
+# a penalty may shrink to nothing but not turn into a reward, since the rules settle which
+# way each of these points. setWeights refuses anything outside them, and the tuner clamps.
+WEIGHT_RANGES = {
+    "DIAG_WEIGHT": (0, 1000),
+    "GROUP_PENALTY": (0, 5000),
+    "PRISONER_PAWN_WEIGHT": (0, 3000),
+    "PRISONER_SPY_WEIGHT": (0, 3000),
+    "STACK_1": (0, 6000),
+    "STACK_2": (0, 15000),
+    "STACK_3": (0, 30000),
+    "STACK_4": (0, 50000),
+    "STACK_5": (0, 75000),
+    "CAPTIVE_PCT": (0, 400),
+    "SPREAD_WEIGHT": (0, 5000),
+    "ROYAL_SPY_PENALTY": (0, 15000),
+    "SPY_DIST_WEIGHT": (0, 1000),
+    "THREAT_PENALTY": (0, 10000),
+    "SPY_STACK_WEIGHT": (0, 10000),
+    "WRONG_COLOUR_PENALTY": (0, 5000),
+}
+
+# Whether any of the candidate terms is switched on. They all need the groups gathered up
+# during the board walk and looked at again afterwards; with every one of them at 0 that
+# second look is skipped and the groups are not even collected, so the terms cost one
+# truthiness test until something turns them on. Computed from the defaults at import by the
+# _rebuildWeightTables call below JUMPHIT -- a literal here was wrong once the defaults
+# turned two terms on: the search skipped them until something called setWeights, and only
+# the tuning harness ever did.
+ANY_POST = False
+
+# Indexed by how many pieces stand on the square, 0 to 6. Zero at both ends: an empty square
+# says nothing and six is the win, which evaluateSides scores as WIN_SCORE instead. Rebuilt
+# by setWeights whenever a STACK_n changes, so the evaluator reads one tuple and never
+# branches on the size.
+STACK_VALUE = (0, STACK_1, STACK_2, STACK_3, STACK_4, STACK_5, 0)
 
 
-# The spread penalty: 1.5 times the larger of the two coordinate standard deviations, in
-# SCALE units, exactly.
+def _rebuildWeightTables():
+    global STACK_VALUE, ANY_POST
+    STACK_VALUE = (0, STACK_1, STACK_2, STACK_3, STACK_4, STACK_5, 0)
+    ANY_POST = bool(SPY_DIST_WEIGHT or THREAT_PENALTY or SPY_STACK_WEIGHT or WRONG_COLOUR_PENALTY)
+
+
+# Every square a stack of a given weight could land on from a given square, on an empty
+# board: JUMPHIT[weight][square] is a frozenset of 0-based targets, for weights 0 to 6.
+# Drawn from JUMPRAY, so it wraps where a jump wraps and stops where one stops. What stands
+# in the way is not consulted -- a royal, a dragon or a square holding the mover's own
+# captives would end the strand early -- so this is the most a stack could reach, which is
+# the right side to err on for a threat.
+def buildJumpHit():
+    table = []
+    for weight in range(0, Engine.MAX_STACK + 1):
+        row = [frozenset()]
+        for square in range(1, 50):
+            row.append(frozenset(target for strand in Engine.JUMPRAY[square]
+                                 for target in strand[:weight]))
+        table.append(tuple(row))
+    return tuple(table)
+
+
+JUMPHIT = buildJumpHit()
+
+# STACK_VALUE and ANY_POST as the defaults imply, before anything can read them
+_rebuildWeightTables()
+
+
+# Which colour a 1-based square is, 0 or 1. Jumps are diagonal, so a stack never leaves its
+# colour by jumping; two squares of different colour can only be joined by a push.
+def squareColour(square):
+    return ((square - 1) % 7 + (square - 1) // 7) & 1
+
+
+# The weights in force, as a dict keyed by WEIGHT_NAMES. This is the shape the tuning
+# harness saves, compares and hands back to setWeights.
+def getWeights():
+    return {name: globals()[name] for name in WEIGHT_NAMES}
+
+
+# What the evaluator shipped with, frozen at import before anything can change them.
+DEFAULT_WEIGHTS = getWeights()
+
+
+# Puts a set of weights in force. Takes a dict of some or all of WEIGHT_NAMES; anything not
+# named is left as it is.
+#
+# Integers only, checked with type() rather than isinstance so that a bool is refused too.
+# A float here would quietly undo the reason the evaluator is in whole numbers at all --
+# CPython and PyPy disagreeing in the last place and flipping a cutoff -- and it would do so
+# only on the machine where it was tried.
+#
+# The transposition table holds scores that the weights in force WHEN THEY WERE WRITTEN
+# produced, so changing the weights under it leaves it full of answers to a different
+# question. By default this clears it, along with the killer and history tables. The tuning
+# harness keeps a table per side and swaps them itself, so it passes clear = False.
+def setWeights(weights, clear = True):
+    for name, value in weights.items():
+        if name not in WEIGHT_RANGES:
+            raise KeyError("no evaluation weight called %r" % (name,))
+        if type(value) is not int:
+            raise TypeError("%s must be an int, not %s -- floats re-open the CPython/PyPy "
+                            "last-place bug" % (name, type(value).__name__))
+        low, high = WEIGHT_RANGES[name]
+        if not low <= value <= high:
+            raise ValueError("%s = %d is outside %d..%d" % (name, value, low, high))
+
+    for name, value in weights.items():
+        globals()[name] = value
+    _rebuildWeightTables()
+
+    if clear: newGame()
+
+
+# The spread penalty: SPREAD_WEIGHT times the larger of the two coordinate standard
+# deviations, exactly, with SPREAD_WEIGHT already in SCALE units.
 #
 # The standard deviation of n whole numbers with sum s and sum of squares s2 is
 # sqrt(n*s2 - s*s) / n, and the quantity under the root is itself a whole number. Both axes
 # always have the same n -- a group contributes one coordinate to each -- so which axis is
 # the larger can be decided by comparing those two whole numbers, before any root is drawn.
 #
-# math.isqrt is an exact integer square root, so scaling by (3*SCALE)^2 going in and dividing
-# by 2n coming out gives 1.5 * stdev * SCALE with no float involved. It truncates rather than
-# rounds, so the answer can sit a thousandth of a point under the true value -- that is a
-# rounding of the heuristic, not a disagreement: every machine truncates to the same integer.
+# math.isqrt is an exact integer square root, so scaling by SPREAD_WEIGHT^2 going in and
+# dividing by n coming out gives SPREAD_WEIGHT * stdev with no float involved. It truncates
+# rather than rounds, so the answer can sit a thousandth of a point under the true value --
+# that is a rounding of the heuristic, not a disagreement: every machine truncates to the
+# same integer.
+#
+# This used to be written isqrt(9 * SCALE * SCALE * q) // (2 * n), with the 1.5 carried as a
+# 3 under the root and a 2 in the divisor. Pulling it out as a weight is exact and not just
+# close: with a = 1500 * sqrt(q) and k = floor(a), floor(2a) is 2k or 2k + 1, and
+# floor((2k + e) / 2n) = floor(k / n) for e in {0, 1}, because writing k = rn + s with s < n
+# gives 2s + e <= 2n - 1 < 2n. Checked exhaustively for every n up to 12 and every q the
+# board can produce (coordinates run 0..6, so q <= 9 n^2): zero mismatches.
 def spreadPenalty(n, sx, sx2, sy, sy2):
     q = max(n * sx2 - sx * sx, n * sy2 - sy * sy)
     if q <= 0: return 0
 
-    return math.isqrt(9 * SCALE * SCALE * q) // (2 * n)
+    return math.isqrt(SPREAD_WEIGHT * SPREAD_WEIGHT * q) // n
 
 
 # Formats a score the way a person reads it, since the number itself is in thousandths.
@@ -284,12 +511,25 @@ def scoreText(score):
 def evaluateSides(cBoard):
     unpack = Hasher.UNPACK
 
+    # the weights, read once rather than at every square
+    stackValue = STACK_VALUE
+    diagWeight = DIAG_WEIGHT
+    prisonerPawn = PRISONER_PAWN_WEIGHT
+    prisonerSpy = PRISONER_SPY_WEIGHT
+    captivePct = CAPTIVE_PCT
+    anyPost = ANY_POST
+
     adv = [0, 0]
     groups = [0, 0]
     sx = [0, 0]; sx2 = [0, 0]; sy = [0, 0]; sy2 = [0, 0]
     royalIdiot = [False, False]
     # a side with six on one square scores the win outright, whatever else it has going on
     won = [False, False]
+
+    # for the candidate terms: each side's standing groups as (square, pieces, fields), and
+    # where its spy stands, 0 if it doesn't. Only gathered when a term wants them.
+    standing = [[], []]
+    spySquare = [0, 0]
 
     for square in range(1, 50):
         code = cBoard[square - 1]
@@ -310,7 +550,7 @@ def evaluateSides(cBoard):
             # the dragon sits outside all of this -- it can't stack, be captured, or win
             if not s[Hasher.DRAGON]:
                 groups[w] += 1
-                if myPieces < 6: adv[w] += myPieces * myPieces * SCALE
+                if myPieces < 6: adv[w] += stackValue[myPieces]
                 elif myPieces == 6: won[w] = True
 
                 # drives pieces towards each other
@@ -318,11 +558,15 @@ def evaluateSides(cBoard):
                 sy[w] += y; sy2[w] += y * y
 
                 # mobile ground is worth standing on. One dict lookup, no search.
-                adv[w] += DIAG_WEIGHT * JUMPREACH[square] * myPieces
+                adv[w] += diagWeight * JUMPREACH[square] * myPieces
+
+                if anyPost:
+                    standing[w].append((square, myPieces, s))
+                    if s[Hasher.SPY]: spySquare[w] = square
 
             # holding prisoners is worth something...
-            prisoners = s[Hasher.PRISCOUNT]
-            if prisoners: adv[w] += prisoners * PRISONER_WEIGHT
+            if s[Hasher.PRISFLAG]:
+                adv[w] += s[Hasher.CAPPAWNS] * prisonerPawn + s[Hasher.CAPSPY] * prisonerSpy
 
             # DON'T PUT UR DANG ROYAL AND SPY IN THE SAME PLACE
             if s[Hasher.SPY] and s[Hasher.ROYAL] and myPieces != 6: royalIdiot[w] = True
@@ -333,14 +577,15 @@ def evaluateSides(cBoard):
         theirs = s[Hasher.PRISCOUNT]
         if theirs:
             groups[o] += 1
-            if theirs < 6: adv[o] += theirs * theirs * SCALE
-            elif theirs == 6: won[o] = True
+            # a royal is never taken, so this is at most five and never the win
+            adv[o] += stackValue[theirs]
 
             sx[o] += x; sx2[o] += x * x
             sy[o] += y; sy2[o] += y * y
 
-            # ...and being held costs double
-            adv[o] -= theirs * theirs * 2 * SCALE
+            # ...and being held costs CAPTIVE_PCT of what the stack is worth. Exact at the
+            # default of 200: 200 * v // 100 is 2 * v for any whole v.
+            adv[o] -= (captivePct * stackValue[theirs]) // 100
 
     for side in (0, 1):
         if won[side]:
@@ -350,16 +595,61 @@ def evaluateSides(cBoard):
         # swept off the board, so the terms below have nothing to divide by
         if groups[side] == 0: continue
 
-        # tuning moved each of these off its value in turn and nothing beat where they
-        # already stand. The spread penalty is the one that matters: at 0 the AI plays
-        # measurably worse.
+        # Hand tuning once moved each of these off its value in turn and found nothing
+        # better; 40,000 games of SPSA agreed about these two. The spread penalty is the
+        # one that matters: at 0 the AI loses 114 Elo.
         adv[side] -= groups[side] * GROUP_PENALTY
         adv[side] -= spreadPenalty(groups[side], sx[side], sx2[side], sy[side], sy2[side])
 
         # if the royal and the spy are together, the penalty grows as the groups thin out
-        if royalIdiot[side]: adv[side] -= (groups[side] * groups[side]) * 5 * SCALE
+        if royalIdiot[side]: adv[side] -= (groups[side] * groups[side]) * ROYAL_SPY_PENALTY
+
+        if anyPost: adv[side] += candidateTerms(side, standing, spySquare)
 
     return adv
+
+
+# The candidate terms for one side -- see the weights up top for what each one means. Kept
+# out of evaluateSides so that the evaluator the goldens were recorded from reads as it did,
+# and so that with every weight at 0 none of this is reached at all.
+def candidateTerms(side, standing, spySquare):
+    mine = standing[side]
+    total = 0
+
+    spySq = spySquare[side]
+    if spySq:
+        if SPY_STACK_WEIGHT:
+            for square, pieces, s in mine:
+                if square == spySq:
+                    total += SPY_STACK_WEIGHT * s[Hasher.PAWNS]
+                    break
+
+        if SPY_DIST_WEIGHT or WRONG_COLOUR_PENALTY:
+            distance = JUMPDIST
+            spyColour = squareColour(spySq)
+            for square, pieces, s in mine:
+                if square == spySq: continue
+                total -= SPY_DIST_WEIGHT * distance[square][spySq] * pieces
+                if WRONG_COLOUR_PENALTY and squareColour(square) != spyColour:
+                    total -= WRONG_COLOUR_PENALTY * pieces
+
+    if THREAT_PENALTY:
+        theirs = standing[1 - side]
+        for square, pieces, s in mine:
+            # nothing lands on a royal, or on a square holding the mover's own captives
+            if s[Hasher.ROYAL] or s[Hasher.PRISFLAG]: continue
+            weight = s[Hasher.WEIGHT]
+            target = square - 1
+            for esq, epieces, es in theirs:
+                # a stack with a spy in it can't land on anything; a lighter one can't take us
+                if es[Hasher.SPY]: continue
+                captors = es[Hasher.CAPTORS]
+                if captors < weight: continue
+                if target in JUMPHIT[captors][esq]:
+                    total -= THREAT_PENALTY * pieces
+                    break
+
+    return total
 
 
 # One side's score. Nothing in the search uses this -- it evaluates both sides at once --

@@ -169,6 +169,59 @@ Anything running more than one game must therefore load exactly one game's state
 drop it. `web/src/royals_web/ai_pool.py` is the only place in the web app that touches these
 globals; `regress.py` does the same thing between sweeps with `koReset()`/`koRecord()`.
 
+## Tuning the evaluator
+
+`tuning/` is a self-play tournament system for the position evaluator. It is stdlib-only
+like the engine, so it runs under PyPy, which is where its tens of thousands of games
+belong. It imports the engine from its own checkout whatever is pip-installed -- see the
+note at the top of `tuning/__init__.py` for why that matters on this machine.
+
+### Weights
+
+Every number `ai.evaluateSides` multiplies by is a module global named in
+`ai.WEIGHT_NAMES`, with `ai.getWeights()`, `ai.setWeights()` and `ai.DEFAULT_WEIGHTS`
+around them. Weights are integers in `SCALE` units and `setWeights` refuses anything else,
+for the reason given under "Scores are integers" above. Each has a range in
+`ai.WEIGHT_RANGES` that keeps a real position's score well short of `WIN_SCORE`.
+
+Candidate terms -- things the evaluator did not use to look at -- live alongside the old
+ones at a default of 0, and at 0 they are not computed: `golden.txt` records the
+evaluation of every position it visits and stays byte-identical until a term earns a
+non-zero default. **That re-record is the one legitimate way `golden.txt` moves without a
+rules change**, and only its `eval` lines may differ.
+
+### The per-side search state
+
+The transposition table persists across moves within a game on purpose (above), and an
+entry is a score the weights in force *when it was written* produced. In a game between two
+weight sets that is a contamination: red would be reading blue's evaluator. So
+`tuning/game.py` gives each side a `SearchState` holding its weights and its four tables,
+puts it in force before that side's search and reads the tables back afterwards -- back,
+because `chooseMove` rebinds those module names rather than mutating them. The ko history
+is shared; it is a fact about the game. With identical weights the swap is skipped and a
+default-vs-default game reproduces `golden_search.txt` ply for ply, which is the check
+that the runner is transparent.
+
+### Games, pairs and statistics
+
+The search is deterministic, so all variety comes from openings: `tuning/book.jsonl`
+holds 10,000 of them as RAN tokens (the entering under Perlin noise at intensity 1.0 plus
+two random plies), built once because entering costs about a second and replaying tokens
+costs microseconds. Every opening is played twice with colours swapped, and the pair's
+score is what the statistics see (`tuning/stats.py`): pentanomial counts, logistic Elo
+with an interval from the pair variance, a simplified GSPRT for early stopping, and
+Bradley-Terry ratings for round-robins. Self-play Elo runs two or three times hotter than
+Elo against the world; it is for comparing candidates with each other.
+
+`tuning/match.py` drives a process pool through four modes -- `match`, `sprt`,
+`tournament`, `gauntlet` -- writing one JSONL line per pair and resuming from it.
+`tuning/spsa.py` tunes a weight vector by SPSA over paired games; `tuning/scale.py` picks
+a probe size for a zero-default term by reading its raw size off the evaluator itself.
+`tuning/pool/` holds the weight sets that have earned a place: `original.json` is the
+evaluator before any tuning and is in every gauntlet forever; `champ-001.json` is what the
+October 2026 tuning adopted and what `ai.DEFAULT_WEIGHTS` now holds. `tuning/RESULTS.md` is
+the record of every run.
+
 ## The web layer
 
 FastAPI, in `web/src/royals_web/`:
@@ -213,8 +266,13 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for the workflow. In short:
 - **`tests/test_engine_purity.py`** — enforces the no-dependencies, no-UI rule. (22)
 - **`tests/test_notation.py`** — round-trips for the text and JSON move forms. (51)
 - **`tests/test_web_api.py`** — the REST surface, against FastAPI's `TestClient`. (22)
+- **`tests/test_weights.py`** — the evaluator's weights: each weight drives only its term
+  (checked under the pre-tuning weights), the defaults are the tuned set, the candidate
+  terms measure what they say. (27)
+- **`tests/test_tuning.py`** — the tuning harness at the two-second scale: openings replay,
+  a game records and replays, the statistics are right on known inputs. (13)
 
-95 in total. The web tests import `fastapi`, so the full suite needs the server installed
+135 in total. The web tests import `fastapi`, so the full suite needs the server installed
 (`pip install -e ./web`); the engine's own tests need nothing but the standard library,
 which is the point.
 

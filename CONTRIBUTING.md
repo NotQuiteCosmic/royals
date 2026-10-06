@@ -28,18 +28,23 @@ cd web && python3 -m uvicorn royals_web.main:app --reload   # the server, at :80
 
 ```bash
 cd tests
-python3 regress.py check all      # both goldens
-python3 -m pytest ../tests -q     # the unit tests
+PYTHONPATH=../engine/src python3 regress.py check all             # both goldens
+PYTHONPATH=../engine/src:../web/src python3 -m pytest ../tests -q # the unit tests
 ```
 
-Everything should be green before you commit. As of the last run: **95 unit tests pass,
+**Pin the path.** If an editable install of `royals_engine` from *another* checkout is on
+your machine, `import royals_engine` finds that one, and the goldens test code you are not
+looking at. `PYTHONPATH=engine/src` (and `web/src` for the web tests) makes the checkout
+you are in the one that runs. `tuning/` does this for itself.
+
+Everything should be green before you commit. As of the last run: **135 unit tests pass,
 `golden.txt` 13,496 lines identical, `golden_search.txt` 245 lines identical.**
 
-The 95 break down as 22 engine-purity, 51 notation and 22 web API. The web API tests call
-`pytest.importorskip("fastapi")`, so without `pip install -e ./web` they **skip silently**
-and you'll see 73 passed rather than 95. That is by design — the engine's tests must never
-need a third-party package — but it does mean a green run is not proof the server is green.
-Check the count.
+The 135 break down as 22 engine-purity, 51 notation, 22 web API, 27 evaluator weights and
+13 tuning harness. The web API tests call `pytest.importorskip("fastapi")`, so without the
+web package on the path they **skip silently** and you'll see 113 passed rather than 135.
+That is by design — the engine's tests must never need a third-party package — but it does
+mean a green run is not proof the server is green. Check the count.
 
 CI does not install the web package, so those 22 skip there too: **the web layer is not
 covered by CI.** Run it locally before trusting a change to `web/`.
@@ -75,6 +80,27 @@ python3 regress.py write all      # re-records the contract too — be sure
 Re-recording `golden_search.txt` is normal. Re-recording `golden.txt` is not, and should
 never be done just to get back to green.
 
+### The one exception: changing evaluation weights
+
+`golden.txt` records what the evaluator thinks each position is worth, so a deliberate
+change to the evaluator's weights moves its `eval` lines and nothing else. That is the one
+legitimate way the file moves without a rules change, and it comes with conditions:
+
+1. The change was decided by games, not by taste: a candidate that passed the gain SPRT and
+   the gauntlet in `tuning/` (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#tuning-the-evaluator)),
+   with the Elo figures written into the comment above the weight in `ai.py`.
+2. Only `eval` lines differ. Check it by comparing everything else, not by reading the
+   diff -- `git diff` shows an unchanged move line as removed-and-added when the eval lines
+   around it change:
+   ```bash
+   diff <(git show HEAD:tests/golden.txt | grep -v '    eval') <(grep -v '    eval' tests/golden.txt)   # must print nothing
+   ```
+3. The commit message names every weight that changed, old and new, and says the rules
+   are unchanged.
+
+A **new** evaluation term is added at a default of 0 and must leave `golden.txt`
+byte-identical; it earns a non-zero default the same way.
+
 Both files are tracked in git deliberately, despite their size. Do not add them to
 `.gitignore`.
 
@@ -109,8 +135,11 @@ passed under one and failed under the other. If PyPy is installed locally, it is
 running the contract under it before pushing anything that touches the evaluator:
 
 ```bash
-cd tests && pypy3 regress.py check all
+cd tests && PYTHONPATH=../engine/src pypy3 regress.py check all
 ```
+
+PyPy is also where tuning runs belong: `pypy3 -m tuning.match …` and `pypy3 -m tuning.spsa …`
+play roughly twice as many games per hour as CPython once the JIT is warm.
 
 ## Commit style
 

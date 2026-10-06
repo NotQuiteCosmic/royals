@@ -40,6 +40,8 @@ web/src/royals_web/         FastAPI server — REST API and a browser client
 
 tests/regress.py            the regression harness
 tests/golden.txt            the rules contract — see below
+tuning/                     self-play tournaments and SPSA tuning for the evaluator;
+                            stdlib-only, runs under PyPy — see docs/ARCHITECTURE.md
 docs/                       the rulebook and the architecture notes
 Backup/                     frozen Python-2-era originals, kept as the historical record
 ```
@@ -141,9 +143,11 @@ reason. Re-recording it is normal. Re-recording `golden.txt` is not.
 
 ```bash
 cd tests
-python3 regress.py check all     # verify
-python3 regress.py write search  # re-record just the search baseline
+PYTHONPATH=../engine/src python3 regress.py check all     # verify
+PYTHONPATH=../engine/src python3 regress.py write search  # re-record just the search baseline
 ```
+
+(`PYTHONPATH` so the checkout you are in is the one that runs, whatever is pip-installed.)
 
 ## Why the engine has no dependencies
 
@@ -181,5 +185,6 @@ rather than a second, subtly different implementation of the rulebook.
 | Desktop (tkinter) | Working. |
 | Terminal | Working. |
 | Web API + client | Working; games are in memory only, so they don't survive a restart. |
-| Tests | 95 altogether: 22 engine-purity, 51 notation, 22 web API. |
+| Tests | 135 altogether: 22 engine-purity, 51 notation, 22 web API, 27 evaluator weights, 13 tuning harness. |
+| Evaluator tuning | Done once (Oct 2026): +41 self-play Elo at depth 3, +21 at depth 4. Harness in `tuning/`, results in `tuning/RESULTS.md`. |
 | Accounts, persistence | Not started. `store.py` is the seam Postgres goes behind. |

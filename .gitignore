@@ -30,3 +30,7 @@ main.pyc
 
 # NOTE: golden.txt and golden_search.txt ARE tracked deliberately, despite the size.
 # They are the rules contract — see tests/regress.py. Do not add them here.
+
+# Tuning runs and match results are outputs, not source; the pool and the book are tracked
+tuning/runs/
+tuning/results/
