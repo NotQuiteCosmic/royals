@@ -304,3 +304,23 @@ first run finished. The second wave took the run to 2,000 of 2,000 and dispatche
 further; the checkpoint and trajectory are on `tuning-results` under `spsa/proof/`. A full
 20,000-iteration run is twenty such waves, about a day unattended. The depth 4/5/6/7
 re-measurements follow below when their runs land.
+
+### Re-measurements at scale (champ-001 vs original, 20 shards each)
+
+| Depth | Pairs | Pentanomial | Elo | Caps (600 plies) | Mean plies |
+|---|---|---|---|---|---|
+| 4 | 5000 | [507, 541, 2596, 583, 773] | +20.0 [+14.6, +25.3] | 1684 of 10000 (17%) | 195 |
+| 5 | 2000 | [301, 7, 1313, 5, 374] | +12.5 [+3.7, +21.4] | 16 of 4000 (0.4%) | 63 |
+
+Depth 4 is now a tight number and agrees with the laptop's 1,390-pair reading (+19). The
+gain is real at depth 5 too, and smaller: the ordering so far is +41 (d3), +20 (d4), +12
+(d5), which is what a tie-breaker's value should do as the search gets better at telling
+moves apart by itself.
+
+**Even depths are drawish; odd depths are decisive.** Depth-4 games average 195 plies and
+one in six reaches the 600-ply cap, where depth-5 games average 63 and almost none do --
+and depth 2 showed the same long, undecided shuffling earlier. A search that ends on the
+opponent's reply (even depth) sees every committal move answered and plays safe; one that
+ends on its own move (odd depth) sees the gain and takes it. The web app's "strong" level
+is depth 4. Whether that passivity is worth fixing (a quiescence-like extension, or odd
+depths only) is a question for the search, not the evaluator, and is noted here for later.
