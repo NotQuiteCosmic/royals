@@ -1,2 +1,3 @@
 {"id": "depth6", "mode": "match", "a": "tuning/pool/champ-001.json", "b": "tuning/pool/original.json", "depth": 6, "pairs": 40, "ply_cap": 600, "out": "tuning/results/depth6.jsonl", "tag": "match"}
 {"id": "depth4-adopted", "mode": "sprt", "a": "tuning/pool/champ-001.json", "b": "tuning/pool/original.json", "depth": 4, "elo0": 0, "elo1": 5, "max_pairs": 1500, "ply_cap": 600, "out": "tuning/results/depth4-adopted.jsonl"}
+{"a": "tuning/pool/champ-001.json", "b": "tuning/pool/original.json", "depth": 7, "id": "depth7", "mode": "match", "out": "tuning/results/depth7.jsonl", "pairs": 40, "ply_cap": 600}
