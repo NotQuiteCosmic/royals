@@ -1,0 +1,3 @@
+f2d586ab79fe v 679e4e92445b "match"  1000 pairs  pent [125, 3, 625, 3, 244]  elo +41.5 [+28.6, +54.6]  llr +10.77  caps 8/2000  passes 0  mean plies 58  SPRT H1
+1000 pairs from 10 files -> merged/pairs.jsonl
+GAUNTLET PASSED
