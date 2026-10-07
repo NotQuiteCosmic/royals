@@ -1,0 +1,2 @@
+f2d586ab79fe v 679e4e92445b "match"  200 pairs  pent [24, 0, 131, 1, 44]  elo +35.7 [+7.9, +64.0]  llr +1.53  caps 3/400  passes 0  mean plies 58  SPRT continue
+200 pairs from 4 files -> merged/pairs.jsonl

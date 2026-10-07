@@ -1,0 +1,28 @@
+[
+  {
+    "a_id": "f2d586ab79fe",
+    "b_id": "679e4e92445b",
+    "caps": 3,
+    "ci": [
+      7.9,
+      64.0
+    ],
+    "elo": 35.7,
+    "games": 400,
+    "mean_plies": 58.0,
+    "pairs": 200,
+    "pentanomial": [
+      24,
+      0,
+      131,
+      1,
+      44
+    ],
+    "sprt": {
+      "elo0": 0.0,
+      "elo1": 10.0,
+      "status": "continue"
+    },
+    "tag": "match"
+  }
+]
