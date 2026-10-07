@@ -311,6 +311,7 @@ re-measurements follow below when their runs land.
 |---|---|---|---|---|---|
 | 4 | 5000 | [507, 541, 2596, 583, 773] | +20.0 [+14.6, +25.3] | 1684 of 10000 (17%) | 195 |
 | 5 | 2000 | [301, 7, 1313, 5, 374] | +12.5 [+3.7, +21.4] | 16 of 4000 (0.4%) | 63 |
+| 6 | 500 | [50, 48, 272, 60, 70] | +18.1 [+1.6, +34.6] | 176 of 1000 (18%) | 183 |
 
 Depth 4 is now a tight number and agrees with the laptop's 1,390-pair reading (+19). The
 gain is real at depth 5 too, and smaller: the ordering so far is +41 (d3), +20 (d4), +12
@@ -319,7 +320,7 @@ moves apart by itself.
 
 **Even depths are drawish; odd depths are decisive.** Depth-4 games average 195 plies and
 one in six reaches the 600-ply cap, where depth-5 games average 63 and almost none do --
-and depth 2 showed the same long, undecided shuffling earlier. A search that ends on the
+and depths 2 and 6 show the same long, undecided shuffling (depth 6: 183 plies, 18% capped). A search that ends on the
 opponent's reply (even depth) sees every committal move answered and plays safe; one that
 ends on its own move (odd depth) sees the gain and takes it. The web app's "strong" level
 is depth 4. Whether that passivity is worth fixing (a quiescence-like extension, or odd
