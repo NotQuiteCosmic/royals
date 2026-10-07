@@ -344,3 +344,30 @@ opponent's reply (even depth) sees every committal move answered and plays safe;
 ends on its own move (odd depth) sees the gain and takes it. The web app's "strong" level
 is depth 4. Whether that passivity is worth fixing (a quiescence-like extension, or odd
 depths only) is a question for the search, not the evaluator, and is noted here for later.
+
+## A balanced book: what the data says (2026-10-07)
+
+Two thirds of pairs split one game each and say nothing. Is "decided by the opening" a
+property of the opening that could be used to prune the book?
+
+**Across depths, no.** Selecting openings that split in every match at the other depths
+and testing them at a held-out depth: they were decisive there 35% / 35% / 27% of the time
+against 38% / 35% / 24% for the openings kept (depths 3, 5, 7 held out). No signal. A deeper
+search changes what a position means.
+
+**At one depth, yes, strongly.** The laptop's sixteen depth-3 match-ups over the same
+thousand openings allow a leave-one-match-up-out test. Openings that always split in the
+other fifteen were decisive in the held-out match-up 0–3% of the time (for match-ups
+between similar evaluators; 22–27% against the deliberately broken ones), against 30–40%
+for the rest. Per-opening decisive fractions spread widely: 341 openings under 20%, 15 over
+80%. Ranking openings by their decisive fraction on the other match-ups and keeping the top
+share, judged on the held-out match-up:
+
+| Keep | 100% | 90% | 75% | 50% | 33% |
+|---|---|---|---|---|---|
+| Decisive pairs | 33% | 36% | 41% | 49% | 53% |
+
+Half the book carries half again the information per game. So the balanced book is a
+**per-depth ranking**, built from several match-ups at that depth over the whole book, and
+SPSA at depth 3 should play the top half. Three probe weight sets (`tuning/probes/`) give
+Actions distinct match-ups to rank the full 10,000-opening book with.
