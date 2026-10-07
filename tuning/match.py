@@ -282,12 +282,12 @@ def run_match(args, a, b, tag=None, elo0=None, elo1=None, max_pairs=None, stop_r
 
 def cmd_match(args):
     a, b = W.load(args.a), W.load(args.b)
-    run_match(args, a, b, tag="match")
+    run_match(args, a, b, tag=args.tag or "match")
 
 
 def cmd_sprt(args):
     a, b = W.load(args.a), W.load(args.b)
-    return sprt(args, a, b, args.elo0, args.elo1, args.max_pairs, tag="sprt")
+    return sprt(args, a, b, args.elo0, args.elo1, args.max_pairs, tag=args.tag or "sprt")
 
 
 def sprt(args, a, b, elo0, elo1, max_pairs, tag):
@@ -449,6 +449,7 @@ def main(argv=None):
         p.add_argument("--ply-cap", type=int, default=G.PLY_CAP)
         p.add_argument("--workers", type=int, default=WORKERS)
         p.add_argument("--shard", default=None, help="i/N: play only every Nth opening, offset i")
+        p.add_argument("--tag", default=None, help="label for this match-up in the results file (default: the mode)")
 
     def sprt_args(p):
         p.add_argument("--elo0", type=float, default=0.0)

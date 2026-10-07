@@ -54,7 +54,7 @@ jobs:
           pypy3 -m tuning.match match --a "${{ inputs.a }}" --b "${{ inputs.b }}" \
             --depth ${{ inputs.depth }} --pairs ${{ inputs.pairs_per_shard }} \
             --ply-cap ${{ inputs.ply_cap }} --shard ${{ matrix.i }}/${{ inputs.shards }} \
-            --workers 4 --out out/pairs-${{ matrix.i }}.jsonl
+            --workers 4 --tag "${{ inputs.tag }}" --out out/pairs-${{ matrix.i }}.jsonl
       - uses: actions/upload-artifact@v4
         with:
           name: pairs-${{ matrix.i }}
