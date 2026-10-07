@@ -215,3 +215,101 @@ def test_queue_runs_to_completion_and_is_idempotent(tmp_path):
     assert len(Q.load_verdicts(str(verdicts))) == 2
     for job in Q.load_jobs(str(queue)):
         assert Q.progress_of(job)[0] is True
+
+
+# ---------------------------------------------------------------------------
+# Sharding and merging: N jobs cover the book once; pooled results are the same results
+# ---------------------------------------------------------------------------
+
+def test_shards_partition_the_book_exactly_once():
+    rows = [{"seed": s} for s in range(23)]
+    seen = []
+    for i in range(5):
+        seen += M.shard_rows(rows, "%d/5" % i)
+    assert sorted(r["seed"] for r in seen) == list(range(23))
+    assert M.shard_rows(rows, None) == rows
+    import pytest as _pytest
+    with _pytest.raises(ValueError): M.parse_shard("5/5")
+    with _pytest.raises(ValueError): M.parse_shard("x")
+
+
+def test_merge_dedupes_and_pools_to_the_unsharded_answer(tmp_path):
+    import json, types
+    book = tmp_path / "book.jsonl"
+    with open(book, "w") as f:
+        for seed in (3, 11, 57, 99):
+            f.write(json.dumps(O.make_opening(seed, noise=0.5).to_row()) + "\n")
+    a, b = W.default(), W.complete({"DIAG_WEIGHT": 0})
+    def args(out, shard):
+        return types.SimpleNamespace(book=str(book), out=str(out), depth=1, ply_cap=4, workers=2,
+                                     pairs=4, alpha=0.05, beta=0.05, shard=shard)
+    whole = tmp_path / "whole.jsonl"
+    M.run_match(args(whole, None), a, b, tag="t")
+    s0, s1 = tmp_path / "s0.jsonl", tmp_path / "s1.jsonl"
+    M.run_match(args(s0, "0/2"), a, b, tag="t")
+    M.run_match(args(s1, "1/2"), a, b, tag="t")
+    assert sum(1 for _ in open(s0)) == 2 and sum(1 for _ in open(s1)) == 2
+    # merging the shards, with one shard given twice, yields exactly the unsharded pairs
+    merged = M.merge_pairs([str(s0), str(s1), str(s0)])
+    assert sorted(p["seed"] for p in merged) == sorted(json.loads(l)["seed"] for l in open(whole))
+    assert S.pentanomial([p["score_a"] for p in merged]) == \
+        S.pentanomial([json.loads(l)["score_a"] for l in open(whole)])
+    out = tmp_path / "merged.jsonl"; summ = tmp_path / "summary.json"
+    got = M.cmd_merge(types.SimpleNamespace(inputs=[str(tmp_path / "s*.jsonl")], out=str(out),
+                                            summary=str(summ), elo0=0.0, elo1=10.0))
+    assert len(got) == 1 and got[0]["pairs"] == 4 and "sprt" in got[0]
+    assert json.load(open(summ))[0]["pairs"] == 4
+
+
+# ---------------------------------------------------------------------------
+# Batched SPSA: init, waves from shards, apply -- the shape that runs on Actions
+# ---------------------------------------------------------------------------
+
+def test_batched_spsa_waves_apply_and_refuse_stale_waves(tmp_path, monkeypatch):
+    import json, types
+    monkeypatch.setattr(P, "RUNS_DIR", str(tmp_path / "runs"))
+    book = tmp_path / "book.jsonl"
+    with open(book, "w") as f:
+        for seed in (3, 11, 57, 99):
+            f.write(json.dumps(O.make_opening(seed, noise=0.5).to_row()) + "\n")
+    P.main(["init", "--name", "b", "--params", "DIAG_WEIGHT", "SPREAD_WEIGHT", "--iterations", "8",
+            "--depth", "1", "--book", str(book), "--ply-cap", "4"])
+    run = P.SPSA.load("b")
+    assert run.done == 0
+    w0, w1 = tmp_path / "w0.jsonl", tmp_path / "w1.jsonl"
+    P.main(["wave", "--name", "b", "--shard", "0/2", "--pairs", "2", "--seed", "7", "--out", str(w0), "--workers", "2"])
+    P.main(["wave", "--name", "b", "--shard", "1/2", "--pairs", "2", "--seed", "7", "--out", str(w1), "--workers", "2"])
+    p0 = [json.loads(l) for l in open(w0)]; p1 = [json.loads(l) for l in open(w1)]
+    assert len(p0) == 2 and len(p1) == 2
+    # different shards, different openings and different perturbations
+    assert {p["seed"] for p in p0}.isdisjoint({p["seed"] for p in p1})
+    assert [p["tag"]["delta"] for p in p0] != [p["tag"]["delta"] for p in p1]
+    assert all(p["tag"]["from"] == 0 for p in p0 + p1)
+
+    applied = P.cmd_apply(types.SimpleNamespace(name="b", inputs=[str(w0), str(w1)]))
+    assert applied == 4
+    run = P.SPSA.load("b")
+    assert run.done == 4
+    # a second apply of the same waves is stale and changes nothing
+    theta = dict(run.theta)
+    assert P.cmd_apply(types.SimpleNamespace(name="b", inputs=[str(w0), str(w1)])) == 0
+    assert P.SPSA.load("b").theta == theta
+    # the next wave draws from iteration 4
+    w2 = tmp_path / "w2.jsonl"
+    P.main(["wave", "--name", "b", "--shard", "0/1", "--pairs", "4", "--seed", "8", "--out", str(w2), "--workers", "2"])
+    assert all(json.loads(l)["tag"]["from"] == 4 for l in open(w2))
+    P.cmd_apply(types.SimpleNamespace(name="b", inputs=[str(w2)]))
+    assert P.SPSA.load("b").done == 8
+
+
+def test_book_shards_build_disjoint_seeds_and_merge_dedupes(tmp_path):
+    import json
+    b0, b1 = tmp_path / "b0.jsonl", tmp_path / "b1.jsonl"
+    O.build_book(2, str(b0), noise=0.5, random_plies=0, start_seed=700000, workers=2, shard=(0, 2))
+    O.build_book(2, str(b1), noise=0.5, random_plies=0, start_seed=700000, workers=2, shard=(1, 2))
+    s0 = [json.loads(l)["seed"] for l in open(b0)]; s1 = [json.loads(l)["seed"] for l in open(b1)]
+    assert all((s - 700000) % 2 == 0 for s in s0) and all((s - 700000) % 2 == 1 for s in s1)
+    out = tmp_path / "book.jsonl"
+    n = O.merge_books([str(b0), str(b1), str(b0)], str(out))
+    assert n == 4 and sum(1 for _ in open(out)) == 4
+    assert len(O.load_book(str(out))) == 4

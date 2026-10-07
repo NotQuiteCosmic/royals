@@ -1,0 +1,97 @@
+# A challenger against the pre-tuning evaluator and every past champion, each a sharded
+# match judged at merge as a non-regression SPRT [-10, 0]. Pass = no opponent accepts H0.
+name: tune-gauntlet
+
+on:
+  workflow_dispatch:
+    inputs:
+      challenger: { description: "weights (repo path)", required: true }
+      depth:      { description: "search depth", default: "3" }
+      pairs_per_shard: { description: "pairs per shard per opponent", default: "50" }
+      shards:     { description: "parallel jobs per opponent (opponents x shards <= 20)", default: "5" }
+      ply_cap:    { description: "ply cap per game", default: "600" }
+
+permissions:
+  contents: write
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: m
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import glob, json, os
+          opponents = ["tuning/pool/original.json"] + sorted(glob.glob("tuning/pool/champ-*.json"))
+          opponents = [o for o in opponents if os.path.abspath(o) != os.path.abspath("${{ inputs.challenger }}")]
+          n = int("${{ inputs.shards }}")
+          combos = [{"opp": o, "i": i} for o in opponents for i in range(n)]
+          print("matrix=" + json.dumps({"include": combos[:20]}))
+          PY
+
+  shard:
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "pypy3.10"
+      - run: |
+          mkdir -p out
+          name=$(basename "${{ matrix.opp }}" .json)
+          pypy3 -m tuning.match match --a "${{ inputs.challenger }}" --b "${{ matrix.opp }}" \
+            --depth ${{ inputs.depth }} --pairs ${{ inputs.pairs_per_shard }} \
+            --ply-cap ${{ inputs.ply_cap }} --shard ${{ matrix.i }}/${{ inputs.shards }} \
+            --workers 4 --out "out/pairs-$name-${{ matrix.i }}.jsonl"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pairs-${{ strategy.job-index }}
+          path: out/
+          retention-days: 90
+
+  merge:
+    needs: shard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "pypy3.10"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pairs-*
+          merge-multiple: true
+          path: shards
+      - name: Judge each opponent as a non-regression SPRT
+        run: |
+          mkdir -p merged
+          pypy3 -m tuning.match merge "shards/pairs-*.jsonl" --out merged/pairs.jsonl \
+            --summary merged/summary.json --elo0 -10 --elo1 0 | tee merged/report.txt
+          python3 - <<'PY' | tee -a merged/report.txt
+          import json
+          s = json.load(open("merged/summary.json"))
+          failed = [e for e in s if e.get("sprt", {}).get("status") == "H0"]
+          print("GAUNTLET " + ("FAILED: regressed against %d opponent(s)" % len(failed) if failed else "PASSED"))
+          PY
+          { echo '## tune-gauntlet'; echo; echo '```'; cat merged/report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          gzip -k merged/pairs.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: merged
+          path: merged/
+          retention-days: 90
+      - run: |
+          printf '%s\n' '${{ toJSON(inputs) }}' > merged/inputs.json
+          files="merged/summary.json merged/report.txt merged/inputs.json"
+          if [ "$(stat -c %s merged/pairs.jsonl.gz)" -lt 5000000 ]; then files="$files merged/pairs.jsonl.gz"; fi
+          sh tuning/ci/record.sh "gauntlet/${{ github.run_id }}-d${{ inputs.depth }}" $files

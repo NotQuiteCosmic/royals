@@ -1,0 +1,100 @@
+# A match between two weight sets, sharded across up to 20 free runners, pooled at the end.
+#
+# Each shard job plays every Nth opening of the book (tuning/match.py --shard i/N); the
+# merge job pools the shard files, prints Elo and an SPRT verdict judged on the pooled
+# pairs, and commits a summary (and the games, gzipped, when small enough) to the
+# `tuning-results` branch so the measurement outlives the runner. Nothing here touches
+# ai.py, the goldens or master.
+name: tune-match
+
+on:
+  workflow_dispatch:
+    inputs:
+      a:        { description: "weights A (repo path)", default: "tuning/pool/champ-001.json" }
+      b:        { description: "weights B (repo path)", default: "tuning/pool/original.json" }
+      depth:    { description: "search depth", default: "3" }
+      pairs_per_shard: { description: "colour-swapped pairs per shard", default: "50" }
+      shards:   { description: "number of parallel jobs (max 20)", default: "4" }
+      ply_cap:  { description: "ply cap per game", default: "600" }
+      elo0:     { description: "SPRT H0 Elo (judged at merge)", default: "0" }
+      elo1:     { description: "SPRT H1 Elo (judged at merge)", default: "10" }
+      tag:      { description: "label for this match-up in the results", default: "actions" }
+
+permissions:
+  contents: write
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.list.outputs.list }}
+    steps:
+      - id: list
+        run: |
+          n=${{ inputs.shards }}
+          if [ "$n" -gt 20 ]; then echo "shards capped at 20"; n=20; fi
+          echo "list=$(python3 -c "import json; print(json.dumps(list(range($n))))")" >> "$GITHUB_OUTPUT"
+
+  shard:
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        i: ${{ fromJSON(needs.setup.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "pypy3.10"
+      - name: Play shard ${{ matrix.i }}/${{ inputs.shards }}
+        run: |
+          mkdir -p out
+          pypy3 -m tuning.match match --a "${{ inputs.a }}" --b "${{ inputs.b }}" \
+            --depth ${{ inputs.depth }} --pairs ${{ inputs.pairs_per_shard }} \
+            --ply-cap ${{ inputs.ply_cap }} --shard ${{ matrix.i }}/${{ inputs.shards }} \
+            --workers 4 --out out/pairs-${{ matrix.i }}.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pairs-${{ matrix.i }}
+          path: out/pairs-${{ matrix.i }}.jsonl
+          retention-days: 90
+
+  merge:
+    needs: shard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "pypy3.10"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pairs-*
+          merge-multiple: true
+          path: shards
+      - name: Pool the shards
+        run: |
+          mkdir -p merged
+          pypy3 -m tuning.match merge "shards/pairs-*.jsonl" --out merged/pairs.jsonl \
+            --summary merged/summary.json --elo0 ${{ inputs.elo0 }} --elo1 ${{ inputs.elo1 }} \
+            | tee merged/report.txt
+          { echo '## tune-match'; echo; echo '```'; cat merged/report.txt; echo '```';
+            echo; echo "A: \`${{ inputs.a }}\`  B: \`${{ inputs.b }}\`  depth ${{ inputs.depth }}, ${{ inputs.shards }} x ${{ inputs.pairs_per_shard }} pairs, ply cap ${{ inputs.ply_cap }}"; } >> "$GITHUB_STEP_SUMMARY"
+          gzip -k merged/pairs.jsonl
+          ls -la merged
+      - uses: actions/upload-artifact@v4
+        with:
+          name: merged
+          path: merged/
+          retention-days: 90
+      - name: Record to the tuning-results branch
+        run: |
+          dest="match/${{ github.run_id }}-d${{ inputs.depth }}"
+          files="merged/summary.json merged/report.txt"
+          if [ "$(stat -c %s merged/pairs.jsonl.gz)" -lt 5000000 ]; then files="$files merged/pairs.jsonl.gz"; fi
+          printf '%s\n' '${{ toJSON(inputs) }}' > merged/inputs.json
+          sh tuning/ci/record.sh "$dest" $files merged/inputs.json

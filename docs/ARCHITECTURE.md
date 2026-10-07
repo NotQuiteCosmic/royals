@@ -217,6 +217,25 @@ Elo against the world; it is for comparing candidates with each other.
 `tournament`, `gauntlet` -- writing one JSONL line per pair and resuming from it.
 `tuning/spsa.py` tunes a weight vector by SPSA over paired games; `tuning/scale.py` picks
 a probe size for a zero-default term by reading its raw size off the evaluator itself.
+### Running on GitHub Actions
+
+The repo is public, so GitHub-hosted runners are free: 4 cores each, up to 20 at once,
+6 hours a job -- about ten times the laptop. Four `workflow_dispatch` workflows in
+`.github/workflows/` use them. `tune-match` and `tune-gauntlet` shard a match across
+runners (`tuning.match --shard i/N`: every Nth opening of the book, offset i) and pool the
+shard files at the end (`tuning.match merge`), judging any SPRT on the pooled pairs.
+`tune-spsa` runs SPSA in waves: every shard draws its own perturbations from the same
+theta, an `apply` job folds them all in, and the workflow re-dispatches itself until the
+iteration target is met (`tuning.spsa init|wave|apply`). `tune-book` builds a book in
+slices and merges them. Determinism means a runner plays exactly the games the laptop
+would, so results from the two mix freely.
+
+Results outlive the runner because each workflow's last step commits them -- verdict
+summaries, SPSA checkpoints, gzipped games when small -- to the `tuning-results` branch
+with `tuning/ci/record.sh`. CI never touches `ai.py`, the goldens or `master`; a person
+copies figures into `tuning/RESULTS.md`. Locally the harness defaults to half the cores so
+the machine stays usable; runners pass `--workers 4` to use all of theirs.
+
 `tuning/pool/` holds the weight sets that have earned a place: `original.json` is the
 evaluator before any tuning and is in every gauntlet forever; `champ-001.json` is what the
 October 2026 tuning adopted and what `ai.DEFAULT_WEIGHTS` now holds. `tuning/RESULTS.md` is

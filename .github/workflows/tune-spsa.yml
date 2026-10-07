@@ -1,0 +1,150 @@
+# Batched SPSA across up to 20 runners, one wave per workflow run, re-dispatching itself
+# until the run reaches its iteration target.
+#
+#   setup  -- restore tuning/runs/<name>/ from the tuning-results branch (or `init` it)
+#   wave   -- N shards each draw their own perturbations from the same theta and play
+#   apply  -- fold every wave file into theta, checkpoint, record to tuning-results,
+#             and dispatch the next wave if there is more to do
+#
+# `concurrency` keeps two waves of one run from overlapping: a wave drawn from a theta that
+# `apply` has since moved would be refused as stale anyway (see spsa.py), but it would also
+# be wasted.
+name: tune-spsa
+
+on:
+  workflow_dispatch:
+    inputs:
+      name:       { description: "run name (state lives under tuning/runs/<name>)", required: true }
+      base:       { description: "starting weights (repo path); only used by init", default: "tuning/pool/champ-001.json" }
+      params:     { description: "space-separated weights to tune (empty = all); init only", default: "" }
+      c:          { description: "probe sizes NAME=value, space-separated; init only", default: "" }
+      iterations: { description: "total iterations; init only", default: "20000" }
+      depth:      { description: "search depth; init only", default: "3" }
+      shards:     { description: "parallel jobs per wave (max 20)", default: "20" }
+      pairs_per_shard: { description: "pairs per shard per wave", default: "50" }
+      ply_cap:    { description: "ply cap; init only", default: "600" }
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: spsa-${{ inputs.name }}
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.list.outputs.list }}
+      done: ${{ steps.state.outputs.done }}
+      target: ${{ steps.state.outputs.target }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "pypy3.10"
+      - name: Restore or initialise the run
+        id: state
+        run: |
+          if git fetch origin tuning-results 2>/dev/null && git ls-tree -d FETCH_HEAD "spsa/${{ inputs.name }}/runs/${{ inputs.name }}" | grep -q .; then
+            mkdir -p tuning/runs
+            git archive FETCH_HEAD "spsa/${{ inputs.name }}/runs/${{ inputs.name }}" | tar -x -C /tmp
+            mv "/tmp/spsa/${{ inputs.name }}/runs/${{ inputs.name }}" "tuning/runs/${{ inputs.name }}"
+            echo "restored tuning/runs/${{ inputs.name }} from tuning-results"
+          else
+            pypy3 -m tuning.spsa init --name "${{ inputs.name }}" --base "${{ inputs.base }}" \
+              --iterations ${{ inputs.iterations }} --depth ${{ inputs.depth }} --ply-cap ${{ inputs.ply_cap }} \
+              ${{ inputs.params != '' && format('--params {0}', inputs.params) || '' }} \
+              ${{ inputs.c != '' && format('--c {0}', inputs.c) || '' }}
+          fi
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          s = json.load(open("tuning/runs/${{ inputs.name }}/state.json"))
+          print("done=%d" % s["done"]); print("target=%d" % s["iterations"])
+          PY
+      - id: list
+        run: |
+          n=${{ inputs.shards }}; if [ "$n" -gt 20 ]; then n=20; fi
+          echo "list=$(python3 -c "import json; print(json.dumps(list(range($n))))")" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spsa-state
+          path: tuning/runs/${{ inputs.name }}/
+
+  wave:
+    needs: setup
+    if: ${{ fromJSON(needs.setup.outputs.done) < fromJSON(needs.setup.outputs.target) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        i: ${{ fromJSON(needs.setup.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "pypy3.10"
+      - uses: actions/download-artifact@v4
+        with:
+          name: spsa-state
+          path: tuning/runs/${{ inputs.name }}/
+      - run: |
+          mkdir -p out
+          pypy3 -m tuning.spsa wave --name "${{ inputs.name }}" --shard ${{ matrix.i }}/${{ inputs.shards }} \
+            --pairs ${{ inputs.pairs_per_shard }} --seed ${{ github.run_id }} --workers 4 \
+            --out out/wave-${{ matrix.i }}.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wave-${{ matrix.i }}
+          path: out/wave-${{ matrix.i }}.jsonl
+          retention-days: 30
+
+  apply:
+    needs: [setup, wave]
+    if: ${{ always() && needs.setup.result == 'success' && fromJSON(needs.setup.outputs.done) < fromJSON(needs.setup.outputs.target) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "pypy3.10"
+      - uses: actions/download-artifact@v4
+        with:
+          name: spsa-state
+          path: tuning/runs/${{ inputs.name }}/
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wave-*
+          merge-multiple: true
+          path: waves
+      - name: Fold the wave into theta
+        id: apply
+        run: |
+          pypy3 -m tuning.spsa apply --name "${{ inputs.name }}" waves/wave-*.jsonl | tee apply.txt
+          { echo '## tune-spsa ${{ inputs.name }}'; echo; echo '```'; cat apply.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          s = json.load(open("tuning/runs/${{ inputs.name }}/state.json"))
+          print("more=%s" % ("yes" if s["done"] < s["iterations"] else "no"))
+          PY
+      - name: Record the checkpoint
+        run: |
+          mkdir -p rec/runs && cp -R "tuning/runs/${{ inputs.name }}" rec/runs/
+          cp apply.txt rec/apply-${{ github.run_id }}.txt
+          sh tuning/ci/record.sh "spsa/${{ inputs.name }}" rec/runs rec/apply-${{ github.run_id }}.txt
+      - name: Dispatch the next wave
+        if: ${{ steps.apply.outputs.more == 'yes' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run tune-spsa.yml --ref "${{ github.ref_name }}" \
+            -f name="${{ inputs.name }}" -f base="${{ inputs.base }}" -f params="${{ inputs.params }}" \
+            -f c="${{ inputs.c }}" -f iterations="${{ inputs.iterations }}" -f depth="${{ inputs.depth }}" \
+            -f shards="${{ inputs.shards }}" -f pairs_per_shard="${{ inputs.pairs_per_shard }}" \
+            -f ply_cap="${{ inputs.ply_cap }}"

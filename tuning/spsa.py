@@ -243,5 +243,143 @@ def main(argv=None):
     run.run(args.workers)
 
 
+
+
+# ---------------------------------------------------------------------------
+# Batched SPSA for many machines that cannot talk to each other
+# ---------------------------------------------------------------------------
+# The loop above is one process feeding one pool. On GitHub Actions there are twenty jobs
+# and no shared memory, so the loop is cut in three: `init` writes the starting state;
+# `wave` is what one job does -- load theta, draw its own perturbations, play its pairs,
+# write them out, touch nothing; `apply` folds every wave's pairs into theta and advances
+# the checkpoint. Every probe in a wave is drawn from the same theta, which is batched
+# SPSA with a batch of N x k; the sequential version differs only in using each pair's
+# result before drawing the next, and with twenty asynchronous workers it was already
+# most of a batch behind. Waves are tagged with the iteration they were drawn from, so a
+# stale wave (one drawn before an `apply` it did not know about) is refused rather than
+# applied to a theta it was not probing.
+
+def wave_jobs(run, rows, pairs, rng):
+    """`pairs` jobs drawn from run.theta as it stands, with iteration indices starting at
+    run.done + 1. The opening offset moves with run.done so successive waves on the same
+    shard do not replay the same openings."""
+    jobs = []
+    for j in range(pairs):
+        k = run.done + 1 + j
+        delta = {p: rng.choice((-1, 1)) for p in run.params}
+        plus = dict(run.theta)
+        minus = dict(run.theta)
+        for p in run.params:
+            plus[p] += run.c_k(p, k) * delta[p]
+            minus[p] -= run.c_k(p, k) * delta[p]
+        plus, minus = run.rounded(plus), run.rounded(minus)
+        if plus == minus: continue
+        row = rows[(run.done + j) % len(rows)]
+        jobs.append({"opening": row, "a": plus, "b": minus, "depth": run.depth,
+                     "ply_cap": run.ply_cap, "tag": {"k": k, "delta": delta, "from": run.done}})
+    return jobs
+
+
+def cmd_init(args):
+    if os.path.exists(os.path.join(RUNS_DIR, args.name, "state.json")):
+        sys.exit("run %r exists" % args.name)
+    overrides = {}
+    for item in args.c:
+        name, value = item.split("=")
+        overrides[name] = float(value)
+    base = W.load(args.base) if args.base else W.default()
+    run = SPSA(args.name, base, args.params or list(AI.WEIGHT_NAMES), args.iterations, args.depth,
+               overrides, args.r_end, args.seed, args.book, args.ply_cap)
+    run.save()
+    M.line(run.report())
+
+
+def cmd_wave(args):
+    run = SPSA.load(args.name)
+    if run.done >= run.iterations:
+        M.line("run %s is complete (%d iterations): nothing to do" % (args.name, run.done))
+        return
+    rows = M.shard_rows(M.load_rows(run.book), args.shard)
+    # seeded by the wave, the shard and the checkpoint, so no two shards -- and no two
+    # waves -- draw the same perturbations
+    rng = random.Random("%s:%s:%d" % (args.seed, args.shard or "0/1", run.done))
+    pairs = min(args.pairs, run.iterations - run.done)
+    jobs = wave_jobs(run, rows, pairs, rng)
+    played = [0]
+
+    def on_result(pair):
+        played[0] += 1
+        M.progress("wave %s: %d/%d pairs" % (args.shard or "0/1", played[0], len(jobs)))
+        return False
+
+    with M.Runner(args.workers, args.out) as runner:
+        runner.run(iter(jobs), on_result)
+    M.line("")
+    M.line("wave %s from iteration %d: %d pairs -> %s" % (args.shard or "0/1", run.done, played[0], args.out))
+
+
+def cmd_apply(args):
+    run = SPSA.load(args.name)
+    pairs = M.merge_pairs(args.inputs)
+    fresh = [p for p in pairs if p["tag"].get("from") == run.done]
+    stale = len(pairs) - len(fresh)
+    if stale:
+        M.line("ignoring %d pairs drawn from iteration %d or earlier (state is at %d)"
+               % (stale, max(p["tag"].get("from", -1) for p in pairs), run.done))
+    before = run.done
+    for pair in sorted(fresh, key=lambda p: p["tag"]["k"]):
+        run.apply(pair)
+    run.k = run.done
+    run.save()
+    M.line("applied %d pairs: iteration %d -> %d of %d" % (len(fresh), before, run.done, run.iterations))
+    M.line(run.report())
+    return len(fresh)
+
+
+def main_batched(argv):
+    parser = argparse.ArgumentParser(description="batched SPSA: init, wave, apply")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("init")
+    p.add_argument("--name", required=True)
+    p.add_argument("--base", default=None)
+    p.add_argument("--params", nargs="*", default=None)
+    p.add_argument("--iterations", type=int, default=20000)
+    p.add_argument("--depth", type=int, default=3)
+    p.add_argument("--c", nargs="*", default=[])
+    p.add_argument("--r-end", type=float, default=R_END)
+    p.add_argument("--seed", type=int, default=1)
+    p.add_argument("--book", default=M.DEFAULT_BOOK)
+    p.add_argument("--ply-cap", type=int, default=G.PLY_CAP)
+    p.set_defaults(fn=cmd_init)
+
+    p = sub.add_parser("wave")
+    p.add_argument("--name", required=True)
+    p.add_argument("--shard", default=None)
+    p.add_argument("--pairs", type=int, default=50)
+    p.add_argument("--seed", default="0", help="the wave's seed, e.g. the workflow run id")
+    p.add_argument("--out", required=True)
+    p.add_argument("--workers", type=int, default=M.WORKERS)
+    p.set_defaults(fn=cmd_wave)
+
+    p = sub.add_parser("apply")
+    p.add_argument("--name", required=True)
+    p.add_argument("inputs", nargs="+", help="wave pair files")
+    p.set_defaults(fn=cmd_apply)
+
+    args = parser.parse_args(argv)
+    args.fn(args)
+
+
+_sequential_main = main
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] in ("init", "wave", "apply"):
+        return main_batched(argv)
+    return _sequential_main(argv)
+
+
 if __name__ == "__main__":
     main()

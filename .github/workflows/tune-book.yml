@@ -1,0 +1,72 @@
+# Build an opening book across runners and merge it. The result is committed to the
+# tuning-results branch; copy it into tuning/book.jsonl on a source branch by hand.
+name: tune-book
+
+on:
+  workflow_dispatch:
+    inputs:
+      count:        { description: "openings per shard", default: "500" }
+      shards:       { description: "parallel jobs (max 20)", default: "20" }
+      noise:        { description: "entering noise intensity", default: "1.0" }
+      random_plies: { description: "random plies after entering (even)", default: "2" }
+      start_seed:   { description: "first seed", default: "1000000" }
+
+permissions:
+  contents: write
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.list.outputs.list }}
+    steps:
+      - id: list
+        run: |
+          n=${{ inputs.shards }}; if [ "$n" -gt 20 ]; then n=20; fi
+          echo "list=$(python3 -c "import json; print(json.dumps(list(range($n))))")" >> "$GITHUB_OUTPUT"
+  shard:
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        i: ${{ fromJSON(needs.setup.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "pypy3.10"
+      - run: |
+          mkdir -p out
+          pypy3 -m tuning.openings --count ${{ inputs.count }} --noise ${{ inputs.noise }} \
+            --random-plies ${{ inputs.random_plies }} --start-seed ${{ inputs.start_seed }} \
+            --shard ${{ matrix.i }}/${{ inputs.shards }} --workers 4 --out out/book-${{ matrix.i }}.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: book-${{ matrix.i }}
+          path: out/book-${{ matrix.i }}.jsonl
+  merge:
+    needs: shard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "pypy3.10"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: book-*
+          merge-multiple: true
+          path: shards
+      - run: |
+          mkdir -p merged
+          pypy3 -m tuning.openings --merge shards/book-*.jsonl --out merged/book.jsonl | tee merged/report.txt
+          cat merged/report.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: book
+          path: merged/
+      - run: sh tuning/ci/record.sh "book/${{ github.run_id }}" merged/book.jsonl merged/report.txt

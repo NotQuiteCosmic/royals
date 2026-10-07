@@ -147,12 +147,16 @@ def _build_one(args):
     return opening.to_row(), opening.board
 
 
-def build_book(count, path, noise=1.0, random_plies=2, start_seed=1, workers=None):
+def build_book(count, path, noise=1.0, random_plies=2, start_seed=1, workers=None, shard=None):
     """Write `count` distinct openings to `path` as JSONL. Seeds are tried in order from
     start_seed; two seeds that reach the same board keep only the first, so the book is a
-    set of positions, not of seeds. Returns how many seeds were tried."""
+    set of positions, not of seeds. Returns how many seeds were tried.
+
+    `shard` = (i, N) takes only every Nth seed, offset i, so N jobs can build one book
+    between them with no coordination; merge_books then dedupes across their outputs."""
     if random_plies % 2:
         raise ValueError("random_plies must be even so red is to move in every opening")
+    shard_i, shard_n = shard or (0, 1)
 
     seen = set()
     written = 0
@@ -160,8 +164,9 @@ def build_book(count, path, noise=1.0, random_plies=2, start_seed=1, workers=Non
     with ProcessPoolExecutor(max_workers=workers) as pool, open(path, "w") as out:
         seed = start_seed
         while written < count:
-            batch = [(s, noise, random_plies) for s in range(seed, seed + 64)]
-            seed += 64
+            batch = [(s, noise, random_plies) for s in range(seed, seed + 64 * shard_n)
+                     if (s - start_seed) % shard_n == shard_i]
+            seed += 64 * shard_n
             tried += len(batch)
             for got in pool.map(_build_one, batch):
                 if got is None: continue
@@ -172,6 +177,26 @@ def build_book(count, path, noise=1.0, random_plies=2, start_seed=1, workers=Non
                 written += 1
                 if written >= count: break
     return tried
+
+
+def merge_books(paths, out):
+    """One book from several shards' books: every row whose position has not been seen,
+    in file order. Returns how many were written."""
+    seen = set()
+    written = 0
+    with open(out, "w") as f:
+        for path in paths:
+            with open(path) as src:
+                for line in src:
+                    line = line.strip()
+                    if not line: continue
+                    row = json.loads(line)
+                    board, _ = replay(row["entries"], row["moves"])
+                    if board in seen: continue
+                    seen.add(board)
+                    f.write(json.dumps(row, sort_keys=True) + "\n")
+                    written += 1
+    return written
 
 
 def load_book(path, limit=None):
@@ -197,9 +222,20 @@ if __name__ == "__main__":
     parser.add_argument("--random-plies", type=int, default=2)
     parser.add_argument("--start-seed", type=int, default=1)
     parser.add_argument("--workers", type=int, default=None)
+    parser.add_argument("--shard", default=None, help="i/N: build only every Nth seed, offset i")
+    parser.add_argument("--merge", nargs="*", default=None, help="instead: merge these shard books into --out")
     args = parser.parse_args()
 
+    if args.merge is not None:
+        n = merge_books(args.merge, args.out)
+        sys.stdout.write("%d openings merged from %d files -> %s\n" % (n, len(args.merge), args.out))
+        sys.exit(0)
+
+    shard = None
+    if args.shard:
+        i, n = (int(x) for x in args.shard.split("/"))
+        shard = (i, n)
     started = time.time()
-    tried = build_book(args.count, args.out, args.noise, args.random_plies, args.start_seed, args.workers)
+    tried = build_book(args.count, args.out, args.noise, args.random_plies, args.start_seed, args.workers, shard)
     sys.stdout.write("%d openings from %d seeds in %.0fs -> %s\n"
                      % (args.count, tried, time.time() - started, args.out))

@@ -46,7 +46,13 @@ pypy3 -m tuning.match gauntlet --challenger cand.json      # non-regression vs t
 pypy3 -m tuning.match tournament --players a.json b.json c.json
 pypy3 -m tuning.spsa --name run1 --iterations 20000        # tune; --resume to continue
 pypy3 -m tuning.scale --from results.jsonl --terms NEW_TERM # probe size for a 0-default term
+gh workflow run tune-match.yml --ref <branch> -f a=... -f b=... -f depth=4 -f shards=20 -f pairs_per_shard=250
+gh workflow run tune-spsa.yml  --ref <branch> -f name=run3 -f shards=20     # re-dispatches itself per wave
 ```
+
+Heavy tuning runs on GitHub Actions (free, ~10x the laptop; see ARCHITECTURE "Running on
+GitHub Actions"); results land on the `tuning-results` branch. Locally the harness uses
+half the cores by default so the machine stays usable.
 
 Weights are `ai.WEIGHT_NAMES` / `getWeights` / `setWeights`, integers only. **A new
 evaluation term defaults to 0 and must leave `golden.txt` byte-identical until a tournament

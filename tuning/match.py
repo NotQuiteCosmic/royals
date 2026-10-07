@@ -36,7 +36,9 @@ from tuning import game as G
 from tuning import weights as W
 from tuning import stats as S
 
-WORKERS = int(os.environ.get("ROYALS_TUNE_WORKERS", "8"))
+# Half the machine by default, so a run leaves the computer usable; ROYALS_TUNE_WORKERS or
+# --workers for more. GitHub Actions runners pass --workers 4 explicitly to use all of theirs.
+WORKERS = int(os.environ.get("ROYALS_TUNE_WORKERS", str(max(1, (os.cpu_count() or 2) // 2))))
 DEFAULT_BOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "book.jsonl")
 POOL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pool")
 
@@ -148,6 +150,32 @@ def jobs_for(book_rows, a, b, depth, ply_cap, skip_seeds=(), tag=None):
         yield {"opening": row, "a": a, "b": b, "depth": depth, "ply_cap": ply_cap, "tag": tag}
 
 
+# ---------------------------------------------------------------------------
+# Sharding: N jobs, one book, no coordination
+# ---------------------------------------------------------------------------
+# A shard "i/N" is every opening whose index in the book is congruent to i mod N. N jobs
+# given shards 0/N .. N-1/N between them play every opening exactly once and never the same
+# one twice, with nothing shared but the book -- which is what lets a match run across
+# twenty GitHub Actions runners that cannot talk to each other. Results come back as one
+# file per shard and `merge` pools them.
+
+def parse_shard(text):
+    """'3/20' -> (3, 20). None -> (0, 1), the whole book."""
+    if not text: return 0, 1
+    try:
+        i, n = (int(part) for part in text.split("/"))
+    except ValueError:
+        raise ValueError("a shard is written i/N, e.g. 3/20, not %r" % (text,))
+    if n < 1 or not 0 <= i < n:
+        raise ValueError("shard %d/%d: need 0 <= i < N" % (i, n))
+    return i, n
+
+
+def shard_rows(rows, shard):
+    i, n = parse_shard(shard) if isinstance(shard, str) or shard is None else shard
+    return rows[i::n]
+
+
 def load_rows(path, limit=None):
     rows = []
     with open(path) as f:
@@ -221,7 +249,7 @@ def run_match(args, a, b, tag=None, elo0=None, elo1=None, max_pairs=None, stop_r
         line("both sides are the same weights (%s): nothing to measure" % a_id)
         return None
 
-    rows = load_rows(args.book)
+    rows = shard_rows(load_rows(args.book), getattr(args, "shard", None))
     earlier = previous_pairs(args.out, a_id, b_id, tag)
     tally = Tally(earlier)
     if earlier: line("resuming: %d pairs already on disk" % len(earlier))
@@ -283,7 +311,7 @@ def sprt(args, a, b, elo0, elo1, max_pairs, tag):
 
 def cmd_tournament(args):
     players = [(os.path.splitext(os.path.basename(p))[0], W.load(p)) for p in args.players]
-    rows = load_rows(args.book, args.openings)
+    rows = shard_rows(load_rows(args.book, args.openings), getattr(args, "shard", None))
     games = []
     tallies = {}
 
@@ -317,6 +345,63 @@ def cmd_tournament(args):
         with open(args.table, "w") as f:
             json.dump({name: {"elo": r[0], "games": r[1], "score": r[2]}
                        for name, r in ratings.items()}, f, indent=2, sort_keys=True)
+
+
+# ---------------------------------------------------------------------------
+# Merging shard files
+# ---------------------------------------------------------------------------
+
+def merge_pairs(paths):
+    """Every pair from every file, one copy each. The key is the match-up, the tag and the
+    opening: the same pair played twice (a shard re-run, an overlapping resume) is the same
+    deterministic games and is kept once."""
+    seen = set()
+    merged = []
+    for path in paths:
+        with open(path) as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw: continue
+                pair = json.loads(raw)
+                key = (pair["a_id"], pair["b_id"], json.dumps(pair.get("tag"), sort_keys=True), pair["seed"])
+                if key in seen: continue
+                seen.add(key)
+                merged.append(pair)
+    return merged
+
+
+def cmd_merge(args):
+    paths = []
+    for pattern in args.inputs: paths.extend(sorted(glob.glob(pattern)))
+    if not paths: sys.exit("merge: nothing matched %s" % " ".join(args.inputs))
+    merged = merge_pairs(paths)
+    if args.out:
+        with open(args.out, "w") as f:
+            for pair in merged: f.write(json.dumps(pair, sort_keys=True) + "\n")
+
+    # one verdict per match-up in the pooled file; usually there is exactly one
+    groups = {}
+    for pair in merged:
+        groups.setdefault((pair["a_id"], pair["b_id"], json.dumps(pair.get("tag"), sort_keys=True)), []).append(pair)
+    summary = []
+    for (a_id, b_id, tag), pairs in groups.items():
+        tally = Tally(pairs)
+        verdict = None
+        if args.elo0 is not None and args.elo1 is not None:
+            verdict = S.sprt_status(tally.pent, args.elo0, args.elo1)
+        elo, low, high = S.elo_ci(tally.pent)
+        entry = {"a_id": a_id, "b_id": b_id, "tag": json.loads(tag), "pairs": len(pairs),
+                 "pentanomial": tally.pent, "elo": round(elo, 1), "ci": [round(low, 1), round(high, 1)],
+                 "caps": tally.caps, "games": tally.games, "mean_plies": round(tally.plies / max(tally.games, 1), 1)}
+        if verdict is not None:
+            entry["sprt"] = {"elo0": args.elo0, "elo1": args.elo1, "status": verdict}
+        summary.append(entry)
+        line("%s v %s %s  %s%s" % (a_id, b_id, tag, tally.summary(args.elo0, args.elo1),
+                                   "  SPRT %s" % verdict if verdict else ""))
+    line("%d pairs from %d files%s" % (len(merged), len(paths), " -> " + args.out if args.out else ""))
+    if args.summary:
+        with open(args.summary, "w") as f: json.dump(summary, f, indent=2, sort_keys=True)
+    return summary
 
 
 def champions(pool_dir, recent=3):
@@ -363,6 +448,7 @@ def main(argv=None):
         p.add_argument("--depth", type=int, default=3)
         p.add_argument("--ply-cap", type=int, default=G.PLY_CAP)
         p.add_argument("--workers", type=int, default=WORKERS)
+        p.add_argument("--shard", default=None, help="i/N: play only every Nth opening, offset i")
 
     def sprt_args(p):
         p.add_argument("--elo0", type=float, default=0.0)
@@ -386,6 +472,14 @@ def main(argv=None):
     p.add_argument("--table", default=None, help="write the rating table here as JSON")
     p.set_defaults(fn=cmd_tournament, pairs=None)
 
+    p = sub.add_parser("merge", help="pool shard files into one and report")
+    p.add_argument("inputs", nargs="+", help="files or globs of pair JSONL")
+    p.add_argument("--out", default=None)
+    p.add_argument("--summary", default=None, help="write the per-match-up verdicts here as JSON")
+    p.add_argument("--elo0", type=float, default=None)
+    p.add_argument("--elo1", type=float, default=None)
+    p.set_defaults(fn=cmd_merge, pairs=None, mode="merge")
+
     p = sub.add_parser("gauntlet"); common(p); sprt_args(p)
     p.set_defaults(elo0=-10.0, elo1=0.0)
     p.add_argument("--challenger", required=True)
@@ -394,7 +488,7 @@ def main(argv=None):
     p.set_defaults(fn=cmd_gauntlet, pairs=None)
 
     args = parser.parse_args(argv)
-    if args.out is None:
+    if args.mode != "merge" and args.out is None:
         results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
         os.makedirs(results_dir, exist_ok=True)
         args.out = os.path.join(results_dir, args.mode + ".jsonl")
