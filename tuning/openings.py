@@ -199,6 +199,52 @@ def merge_books(paths, out):
     return written
 
 
+# ---------------------------------------------------------------------------
+# A balanced book
+# ---------------------------------------------------------------------------
+# Two thirds of colour-swapped pairs split one game each: the opening decided both games
+# and the pair said nothing about the players. Play is deterministic, so an opening that
+# split in every match it has appeared in -- different weights, different depths -- is
+# one the position itself decides, and dropping it from the book raises the information
+# per game for everything played afterwards. "Every match" matters: a single split is the
+# base rate and means nothing; the filter asks for at least `min_appearances` matches and
+# a split in all of them.
+
+def opening_splits(pair_files):
+    """{seed: (appearances, splits)} across pair files (match results, any depth)."""
+    stats = {}
+    for path in pair_files:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line: continue
+                pair = json.loads(line)
+                seen, split = stats.get(pair["seed"], (0, 0))
+                stats[pair["seed"]] = (seen + 1, split + (1 if pair["score_a"] == 0.5 else 0))
+    return stats
+
+
+def filter_book(book_path, pair_files, out, min_appearances=2):
+    """Write the openings of `book_path` that are NOT known to be decided by the opening:
+    everything except those seen at least min_appearances times and split every time.
+    Returns (kept, dropped, never_seen)."""
+    stats = opening_splits(pair_files)
+    kept = dropped = unseen = 0
+    with open(book_path) as src, open(out, "w") as dst:
+        for line in src:
+            line = line.strip()
+            if not line: continue
+            row = json.loads(line)
+            seen, split = stats.get(row["seed"], (0, 0))
+            if seen == 0: unseen += 1
+            if seen >= min_appearances and split == seen:
+                dropped += 1
+                continue
+            dst.write(line + "\n")
+            kept += 1
+    return kept, dropped, unseen
+
+
 def load_book(path, limit=None):
     openings = []
     with open(path) as f:
@@ -224,7 +270,17 @@ if __name__ == "__main__":
     parser.add_argument("--workers", type=int, default=None)
     parser.add_argument("--shard", default=None, help="i/N: build only every Nth seed, offset i")
     parser.add_argument("--merge", nargs="*", default=None, help="instead: merge these shard books into --out")
+    parser.add_argument("--filter-from", nargs="*", default=None,
+                        help="instead: drop openings that split in every one of these match files")
+    parser.add_argument("--book", default="tuning/book.jsonl", help="book to filter (with --filter-from)")
+    parser.add_argument("--min-appearances", type=int, default=2)
     args = parser.parse_args()
+
+    if args.filter_from is not None:
+        kept, dropped, unseen = filter_book(args.book, args.filter_from, args.out, args.min_appearances)
+        sys.stdout.write("kept %d, dropped %d decided-by-the-opening, %d never played -> %s\n"
+                         % (kept, dropped, unseen, args.out))
+        sys.exit(0)
 
     if args.merge is not None:
         n = merge_books(args.merge, args.out)

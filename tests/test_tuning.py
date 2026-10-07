@@ -326,3 +326,21 @@ def test_merge_keeps_same_opening_at_different_depths_or_caps_apart():
         for r in rows: f.write(json.dumps(r) + "\n")
     merged = M.merge_pairs([path])
     assert len(merged) == 3
+
+
+def test_balanced_book_filter_drops_only_openings_that_always_split(tmp_path):
+    import json
+    book = tmp_path / "book.jsonl"
+    with open(book, "w") as f:
+        for seed in (1, 2, 3, 4):
+            f.write(json.dumps({"seed": seed, "entries": [], "moves": []}) + "\n")
+    def pair(seed, score): return json.dumps({"seed": seed, "score_a": score}) + "\n"
+    m1, m2 = tmp_path / "m1.jsonl", tmp_path / "m2.jsonl"
+    # seed 1: split twice -> dropped; seed 2: split once, decisive once -> kept;
+    # seed 3: split once only -> kept (one appearance is the base rate); seed 4: never played -> kept
+    open(m1, "w").write(pair(1, 0.5) + pair(2, 0.5) + pair(3, 0.5))
+    open(m2, "w").write(pair(1, 0.5) + pair(2, 1.0))
+    out = tmp_path / "balanced.jsonl"
+    kept, dropped, unseen = O.filter_book(str(book), [str(m1), str(m2)], str(out), min_appearances=2)
+    assert (kept, dropped, unseen) == (3, 1, 1)
+    assert [json.loads(l)["seed"] for l in open(out)] == [2, 3, 4]
