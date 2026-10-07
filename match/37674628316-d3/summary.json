@@ -1,0 +1,28 @@
+[
+  {
+    "a_id": "863f265fc83f",
+    "b_id": "c9b94a52ec7a",
+    "caps": 29,
+    "ci": [
+      -7.0,
+      2.3
+    ],
+    "elo": -2.3,
+    "games": 4000,
+    "mean_plies": 61.3,
+    "pairs": 2000,
+    "pentanomial": [
+      100,
+      3,
+      1807,
+      4,
+      86
+    ],
+    "sprt": {
+      "elo0": 0.0,
+      "elo1": 10.0,
+      "status": "H0"
+    },
+    "tag": "screen-spy-anchor-weight-20"
+  }
+]
