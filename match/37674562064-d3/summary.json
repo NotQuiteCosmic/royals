@@ -1,0 +1,28 @@
+[
+  {
+    "a_id": "46ebdee30236",
+    "b_id": "c9b94a52ec7a",
+    "caps": 21,
+    "ci": [
+      -74.7,
+      -54.2
+    ],
+    "elo": -64.4,
+    "games": 4000,
+    "mean_plies": 60.3,
+    "pairs": 2000,
+    "pentanomial": [
+      640,
+      11,
+      1066,
+      8,
+      275
+    ],
+    "sprt": {
+      "elo0": 0.0,
+      "elo1": 10.0,
+      "status": "H0"
+    },
+    "tag": "screen-push-threat-penalty-1100"
+  }
+]
