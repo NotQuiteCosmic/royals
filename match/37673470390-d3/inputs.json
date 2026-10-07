@@ -1,0 +1,11 @@
+{
+  "a": "tuning/pool/champ-001.json",
+  "b": "tuning/pool/original.json",
+  "depth": "3",
+  "pairs_per_shard": "500",
+  "shards": "20",
+  "ply_cap": "600",
+  "elo0": "0.0",
+  "elo1": "5.0",
+  "tag": "book-sweep-d3"
+}
