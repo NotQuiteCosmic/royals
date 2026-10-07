@@ -1,0 +1,28 @@
+[
+  {
+    "a_id": "f2d586ab79fe",
+    "b_id": "679e4e92445b",
+    "caps": 60,
+    "ci": [
+      16.0,
+      24.0
+    ],
+    "elo": 20.0,
+    "games": 20000,
+    "mean_plies": 61.9,
+    "pairs": 10000,
+    "pentanomial": [
+      1450,
+      23,
+      6477,
+      29,
+      2021
+    ],
+    "sprt": {
+      "elo0": 0.0,
+      "elo1": 5.0,
+      "status": "H1"
+    },
+    "tag": "book-sweep-d5"
+  }
+]

@@ -1,0 +1,2 @@
+f2d586ab79fe v 679e4e92445b "book-sweep-d5"  10000 pairs  pent [1450, 23, 6477, 29, 2021]  elo +20.0 [+16.0, +24.0]  llr +20.93  caps 60/20000  passes 0  mean plies 62  SPRT H1
+10000 pairs from 20 files -> merged/pairs.jsonl
