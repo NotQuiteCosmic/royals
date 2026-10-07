@@ -312,6 +312,25 @@ re-measurements follow below when their runs land.
 | 4 | 5000 | [507, 541, 2596, 583, 773] | +20.0 [+14.6, +25.3] | 1684 of 10000 (17%) | 195 |
 | 5 | 2000 | [301, 7, 1313, 5, 374] | +12.5 [+3.7, +21.4] | 16 of 4000 (0.4%) | 63 |
 | 6 | 500 | [50, 48, 272, 60, 70] | +18.1 [+1.6, +34.6] | 176 of 1000 (18%) | 183 |
+| 7 | 200 | [12, 0, 151, 0, 37] | +43.7 [+20.4, +67.3] | 0 of 400 | 59 |
+
+**Summary of the first tuning cycle, as measured at scale.** The adopted weights beat the
+pre-tuning evaluator at every depth from 3 to 7, with every interval clear of zero:
+
+| Depth | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|
+| Elo | +41 | +20 | +12 | +18 | +44 |
+| Pairs | 1000 | 5000 | 2000 | 500 | 200 |
+
+The size varies -- lowest at depth 5, highest at 3 and 7 -- and the intervals at 6 and 7
+are wide, so the honest reading is "a real gain of roughly 10 to 40 self-play Elo at every
+depth", not a trend. The story that a tie-breaker's value should fade with depth is not
+borne out: depth 7 is as good as depth 3. Whatever the terms are doing, deeper search is
+not doing it on its own.
+
+All of Step 6 -- 7,700 colour-swapped pairs plus two gauntlets and the SPSA proof, about
+40,000 games -- ran in two hours of wall time on the free runners, on a day when the laptop
+was busy being used.
 
 Depth 4 is now a tight number and agrees with the laptop's 1,390-pair reading (+19). The
 gain is real at depth 5 too, and smaller: the ordering so far is +41 (d3), +20 (d4), +12
