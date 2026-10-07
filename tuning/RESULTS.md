@@ -300,4 +300,7 @@ Batched SPSA proved live: `tune-spsa` run `proof` (champ-001's 16 weights, 20 sh
 pairs) applied its first wave -- 1,000 iterations, every weight within a few units of where
 it started, which is what a plateau looks like -- committed its checkpoint, and dispatched
 its own second wave through `GITHUB_TOKEN`, which the concurrency group held until the
-first run finished. The depth 4/5/6/7 re-measurements follow below when their runs land.
+first run finished. The second wave took the run to 2,000 of 2,000 and dispatched nothing
+further; the checkpoint and trajectory are on `tuning-results` under `spsa/proof/`. A full
+20,000-iteration run is twenty such waves, about a day unattended. The depth 4/5/6/7
+re-measurements follow below when their runs land.
