@@ -1,0 +1,2 @@
+1253697d6783 v c9b94a52ec7a "screen-push-threat-penalty-50"  2000 pairs  pent [257, 4, 1440, 6, 293]  elo +6.4 [-1.6, +14.4]  llr +0.86  caps 16/4000  passes 0  mean plies 60  SPRT continue
+2000 pairs from 20 files -> merged/pairs.jsonl
