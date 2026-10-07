@@ -1,0 +1,28 @@
+[
+  {
+    "a_id": "f2d586ab79fe",
+    "b_id": "c7a85be41b07",
+    "caps": 108,
+    "ci": [
+      -0.3,
+      6.0
+    ],
+    "elo": 2.8,
+    "games": 20000,
+    "mean_plies": 59.6,
+    "pairs": 10000,
+    "pentanomial": [
+      1049,
+      21,
+      7772,
+      33,
+      1125
+    ],
+    "sprt": {
+      "elo0": 0.0,
+      "elo1": 5.0,
+      "status": "continue"
+    },
+    "tag": "book-sweep-d3-p1"
+  }
+]

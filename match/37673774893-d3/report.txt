@@ -1,0 +1,2 @@
+f2d586ab79fe v c7a85be41b07 "book-sweep-d3-p1"  10000 pairs  pent [1049, 21, 7772, 33, 1125]  elo +2.8 [-0.3, +6.0]  llr +0.66  caps 108/20000  passes 0  mean plies 60  SPRT continue
+10000 pairs from 20 files -> merged/pairs.jsonl
