@@ -1,0 +1,2 @@
+ca1ccb420ae2 v c9b94a52ec7a "screen-spy-anchor-weight-330"  2000 pairs  pent [403, 5, 1364, 2, 226]  elo -31.1 [-39.6, -22.6]  llr -19.40  caps 17/4000  passes 0  mean plies 62  SPRT H0
+2000 pairs from 20 files -> merged/pairs.jsonl
