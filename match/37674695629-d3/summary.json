@@ -1,0 +1,28 @@
+[
+  {
+    "a_id": "2a8086fca42e",
+    "b_id": "c9b94a52ec7a",
+    "caps": 7,
+    "ci": [
+      -104.5,
+      -83.8
+    ],
+    "elo": -94.0,
+    "games": 4000,
+    "mean_plies": 53.6,
+    "pairs": 2000,
+    "pentanomial": [
+      733,
+      4,
+      1055,
+      3,
+      205
+    ],
+    "sprt": {
+      "elo0": 0.0,
+      "elo1": 10.0,
+      "status": "H0"
+    },
+    "tag": "screen-dragon-guard-weight-5000"
+  }
+]

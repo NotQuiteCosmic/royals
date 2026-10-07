@@ -1,0 +1,2 @@
+2a8086fca42e v c9b94a52ec7a "screen-dragon-guard-weight-5000"  2000 pairs  pent [733, 4, 1055, 3, 205]  elo -94.0 [-104.5, -83.8]  llr -40.08  caps 7/4000  passes 0  mean plies 54  SPRT H0
+2000 pairs from 20 files -> merged/pairs.jsonl
