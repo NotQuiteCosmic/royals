@@ -1,0 +1,2 @@
+0d46c314d871 v c9b94a52ec7a "screen-royal-dist-weight-5"  2000 pairs  pent [190, 8, 1583, 7, 212]  elo +3.7 [-3.1, +10.6]  llr -1.03  caps 25/4000  passes 0  mean plies 61  SPRT continue
+2000 pairs from 20 files -> merged/pairs.jsonl

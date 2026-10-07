@@ -1,0 +1,28 @@
+[
+  {
+    "a_id": "0d46c314d871",
+    "b_id": "c9b94a52ec7a",
+    "caps": 25,
+    "ci": [
+      -3.1,
+      10.6
+    ],
+    "elo": 3.7,
+    "games": 4000,
+    "mean_plies": 60.5,
+    "pairs": 2000,
+    "pentanomial": [
+      190,
+      8,
+      1583,
+      7,
+      212
+    ],
+    "sprt": {
+      "elo0": 0.0,
+      "elo1": 10.0,
+      "status": "continue"
+    },
+    "tag": "screen-royal-dist-weight-5"
+  }
+]
