@@ -1,0 +1,28 @@
+[
+  {
+    "a_id": "246f1f605039",
+    "b_id": "c9b94a52ec7a",
+    "caps": 6,
+    "ci": [
+      -56.2,
+      -36.9
+    ],
+    "elo": -46.5,
+    "games": 4000,
+    "mean_plies": 55.5,
+    "pairs": 2000,
+    "pentanomial": [
+      538,
+      3,
+      1184,
+      3,
+      272
+    ],
+    "sprt": {
+      "elo0": 0.0,
+      "elo1": 10.0,
+      "status": "H0"
+    },
+    "tag": "screen-holding-penalty-1900"
+  }
+]

@@ -1,0 +1,2 @@
+246f1f605039 v c9b94a52ec7a "screen-holding-penalty-1900"  2000 pairs  pent [538, 3, 1184, 3, 272]  elo -46.5 [-56.2, -36.9]  llr -21.86  caps 6/4000  passes 0  mean plies 56  SPRT H0
+2000 pairs from 20 files -> merged/pairs.jsonl
