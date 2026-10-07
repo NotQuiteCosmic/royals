@@ -315,6 +315,37 @@ SPY_STACK_WEIGHT = 0
 # pair add little over either alone, so this is belt to the other's braces.
 WRONG_COLOUR_PENALTY = 31
 
+# The second batch of candidates, all at 0 until tuning/RESULTS.md says otherwise.
+
+# Per piece, for a standing group with an enemy stack on an orthogonally adjacent square
+# strong enough to shove it: the enemy's CAPTORS (a dragon counts 3) against the group's
+# WEIGHT, which is what the first square of a push costs. A push is the one move that
+# changes a stack's colour and the usual way a half-built gather gets broken up.
+PUSH_THREAT_PENALTY = 0
+
+# The royal's lone-piece jump distance to the spy's square, times the pieces travelling
+# with it. The royal arrives last and nothing may land on it, so it is never taken but is
+# the final bottleneck, and one stranded on the other colour forces a late push.
+ROYAL_DIST_WEIGHT = 0
+
+# JUMPREACH of the spy's square, once. Jumps are symmetric, so the spy's ways out are the
+# others' ways in: a spy on the rim has two approach lanes, in the middle four.
+SPY_ANCHOR_WEIGHT = 0
+
+# Own dragon orthogonally next to the spy's square: a wall nothing jumps past and a
+# strength-3 pusher nothing light shifts. And the enemy's dragon there: it can push a
+# three-weight stack and nothing can take it. Dragons are otherwise invisible here.
+DRAGON_GUARD_WEIGHT = 0
+DRAGON_MENACE_PENALTY = 0
+
+# Per captive, the torus Manhattan distance from the nearest own standing group to the
+# square holding them. Freeing needs orthogonal adjacency; this is the gradient towards it.
+RESCUE_DIST_WEIGHT = 0
+
+# Per prisoner carried by a standing group. The capture is already paid for by
+# PRISONER_*_WEIGHT; this prices the encumbrance -- less strength, no landing on company.
+HOLDING_PENALTY = 0
+
 # The tunables, by name. This tuple is the single list: getWeights and setWeights work off it
 # and the harness stores weight sets keyed by these names, so a new weight is added here and
 # nowhere else needs telling.
@@ -323,6 +354,8 @@ WEIGHT_NAMES = (
     "STACK_1", "STACK_2", "STACK_3", "STACK_4", "STACK_5",
     "CAPTIVE_PCT", "SPREAD_WEIGHT", "ROYAL_SPY_PENALTY",
     "SPY_DIST_WEIGHT", "THREAT_PENALTY", "SPY_STACK_WEIGHT", "WRONG_COLOUR_PENALTY",
+    "PUSH_THREAT_PENALTY", "ROYAL_DIST_WEIGHT", "SPY_ANCHOR_WEIGHT", "DRAGON_GUARD_WEIGHT",
+    "DRAGON_MENACE_PENALTY", "RESCUE_DIST_WEIGHT", "HOLDING_PENALTY",
 )
 
 # Where each weight is allowed to go. The search reads any score at or beyond WIN_SCORE as
@@ -348,6 +381,13 @@ WEIGHT_RANGES = {
     "THREAT_PENALTY": (0, 10000),
     "SPY_STACK_WEIGHT": (0, 10000),
     "WRONG_COLOUR_PENALTY": (0, 5000),
+    "PUSH_THREAT_PENALTY": (0, 10000),
+    "ROYAL_DIST_WEIGHT": (0, 1000),
+    "SPY_ANCHOR_WEIGHT": (0, 5000),
+    "DRAGON_GUARD_WEIGHT": (0, 5000),
+    "DRAGON_MENACE_PENALTY": (0, 5000),
+    "RESCUE_DIST_WEIGHT": (0, 1000),
+    "HOLDING_PENALTY": (0, 5000),
 }
 
 # Whether any of the candidate terms is switched on. They all need the groups gathered up
@@ -369,7 +409,10 @@ STACK_VALUE = (0, STACK_1, STACK_2, STACK_3, STACK_4, STACK_5, 0)
 def _rebuildWeightTables():
     global STACK_VALUE, ANY_POST
     STACK_VALUE = (0, STACK_1, STACK_2, STACK_3, STACK_4, STACK_5, 0)
-    ANY_POST = bool(SPY_DIST_WEIGHT or THREAT_PENALTY or SPY_STACK_WEIGHT or WRONG_COLOUR_PENALTY)
+    ANY_POST = bool(SPY_DIST_WEIGHT or THREAT_PENALTY or SPY_STACK_WEIGHT or WRONG_COLOUR_PENALTY
+                    or PUSH_THREAT_PENALTY or ROYAL_DIST_WEIGHT or SPY_ANCHOR_WEIGHT
+                    or DRAGON_GUARD_WEIGHT or DRAGON_MENACE_PENALTY or RESCUE_DIST_WEIGHT
+                    or HOLDING_PENALTY)
 
 
 # Every square a stack of a given weight could land on from a given square, on an empty
@@ -399,6 +442,30 @@ _rebuildWeightTables()
 # colour by jumping; two squares of different colour can only be joined by a push.
 def squareColour(square):
     return ((square - 1) % 7 + (square - 1) // 7) & 1
+
+
+# Torus Manhattan distance between 1-based squares: how many orthogonal steps apart, going
+# round the edge where that is shorter. The metric of pushes, which is why the rescue term
+# uses it rather than JUMPDIST.
+def buildManhattan():
+    table = [None] * 50
+    for a in range(1, 50):
+        ax, ay = (a - 1) % 7, (a - 1) // 7
+        row = [0] * 50
+        for b in range(1, 50):
+            bx, by = (b - 1) % 7, (b - 1) // 7
+            dx = abs(ax - bx); dy = abs(ay - by)
+            row[b] = min(dx, 7 - dx) + min(dy, 7 - dy)
+        table[a] = tuple(row)
+    return tuple(table)
+
+
+MANHATTAN = buildManhattan()
+
+# The orthogonal neighbours of a 1-based square, 1-based, wrapped: the squares a push can
+# come from. Drawn from PUSHRAY so the edge rule is the engine's, not restated.
+NEIGHBOURS = tuple(tuple(ray[0] + 1 for ray in Engine.PUSHRAY[square] if ray) if square else ()
+                   for square in range(0, 50))
 
 
 # The weights in force, as a dict keyed by WEIGHT_NAMES. This is the shape the tuning
@@ -533,10 +600,13 @@ def evaluateSides(cBoard):
     # a side with six on one square scores the win outright, whatever else it has going on
     won = [False, False]
 
-    # for the candidate terms: each side's standing groups as (square, pieces, fields), and
-    # where its spy stands, 0 if it doesn't. Only gathered when a term wants them.
+    # for the candidate terms: each side's standing groups as (square, pieces, fields), where
+    # its spy and dragon stand (0 if not standing), and the squares holding its captives.
+    # Only gathered when a term wants them.
     standing = [[], []]
     spySquare = [0, 0]
+    dragonSquare = [0, 0]
+    captives = [[], []]
 
     for square in range(1, 50):
         code = cBoard[square - 1]
@@ -570,6 +640,8 @@ def evaluateSides(cBoard):
                 if anyPost:
                     standing[w].append((square, myPieces, s))
                     if s[Hasher.SPY]: spySquare[w] = square
+            elif anyPost:
+                dragonSquare[w] = square
 
             # holding prisoners is worth something...
             if s[Hasher.PRISFLAG]:
@@ -594,6 +666,8 @@ def evaluateSides(cBoard):
             # default of 200: 200 * v // 100 is 2 * v for any whole v.
             adv[o] -= (captivePct * stackValue[theirs]) // 100
 
+            if anyPost: captives[o].append((square, theirs))
+
     for side in (0, 1):
         if won[side]:
             adv[side] = WIN_SCORE
@@ -611,7 +685,7 @@ def evaluateSides(cBoard):
         # if the royal and the spy are together, the penalty grows as the groups thin out
         if royalIdiot[side]: adv[side] -= (groups[side] * groups[side]) * ROYAL_SPY_PENALTY
 
-        if anyPost: adv[side] += candidateTerms(side, standing, spySquare)
+        if anyPost: adv[side] += candidateTerms(side, standing, spySquare, dragonSquare, captives)
 
     return adv
 
@@ -619,12 +693,26 @@ def evaluateSides(cBoard):
 # The candidate terms for one side -- see the weights up top for what each one means. Kept
 # out of evaluateSides so that the evaluator the goldens were recorded from reads as it did,
 # and so that with every weight at 0 none of this is reached at all.
-def candidateTerms(side, standing, spySquare):
+def candidateTerms(side, standing, spySquare, dragonSquare, captives):
     mine = standing[side]
+    theirs = standing[1 - side]
     total = 0
 
     spySq = spySquare[side]
     if spySq:
+        if SPY_ANCHOR_WEIGHT: total += SPY_ANCHOR_WEIGHT * JUMPREACH[spySq]
+
+        if DRAGON_GUARD_WEIGHT or DRAGON_MENACE_PENALTY:
+            around = NEIGHBOURS[spySq]
+            if DRAGON_GUARD_WEIGHT and dragonSquare[side] in around: total += DRAGON_GUARD_WEIGHT
+            if DRAGON_MENACE_PENALTY and dragonSquare[1 - side] in around: total -= DRAGON_MENACE_PENALTY
+
+        if ROYAL_DIST_WEIGHT:
+            for square, pieces, s in mine:
+                if s[Hasher.ROYAL] and square != spySq:
+                    total -= ROYAL_DIST_WEIGHT * JUMPDIST[square][spySq] * pieces
+                    break
+
         if SPY_STACK_WEIGHT:
             for square, pieces, s in mine:
                 if square == spySq:
@@ -640,8 +728,29 @@ def candidateTerms(side, standing, spySquare):
                 if WRONG_COLOUR_PENALTY and squareColour(square) != spyColour:
                     total -= WRONG_COLOUR_PENALTY * pieces
 
+    if HOLDING_PENALTY:
+        for square, pieces, s in mine:
+            if s[Hasher.PRISFLAG]: total -= HOLDING_PENALTY * s[Hasher.PRISCOUNT]
+
+    if PUSH_THREAT_PENALTY:
+        # what the enemy has standing where, dragons included: a dragon pushes with 3
+        strength = {}
+        for esq, epieces, es in theirs: strength[esq] = es[Hasher.CAPTORS]
+        if dragonSquare[1 - side]: strength[dragonSquare[1 - side]] = 3
+        if strength:
+            for square, pieces, s in mine:
+                weight = s[Hasher.WEIGHT]
+                for n in NEIGHBOURS[square]:
+                    if strength.get(n, 0) >= weight:
+                        total -= PUSH_THREAT_PENALTY * pieces
+                        break
+
+    if RESCUE_DIST_WEIGHT and captives[side] and mine:
+        for jail, count in captives[side]:
+            nearest = min(MANHATTAN[square][jail] for square, pieces, s in mine)
+            total -= RESCUE_DIST_WEIGHT * nearest * count
+
     if THREAT_PENALTY:
-        theirs = standing[1 - side]
         for square, pieces, s in mine:
             # nothing lands on a royal, or on a square holding the mover's own captives
             if s[Hasher.ROYAL] or s[Hasher.PRISFLAG]: continue

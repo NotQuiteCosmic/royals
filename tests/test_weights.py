@@ -28,6 +28,8 @@ ORIGINAL = {
     "STACK_1": 1000, "STACK_2": 4000, "STACK_3": 9000, "STACK_4": 16000, "STACK_5": 25000,
     "CAPTIVE_PCT": 200, "SPREAD_WEIGHT": 1500, "ROYAL_SPY_PENALTY": 5000,
     "SPY_DIST_WEIGHT": 0, "THREAT_PENALTY": 0, "SPY_STACK_WEIGHT": 0, "WRONG_COLOUR_PENALTY": 0,
+    "PUSH_THREAT_PENALTY": 0, "ROYAL_DIST_WEIGHT": 0, "SPY_ANCHOR_WEIGHT": 0, "DRAGON_GUARD_WEIGHT": 0,
+    "DRAGON_MENACE_PENALTY": 0, "RESCUE_DIST_WEIGHT": 0, "HOLDING_PENALTY": 0,
 }
 
 # What shipped after the October 2026 tuning -- see tuning/RESULTS.md and the comments in ai.py.
@@ -37,6 +39,8 @@ TUNED = {
     "STACK_1": 1020, "STACK_2": 4120, "STACK_3": 8740, "STACK_4": 15310, "STACK_5": 25370,
     "CAPTIVE_PCT": 205, "SPREAD_WEIGHT": 1530, "ROYAL_SPY_PENALTY": 5010,
     "SPY_DIST_WEIGHT": 5, "THREAT_PENALTY": 0, "SPY_STACK_WEIGHT": 0, "WRONG_COLOUR_PENALTY": 31,
+    "PUSH_THREAT_PENALTY": 0, "ROYAL_DIST_WEIGHT": 0, "SPY_ANCHOR_WEIGHT": 0, "DRAGON_GUARD_WEIGHT": 0,
+    "DRAGON_MENACE_PENALTY": 0, "RESCUE_DIST_WEIGHT": 0, "HOLDING_PENALTY": 0,
 }
 
 
@@ -230,7 +234,7 @@ def test_a_win_is_scored_as_win_score_whatever_the_weights():
 # ---------------------------------------------------------------------------
 
 def test_post_pass_runs_only_when_a_candidate_term_is_on(original):
-    for name in ("SPY_DIST_WEIGHT", "THREAT_PENALTY", "SPY_STACK_WEIGHT", "WRONG_COLOUR_PENALTY"):
+    for name in AI.WEIGHT_NAMES[12:]:
         assert AI.getWeights()[name] == 0
     assert AI.ANY_POST is False
     AI.setWeights({"SPY_STACK_WEIGHT": 1})
@@ -239,9 +243,10 @@ def test_post_pass_runs_only_when_a_candidate_term_is_on(original):
     assert AI.ANY_POST is False
 
 
-def test_the_rejected_terms_are_off_by_default():
-    assert AI.DEFAULT_WEIGHTS["THREAT_PENALTY"] == 0
-    assert AI.DEFAULT_WEIGHTS["SPY_STACK_WEIGHT"] == 0
+def test_the_rejected_and_untested_terms_are_off_by_default():
+    for name in AI.WEIGHT_NAMES[12:]:
+        if name in ("SPY_DIST_WEIGHT", "WRONG_COLOUR_PENALTY"): continue
+        assert AI.DEFAULT_WEIGHTS[name] == 0, name
 
 
 def test_spy_stack_weight_counts_pawns_on_the_spys_square_only(original):
@@ -319,3 +324,72 @@ def test_fresh_import_has_the_candidate_terms_switched_on():
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Batch 2
+# ---------------------------------------------------------------------------
+
+def test_spy_anchor_pays_the_spys_jumpreach_once(original):
+    board = place(place(Hasher.EMPTY_BOARD, "d4", BLUE, spy=1), "b2", BLUE, pawns=2)
+    base = AI.evaluateSides(board)[BLUE]
+    AI.setWeights({"SPY_ANCHOR_WEIGHT": 100})
+    assert AI.evaluateSides(board)[BLUE] == base + 100 * jumpreach("d4")
+
+
+def test_royal_dist_charges_the_royals_group_its_distance_to_the_spy(original):
+    board = place(place(Hasher.EMPTY_BOARD, "d4", BLUE, spy=1), "b2", BLUE, royal=1, pawns=1)
+    base = AI.evaluateSides(board)[BLUE]
+    AI.setWeights({"ROYAL_DIST_WEIGHT": 10})
+    assert AI.evaluateSides(board)[BLUE] == base - 10 * AI.JUMPDIST[square("b2")][square("d4")] * 2
+    # royal already with the spy: nothing to charge (and that is ROYAL_SPY_PENALTY's business)
+    together = place(Hasher.EMPTY_BOARD, "d4", BLUE, spy=1, royal=1)
+    AI.setWeights({"ROYAL_DIST_WEIGHT": 0}); b0 = AI.evaluateSides(together)[BLUE]
+    AI.setWeights({"ROYAL_DIST_WEIGHT": 10}); assert AI.evaluateSides(together)[BLUE] == b0
+
+
+def test_dragons_next_to_the_spy_count_for_and_against(original):
+    # blue spy on d4, blue dragon on d5 (orthogonal neighbour), red dragon on c4
+    board = place(place(place(Hasher.EMPTY_BOARD, "d4", BLUE, spy=1), "d5", BLUE, dragon=1), "c4", RED, dragon=1)
+    base = AI.evaluateSides(board)[BLUE]
+    AI.setWeights({"DRAGON_GUARD_WEIGHT": 100})
+    assert AI.evaluateSides(board)[BLUE] == base + 100
+    AI.setWeights({"DRAGON_GUARD_WEIGHT": 0, "DRAGON_MENACE_PENALTY": 70})
+    assert AI.evaluateSides(board)[BLUE] == base - 70
+    # diagonal is not adjacent for a push
+    far = place(place(Hasher.EMPTY_BOARD, "d4", BLUE, spy=1), "e5", RED, dragon=1)
+    AI.setWeights({"DRAGON_MENACE_PENALTY": 0}); f0 = AI.evaluateSides(far)[BLUE]
+    AI.setWeights({"DRAGON_MENACE_PENALTY": 70}); assert AI.evaluateSides(far)[BLUE] == f0
+
+
+def test_push_threat_sees_a_strong_orthogonal_neighbour_including_a_dragon(original):
+    board = place(place(Hasher.EMPTY_BOARD, "d4", BLUE, pawns=2), "d5", RED, pawns=2)
+    base = AI.evaluateSides(board)[BLUE]
+    AI.setWeights({"PUSH_THREAT_PENALTY": 100})
+    assert AI.evaluateSides(board)[BLUE] == base - 200
+    weaker = place(place(Hasher.EMPTY_BOARD, "d4", BLUE, pawns=2), "d5", RED, pawns=1)
+    AI.setWeights({"PUSH_THREAT_PENALTY": 0}); w0 = AI.evaluateSides(weaker)[BLUE]
+    AI.setWeights({"PUSH_THREAT_PENALTY": 100}); assert AI.evaluateSides(weaker)[BLUE] == w0
+    dragon = place(place(Hasher.EMPTY_BOARD, "d4", BLUE, pawns=3), "e4", RED, dragon=1)
+    AI.setWeights({"PUSH_THREAT_PENALTY": 0}); d0 = AI.evaluateSides(dragon)[BLUE]
+    AI.setWeights({"PUSH_THREAT_PENALTY": 100}); assert AI.evaluateSides(dragon)[BLUE] == d0 - 300
+    # a1's left and up neighbours are off the board: a red stack on g1 cannot push across the edge
+    edge = place(place(Hasher.EMPTY_BOARD, "a1", BLUE, pawns=1), "g1", RED, pawns=3)
+    AI.setWeights({"PUSH_THREAT_PENALTY": 0}); e0 = AI.evaluateSides(edge)[BLUE]
+    AI.setWeights({"PUSH_THREAT_PENALTY": 100}); assert AI.evaluateSides(edge)[BLUE] == e0
+
+
+def test_rescue_distance_is_torus_manhattan_from_the_nearest_own_group(original):
+    # red holds two blue pawns on a1; blue groups on d4 and b7 (b7 -> a1 wraps: 1 + 1 = 2)
+    board = place(place(place(Hasher.EMPTY_BOARD, "a1", RED, pawns=1, capPawns=2), "d4", BLUE, pawns=1), "b7", BLUE, pawns=1)
+    base = AI.evaluateSides(board)[BLUE]
+    AI.setWeights({"RESCUE_DIST_WEIGHT": 10})
+    assert AI.MANHATTAN[square("b7")][square("a1")] == 2
+    assert AI.evaluateSides(board)[BLUE] == base - 10 * 2 * 2
+
+
+def test_holding_penalty_prices_prisoners_carried(original):
+    board = place(Hasher.EMPTY_BOARD, "d4", BLUE, pawns=2, capPawns=1, capSpy=1)
+    base = AI.evaluateSides(board)[BLUE]
+    AI.setWeights({"HOLDING_PENALTY": 100})
+    assert AI.evaluateSides(board)[BLUE] == base - 200

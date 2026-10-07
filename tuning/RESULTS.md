@@ -371,3 +371,19 @@ Half the book carries half again the information per game. So the balanced book 
 **per-depth ranking**, built from several match-ups at that depth over the whole book, and
 SPSA at depth 3 should play the top half. Three probe weight sets (`tuning/probes/`) give
 Actions distinct match-ups to rank the full 10,000-opening book with.
+
+## Batch 2 terms (2026-10-07): implemented at 0, costs and probe sizes
+
+Seven more things the rules single out, in `ai.py` at 0 with `golden.txt` byte-identical:
+`PUSH_THREAT_PENALTY`, `ROYAL_DIST_WEIGHT`, `SPY_ANCHOR_WEIGHT`, `DRAGON_GUARD_WEIGHT`,
+`DRAGON_MENACE_PENALTY`, `RESCUE_DIST_WEIGHT`, `HOLDING_PENALTY` (see the comments there).
+
+Cost with one term on, CPython depth 5, against 35,700 nodes/s: push-threat −12%, holding
+−10%, rescue −8%, dragon guard/menace −2%, royal-distance and spy-anchor within noise.
+
+Probe sizes from 2,000 depth-4 positions (`scale.py`, a tenth of a typical |eval| of
+12,500): push-threat 1132, royal-dist 82, spy-anchor 329, rescue 742, holding 1909; the
+dragon terms fire in so few positions (0.15 per side) that the estimate exceeds their range.
+
+Screens on Actions, each against champ-001 at depth 3, 20 × 100 pairs, at a small
+tie-breaker-scale value and at the probe-scale value: `tuning/screens/`. Results below.
