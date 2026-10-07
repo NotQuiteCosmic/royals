@@ -32,7 +32,9 @@ from tuning import weights as W
 # MB per generation, and a tournament runs sixteen tables at once.
 TABLE_LIMIT = 50_000
 
-PLY_CAP = 300
+# 300 was declaring decidable games draws: of six depth-3 games that hit it, three went on
+# to a win before ply 600 when allowed to. Depth-4 self-play hit a 300 cap in 22% of games.
+PLY_CAP = 600
 
 BLUE, RED = 0, 1
 
@@ -123,7 +125,7 @@ def play_game(opening, weights_blue, weights_red, depth, ply_cap=PLY_CAP, first=
         "seed": opening.seed, "noise": opening.noise, "random_plies": opening.random_plies,
         "rng_seed": opening.rng_seed, "entries": opening.entries, "opening_moves": opening.moves,
         "first": opening.to_move if first is None else first,
-        "depth": depth, "table_limit": table_limit,
+        "depth": depth, "ply_cap": ply_cap, "table_limit": table_limit,
         "blue_id": states[BLUE].id, "red_id": states[RED].id,
         "moves": moves, "scores": scores if keep_scores else None,
         "result_blue": result, "termination": termination, "plies": len(moves),

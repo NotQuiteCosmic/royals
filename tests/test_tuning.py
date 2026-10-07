@@ -313,3 +313,16 @@ def test_book_shards_build_disjoint_seeds_and_merge_dedupes(tmp_path):
     n = O.merge_books([str(b0), str(b1), str(b0)], str(out))
     assert n == 4 and sum(1 for _ in open(out)) == 4
     assert len(O.load_book(str(out))) == 4
+
+
+def test_merge_keeps_same_opening_at_different_depths_or_caps_apart():
+    base = {"a_id": "A", "b_id": "B", "tag": "t", "seed": 1, "score_a": 0.5,
+            "games": [{"plies": 1, "seconds": 0, "termination": "gather", "result_blue": 1.0}] * 2}
+    import json
+    rows = [dict(base, depth=3, ply_cap=600), dict(base, depth=4, ply_cap=600),
+            dict(base, depth=3, ply_cap=300), dict(base, depth=3, ply_cap=600)]
+    path = "/tmp/merge-key-test.jsonl"
+    with open(path, "w") as f:
+        for r in rows: f.write(json.dumps(r) + "\n")
+    merged = M.merge_pairs([path])
+    assert len(merged) == 3

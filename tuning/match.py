@@ -73,7 +73,7 @@ def play_pair(job):
     return {
         "a_id": first["blue_id"], "b_id": first["red_id"],
         "seed": opening.seed, "opening": job["opening"],
-        "depth": job["depth"],
+        "depth": job["depth"], "ply_cap": job["ply_cap"],
         "games": [first, second],
         "score_a": S.pair_score(first["result_blue"], second["result_blue"]),
         "tag": job.get("tag"),
@@ -352,9 +352,13 @@ def cmd_tournament(args):
 # ---------------------------------------------------------------------------
 
 def merge_pairs(paths):
-    """Every pair from every file, one copy each. The key is the match-up, the tag and the
-    opening: the same pair played twice (a shard re-run, an overlapping resume) is the same
-    deterministic games and is kept once."""
+    """Every pair from every file, one copy each. The key is everything that decides what
+    the games are -- the two weight sets, the opening, the depth, the ply cap -- plus the
+    tag: the same pair played twice (a shard re-run, an overlapping resume) is the same
+    deterministic games and is kept once. Depth and cap are in the key because the same
+    weights on the same opening at a different depth or cap are different games, and a
+    pooled Elo must not quietly mix them. Older files without a ply_cap field are taken as
+    played at the 300 that was the default then."""
     seen = set()
     merged = []
     for path in paths:
@@ -363,7 +367,8 @@ def merge_pairs(paths):
                 raw = raw.strip()
                 if not raw: continue
                 pair = json.loads(raw)
-                key = (pair["a_id"], pair["b_id"], json.dumps(pair.get("tag"), sort_keys=True), pair["seed"])
+                key = (pair["a_id"], pair["b_id"], json.dumps(pair.get("tag"), sort_keys=True), pair["seed"],
+                       pair.get("depth"), pair.get("ply_cap", 300))
                 if key in seen: continue
                 seen.add(key)
                 merged.append(pair)

@@ -304,3 +304,18 @@ def test_threat_penalty_sees_a_heavier_enemy_in_jump_reach_and_nothing_else(orig
     # weight includes prisoners carried: a 1+1 square needs a 2-stack to take it
     carrying = place(place(Hasher.EMPTY_BOARD, "d4", BLUE, pawns=1, capPawns=1), "b2", RED, pawns=1)
     assert AI.evaluateSides(carrying)[BLUE] == AI.evaluateSides(place(Hasher.EMPTY_BOARD, "d4", BLUE, pawns=1, capPawns=1))[BLUE]
+
+
+def test_fresh_import_has_the_candidate_terms_switched_on():
+    # ANY_POST used to be a literal False that only setWeights recomputed, so a process
+    # that never called the setter -- every app -- skipped the gather terms. The in-process
+    # test above cannot catch that: by the time it runs another test's teardown has rebuilt
+    # the flag. A fresh interpreter can.
+    import os, subprocess, sys
+    engine = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "engine", "src")
+    code = ("import sys; sys.path.insert(0, %r); from royals_engine import ai as AI; "
+            "assert AI.ANY_POST is True, 'ANY_POST False at import'; "
+            "assert AI.STACK_VALUE[3] == AI.STACK_3, 'STACK_VALUE stale at import'; print('ok')" % engine)
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "ok"

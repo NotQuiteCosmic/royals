@@ -53,6 +53,9 @@ jobs:
       - name: Unit tests
         run: python -m pytest tests/ -q
 
+      - name: Determinism -- the recorded pair plays back move for move
+        run: PYTHONPATH=engine/src python tests/determinism/check.py
+
       - name: Engine imports cleanly with no UI present
         run: |
           python -c "
