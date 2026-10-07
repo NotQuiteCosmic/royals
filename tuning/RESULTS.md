@@ -280,3 +280,24 @@ the laptop's game is an exact prefix of the runner's. A macOS PyPy 3.11 laptop a
 PyPy 3.10 runners play the same games, which is what the integer evaluator was for. Three of
 those six capped games went on to a gather between plies 300 and 600, so the 300 cap had been
 calling decidable games draws; 600 is the default everywhere now.
+
+## Step 6 on Actions (2026-10-07): the adopted set at scale
+
+Gauntlets of champ-001 against `original.json`, judged as non-regression SPRTs [-10, 0] on
+the pooled pairs (both passed, both in fact accepting the *gain*):
+
+| Depth | Pairs | Pentanomial | Elo | Caps |
+|---|---|---|---|---|
+| 3 | 1000 | [125, 3, 625, 3, 244] | +41.5 [+28.6, +54.6] | 8 of 2000 games |
+| 4 | 500 | [49, 63, 234, 65, 89] | +28.6 [+10.9, +46.3] | 174 of 1000 games (17%), mean 201 plies |
+
+The depth-3 figure reproduces the laptop's +41 on the same thousand openings, as
+determinism says it must (the small differences are the 600-ply cap). Depth-4 self-play is
+drawish even at 600 plies: one game in six runs to the cap. That is a property of the two
+evaluators shuffling, not of the harness, and it is worth a look of its own some day.
+
+Batched SPSA proved live: `tune-spsa` run `proof` (champ-001's 16 weights, 20 shards × 50
+pairs) applied its first wave -- 1,000 iterations, every weight within a few units of where
+it started, which is what a plateau looks like -- committed its checkpoint, and dispatched
+its own second wave through `GITHUB_TOKEN`, which the concurrency group held until the
+first run finished. The depth 4/5/6/7 re-measurements follow below when their runs land.
