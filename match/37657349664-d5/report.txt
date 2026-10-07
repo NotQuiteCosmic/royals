@@ -1,0 +1,2 @@
+f2d586ab79fe v 679e4e92445b "d5-2000"  2000 pairs  pent [301, 7, 1313, 5, 374]  elo +12.5 [+3.7, +21.4]  llr +2.45  caps 16/4000  passes 0  mean plies 63  SPRT continue
+2000 pairs from 20 files -> merged/pairs.jsonl
