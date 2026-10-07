@@ -229,6 +229,14 @@ Evidence against the original, self-play Elo:
 | 4 | 1390 | +19 [+9, +30] -- the adopted set itself, SPRT [0, 5] accepted (H1) |
 | 5 | 400 | +19 [−0.2, +38] (600-ply cap; 1 of 800 games capped) |
 | 6 | 40 | −4 [−59, +51] -- a sanity check, not a measurement: nothing alarming, no precision |
+| 7 | 40 | +70 [+20, +124] -- 9 of the 10 decisive pairs went to the adopted set |
+
+The depth-7 check (80 games, mean 56 plies, ten minutes a game, 13 CPU-hours) was meant
+as the same kind of sanity check as depth 6 and came out sharper than 40 pairs usually
+allow: pentanomial [1, 0, 30, 0, 9], so of the ten openings where the two evaluators did
+not simply trade wins, nine went to the tuned set. The interval is wide and the point
+estimate should not be quoted as a number, but the sign is clear, and it does not support
+the idea that the gain fades away at the depths where a tie-breaker ought to matter least.
 
 Depth-6 games take about three minutes each, so 40 pairs was the budget; the interval is as
 wide as the effect being looked for is small. The depth-5 figure is the same size as depth
