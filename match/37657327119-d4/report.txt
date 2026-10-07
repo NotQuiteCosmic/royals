@@ -1,0 +1,2 @@
+f2d586ab79fe v 679e4e92445b "d4-5000"  5000 pairs  pent [507, 541, 2596, 583, 773]  elo +20.0 [+14.6, +25.3]  llr +11.69  caps 1684/10000  passes 0  mean plies 195  SPRT H1
+5000 pairs from 20 files -> merged/pairs.jsonl
