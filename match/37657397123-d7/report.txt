@@ -1,0 +1,2 @@
+f2d586ab79fe v 679e4e92445b "d7-200"  200 pairs  pent [12, 0, 151, 0, 37]  elo +43.7 [+20.4, +67.3]  llr +1.48  caps 0/400  passes 0  mean plies 59  SPRT continue
+200 pairs from 20 files -> merged/pairs.jsonl
