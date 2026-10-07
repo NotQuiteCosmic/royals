@@ -262,3 +262,21 @@ One bug caught on the way in: `ANY_POST` was a literal `False` recomputed only b
 desktop and web apps until something called the setter -- which only the harness did. Test
 ordering hid it (an earlier test's teardown had already rebuilt the flag). It is now computed
 from the defaults at import, and `test_defaults_are_the_tuned_set` checks it first thing.
+
+## On GitHub Actions (2026-10-07)
+
+The repo is public, so GitHub-hosted runners are free: 4 cores each, 20 at once, 6 hours a
+job. `tune-match`, `tune-gauntlet`, `tune-spsa` and `tune-book` shard the work across them
+(`--shard i/N`: every Nth opening) and pool it at the end; results are committed to the
+`tuning-results` branch so they outlive the runner. The proving run, run 37654964831:
+champ-001 vs original at depth 3, 4 shards x 50 pairs.
+
+    200 pairs  pent [24, 0, 131, 1, 44]  elo +35.7 [+7.9, +64.0]     83 seconds wall time
+
+Inside the laptop's +41 [+28, +54]. Better than that: the laptop had played the same 400
+games (same openings, same weights) and **394 are identical move for move**; the other six
+are games the laptop cut off at its 300-ply cap and the runner played on to 600, and in each
+the laptop's game is an exact prefix of the runner's. A macOS PyPy 3.11 laptop and Linux
+PyPy 3.10 runners play the same games, which is what the integer evaluator was for. Three of
+those six capped games went on to a gather between plies 300 and 600, so the 300 cap had been
+calling decidable games draws; 600 is the default everywhere now.
