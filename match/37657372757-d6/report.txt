@@ -1,0 +1,2 @@
+f2d586ab79fe v 679e4e92445b "d6-500"  500 pairs  pent [50, 48, 272, 60, 70]  elo +18.1 [+1.6, +34.6]  llr +1.11  caps 176/1000  passes 0  mean plies 183  SPRT continue
+500 pairs from 20 files -> merged/pairs.jsonl
