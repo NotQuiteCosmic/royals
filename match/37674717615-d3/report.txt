@@ -1,0 +1,2 @@
+17d2fa78a179 v c9b94a52ec7a "screen-dragon-menace-penalty-50"  2000 pairs  pent [165, 6, 1645, 8, 176]  elo +2.1 [-4.2, +8.4]  llr -2.80  caps 24/4000  passes 0  mean plies 60  SPRT continue
+2000 pairs from 20 files -> merged/pairs.jsonl

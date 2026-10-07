@@ -1,0 +1,28 @@
+[
+  {
+    "a_id": "17d2fa78a179",
+    "b_id": "c9b94a52ec7a",
+    "caps": 24,
+    "ci": [
+      -4.2,
+      8.4
+    ],
+    "elo": 2.1,
+    "games": 4000,
+    "mean_plies": 60.0,
+    "pairs": 2000,
+    "pentanomial": [
+      165,
+      6,
+      1645,
+      8,
+      176
+    ],
+    "sprt": {
+      "elo0": 0.0,
+      "elo1": 10.0,
+      "status": "continue"
+    },
+    "tag": "screen-dragon-menace-penalty-50"
+  }
+]
