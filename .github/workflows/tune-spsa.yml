@@ -23,6 +23,7 @@ on:
       shards:     { description: "parallel jobs per wave (max 20)", default: "20" }
       pairs_per_shard: { description: "pairs per shard per wave", default: "50" }
       ply_cap:    { description: "ply cap; init only", default: "600" }
+      book:       { description: "opening book (repo path); init only", default: "tuning/book.jsonl" }
 
 permissions:
   contents: write
@@ -57,6 +58,7 @@ jobs:
           else
             pypy3 -m tuning.spsa init --name "${{ inputs.name }}" --base "${{ inputs.base }}" \
               --iterations ${{ inputs.iterations }} --depth ${{ inputs.depth }} --ply-cap ${{ inputs.ply_cap }} \
+              --book "${{ inputs.book }}" \
               ${{ inputs.params != '' && format('--params {0}', inputs.params) || '' }} \
               ${{ inputs.c != '' && format('--c {0}', inputs.c) || '' }}
           fi
@@ -147,4 +149,4 @@ jobs:
             -f name="${{ inputs.name }}" -f base="${{ inputs.base }}" -f params="${{ inputs.params }}" \
             -f c="${{ inputs.c }}" -f iterations="${{ inputs.iterations }}" -f depth="${{ inputs.depth }}" \
             -f shards="${{ inputs.shards }}" -f pairs_per_shard="${{ inputs.pairs_per_shard }}" \
-            -f ply_cap="${{ inputs.ply_cap }}"
+            -f ply_cap="${{ inputs.ply_cap }}" -f book="${{ inputs.book }}"

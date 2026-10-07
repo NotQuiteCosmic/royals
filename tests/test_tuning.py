@@ -344,3 +344,20 @@ def test_balanced_book_filter_drops_only_openings_that_always_split(tmp_path):
     kept, dropped, unseen = O.filter_book(str(book), [str(m1), str(m2)], str(out), min_appearances=2)
     assert (kept, dropped, unseen) == (3, 1, 1)
     assert [json.loads(l)["seed"] for l in open(out)] == [2, 3, 4]
+
+
+def test_rank_book_keeps_the_most_decisive_openings_in_book_order(tmp_path):
+    import json
+    book = tmp_path / "book.jsonl"
+    with open(book, "w") as f:
+        for seed in (1, 2, 3, 4, 5, 6):
+            f.write(json.dumps({"seed": seed, "entries": [], "moves": []}) + "\n")
+    def pair(seed, score): return json.dumps({"seed": seed, "score_a": score}) + "\n"
+    m1, m2 = tmp_path / "m1.jsonl", tmp_path / "m2.jsonl"
+    # seed 1 always decisive, 2 half, 3 never, 4 decisive once of two, 5 seen once (unmeasured), 6 never seen
+    open(m1, "w").write(pair(1, 1.0) + pair(2, 0.5) + pair(3, 0.5) + pair(4, 0.5) + pair(5, 1.0))
+    open(m2, "w").write(pair(1, 0.0) + pair(2, 1.0) + pair(3, 0.5) + pair(4, 1.0))
+    out = tmp_path / "ranked.jsonl"
+    written, measured, unmeasured = O.rank_book(str(book), [str(m1), str(m2)], str(out), keep=0.5)
+    assert (written, measured, unmeasured) == (3, 4, 2)
+    assert [json.loads(l)["seed"] for l in open(out)] == [1, 2, 4]   # book order, not rank order

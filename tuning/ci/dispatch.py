@@ -90,6 +90,7 @@ def cmd_spsa(args):
         "name": args.name, "base": args.base, "params": " ".join(args.params or []),
         "c": " ".join(args.c or []), "iterations": args.iterations, "depth": args.depth,
         "shards": args.shards, "pairs_per_shard": args.pairs, "ply_cap": args.ply_cap,
+        "book": args.book,
     })
 
 
@@ -156,6 +157,7 @@ def main(argv=None):
     p.add_argument("--iterations", type=int, default=20000); p.add_argument("--depth", type=int, default=3)
     p.add_argument("--shards", type=int, default=20); p.add_argument("--pairs", type=int, default=50)
     p.add_argument("--ply-cap", type=int, default=600)
+    p.add_argument("--book", default="tuning/book.jsonl")
     p.set_defaults(fn=cmd_spsa)
 
     p = sub.add_parser("book")

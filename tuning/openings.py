@@ -245,6 +245,31 @@ def filter_book(book_path, pair_files, out, min_appearances=2):
     return kept, dropped, unseen
 
 
+def rank_book(book_path, pair_files, out, keep=0.5, min_appearances=2):
+    """The balanced book proper: the openings of `book_path` ranked by how often they were
+    decisive across the given match files (all at ONE depth -- decisiveness does not carry
+    across depths), with the top `keep` fraction written to `out` in book order. Openings
+    seen fewer than min_appearances times are ranked below every opening that was seen
+    enough, so that an unmeasured opening is never promoted over a measured one. Returns
+    (written, measured, unmeasured)."""
+    stats = opening_splits(pair_files)
+    rows = []
+    with open(book_path) as src:
+        for line in src:
+            line = line.strip()
+            if line: rows.append(json.loads(line))
+    def score(row):
+        seen, split = stats.get(row["seed"], (0, 0))
+        if seen < min_appearances: return -1.0
+        return (seen - split) / seen
+    measured = sum(1 for r in rows if score(r) >= 0)
+    ranked = sorted(range(len(rows)), key=lambda i: (-score(rows[i]), i))
+    chosen = sorted(ranked[:int(round(len(rows) * keep))])
+    with open(out, "w") as dst:
+        for i in chosen: dst.write(json.dumps(rows[i], sort_keys=True) + "\n")
+    return len(chosen), measured, len(rows) - measured
+
+
 def load_book(path, limit=None):
     openings = []
     with open(path) as f:
@@ -274,7 +299,16 @@ if __name__ == "__main__":
                         help="instead: drop openings that split in every one of these match files")
     parser.add_argument("--book", default="tuning/book.jsonl", help="book to filter (with --filter-from)")
     parser.add_argument("--min-appearances", type=int, default=2)
+    parser.add_argument("--rank-from", nargs="*", default=None,
+                        help="instead: rank --book by decisiveness across these same-depth match files, keep --keep")
+    parser.add_argument("--keep", type=float, default=0.5)
     args = parser.parse_args()
+
+    if args.rank_from is not None:
+        written, measured, unmeasured = rank_book(args.book, args.rank_from, args.out, args.keep, args.min_appearances)
+        sys.stdout.write("ranked %d measured (%d unmeasured) openings, kept the top %d -> %s\n"
+                         % (measured, unmeasured, written, args.out))
+        sys.exit(0)
 
     if args.filter_from is not None:
         kept, dropped, unseen = filter_book(args.book, args.filter_from, args.out, args.min_appearances)
