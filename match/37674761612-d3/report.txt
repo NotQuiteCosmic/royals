@@ -1,0 +1,2 @@
+16a8ad3007f2 v c9b94a52ec7a "screen-rescue-dist-weight-5"  2000 pairs  pent [103, 4, 1780, 7, 106]  elo +0.8 [-4.2, +5.7]  llr -6.60  caps 15/4000  passes 0  mean plies 61  SPRT H0
+2000 pairs from 20 files -> merged/pairs.jsonl
