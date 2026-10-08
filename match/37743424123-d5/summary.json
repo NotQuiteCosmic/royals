@@ -1,0 +1,28 @@
+[
+  {
+    "a_id": "25bf58963724",
+    "b_id": "c9b94a52ec7a",
+    "caps": 10,
+    "ci": [
+      59.3,
+      87.6
+    ],
+    "elo": 73.3,
+    "games": 2000,
+    "mean_plies": 70.2,
+    "pairs": 1000,
+    "pentanomial": [
+      115,
+      3,
+      554,
+      7,
+      321
+    ],
+    "sprt": {
+      "elo0": 0.0,
+      "elo1": 10.0,
+      "status": "H1"
+    },
+    "tag": "batch2-theta-d5"
+  }
+]

@@ -1,0 +1,11 @@
+{
+  "a": "tuning/screens/batch2-theta.json",
+  "b": "tuning/pool/champ-001.json",
+  "depth": "5",
+  "pairs_per_shard": "50",
+  "shards": "20",
+  "ply_cap": "600",
+  "elo0": "0.0",
+  "elo1": "10.0",
+  "tag": "batch2-theta-d5"
+}

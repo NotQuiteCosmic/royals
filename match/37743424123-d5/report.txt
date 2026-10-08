@@ -1,0 +1,2 @@
+25bf58963724 v c9b94a52ec7a "batch2-theta-d5"  1000 pairs  pent [115, 3, 554, 7, 321]  elo +73.3 [+59.3, +87.6]  llr +14.10  caps 10/2000  passes 0  mean plies 70  SPRT H1
+1000 pairs from 20 files -> merged/pairs.jsonl
