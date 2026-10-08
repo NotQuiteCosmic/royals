@@ -1,0 +1,28 @@
+[
+  {
+    "a_id": "667049716bbf",
+    "b_id": "c9b94a52ec7a",
+    "caps": 23,
+    "ci": [
+      34.2,
+      62.1
+    ],
+    "elo": 48.1,
+    "games": 2000,
+    "mean_plies": 73.2,
+    "pairs": 1000,
+    "pentanomial": [
+      140,
+      12,
+      560,
+      9,
+      279
+    ],
+    "sprt": {
+      "elo0": 0.0,
+      "elo1": 10.0,
+      "status": "H1"
+    },
+    "tag": "champ002-vs-champ001-d3"
+  }
+]
