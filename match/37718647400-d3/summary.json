@@ -1,0 +1,28 @@
+[
+  {
+    "a_id": "f4b9f35eace5",
+    "b_id": "c9b94a52ec7a",
+    "caps": 30,
+    "ci": [
+      43.8,
+      64.2
+    ],
+    "elo": 53.9,
+    "games": 4000,
+    "mean_plies": 71.9,
+    "pairs": 2000,
+    "pentanomial": [
+      293,
+      14,
+      1077,
+      16,
+      600
+    ],
+    "sprt": {
+      "elo0": 0.0,
+      "elo1": 10.0,
+      "status": "H1"
+    },
+    "tag": "screen-rescue-dist-weight-1000"
+  }
+]
