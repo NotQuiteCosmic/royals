@@ -39,7 +39,8 @@ def gh(*args, retries=5, capture=True):
         if proc.returncode == 0:
             return proc.stdout or ""
         err = (proc.stderr or "").strip()
-        transient = "HTTP 5" in err or "Internal Server Error" in err or "502" in err or "503" in err
+        transient = ("HTTP 5" in err or "Internal Server Error" in err or "502" in err or "503" in err
+                     or "error connecting" in err or "connection reset" in err.lower() or "timeout" in err.lower())
         if not transient or attempt == retries:
             sys.exit("gh failed: %s\n%s" % (" ".join(cmd), err))
         wait = 30 * attempt
