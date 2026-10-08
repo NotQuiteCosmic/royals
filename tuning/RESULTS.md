@@ -497,3 +497,6 @@ the new vector beats the one adopted two days ago by over a hundred self-play El
 rounded version (`champ-002-candidate`: rescue 750, dragon guard 50, the stack table and
 the rest to the nearest ten) is checked for equivalence against the raw vector and given
 its own number before adoption.
+
+Depth 5, `batch2-theta` vs champ-001, 1,000 pairs: **+73.3 [+59.3, +87.6]**. The gain holds
+at every depth checked: +57 (d3), +113 (d4), +73 (d5) over the current champion.

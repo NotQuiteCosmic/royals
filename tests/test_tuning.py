@@ -338,8 +338,10 @@ def test_balanced_book_filter_drops_only_openings_that_always_split(tmp_path):
     m1, m2 = tmp_path / "m1.jsonl", tmp_path / "m2.jsonl"
     # seed 1: split twice -> dropped; seed 2: split once, decisive once -> kept;
     # seed 3: split once only -> kept (one appearance is the base rate); seed 4: never played -> kept
-    open(m1, "w").write(pair(1, 0.5) + pair(2, 0.5) + pair(3, 0.5))
-    open(m2, "w").write(pair(1, 0.5) + pair(2, 1.0))
+    # written with `with`: under PyPy an unclosed file is not flushed when the reference
+    # dies, and the filter read two empty files -- CI caught it
+    with open(m1, "w") as f: f.write(pair(1, 0.5) + pair(2, 0.5) + pair(3, 0.5))
+    with open(m2, "w") as f: f.write(pair(1, 0.5) + pair(2, 1.0))
     out = tmp_path / "balanced.jsonl"
     kept, dropped, unseen = O.filter_book(str(book), [str(m1), str(m2)], str(out), min_appearances=2)
     assert (kept, dropped, unseen) == (3, 1, 1)
@@ -355,8 +357,8 @@ def test_rank_book_keeps_the_most_decisive_openings_in_book_order(tmp_path):
     def pair(seed, score): return json.dumps({"seed": seed, "score_a": score}) + "\n"
     m1, m2 = tmp_path / "m1.jsonl", tmp_path / "m2.jsonl"
     # seed 1 always decisive, 2 half, 3 never, 4 decisive once of two, 5 seen once (unmeasured), 6 never seen
-    open(m1, "w").write(pair(1, 1.0) + pair(2, 0.5) + pair(3, 0.5) + pair(4, 0.5) + pair(5, 1.0))
-    open(m2, "w").write(pair(1, 0.0) + pair(2, 1.0) + pair(3, 0.5) + pair(4, 1.0))
+    with open(m1, "w") as f: f.write(pair(1, 1.0) + pair(2, 0.5) + pair(3, 0.5) + pair(4, 0.5) + pair(5, 1.0))
+    with open(m2, "w") as f: f.write(pair(1, 0.0) + pair(2, 1.0) + pair(3, 0.5) + pair(4, 1.0))
     out = tmp_path / "ranked.jsonl"
     written, measured, unmeasured = O.rank_book(str(book), [str(m1), str(m2)], str(out), keep=0.5)
     assert (written, measured, unmeasured) == (3, 4, 2)
