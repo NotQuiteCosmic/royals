@@ -1,0 +1,4 @@
+25bf58963724 v c9b94a52ec7a "match"  500 pairs  pent [27, 36, 196, 77, 164]  elo +113.3 [+93.9, +133.4]  llr +13.97  caps 147/1000  passes 0  mean plies 195  SPRT H1
+25bf58963724 v 12040d59cfe4 "match"  500 pairs  pent [27, 27, 190, 69, 187]  elo +131.7 [+111.6, +152.8]  llr +15.70  caps 130/1000  passes 0  mean plies 189  SPRT H1
+1000 pairs from 20 files -> merged/pairs.jsonl
+GAUNTLET PASSED
