@@ -1,0 +1,28 @@
+[
+  {
+    "a_id": "d1c3e1af6652",
+    "b_id": "c9b94a52ec7a",
+    "caps": 610,
+    "ci": [
+      82.4,
+      101.6
+    ],
+    "elo": 91.9,
+    "games": 4000,
+    "mean_plies": 193.9,
+    "pairs": 2000,
+    "pentanomial": [
+      139,
+      152,
+      813,
+      328,
+      568
+    ],
+    "sprt": {
+      "elo0": 0.0,
+      "elo1": 10.0,
+      "status": "H1"
+    },
+    "tag": "confirm-rescue-740-d4"
+  }
+]

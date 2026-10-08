@@ -1,0 +1,2 @@
+d1c3e1af6652 v c9b94a52ec7a "confirm-rescue-740-d4"  2000 pairs  pent [139, 152, 813, 328, 568]  elo +91.9 [+82.4, +101.6]  llr +40.52  caps 610/4000  passes 0  mean plies 194  SPRT H1
+2000 pairs from 20 files -> merged/pairs.jsonl
