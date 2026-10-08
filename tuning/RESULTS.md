@@ -387,3 +387,39 @@ dragon terms fire in so few positions (0.15 per side) that the estimate exceeds 
 
 Screens on Actions, each against champ-001 at depth 3, 20 × 100 pairs, at a small
 tie-breaker-scale value and at the probe-scale value: `tuning/screens/`. Results below.
+
+### Full-book sweeps (10,000 pairs each, depth 3 unless noted)
+
+| Match-up | Elo | Note |
+|---|---|---|
+| champ-001 vs original | +35.1 [+31.0, +39.2] | the tightest depth-3 number: 20,000 games |
+| champ-001 vs original, **depth 5** | +20.0 [+16.0, +24.0] | supersedes the 2,000-pair +12.5; depth 5 is as good as depth 4 |
+| champ-001 vs probe spread-1300 | +2.8 [−0.3, +6.0] | the probe is nearly champ-001's equal |
+| probe prisoner-1000-diag-200 vs probe spread-1300 | +7.6 [+4.0, +11.2] | |
+| original vs probe group-1700-stack4-16000 | −25.0 [−29.0, −20.9] | the probe is a champ-001 variant; original loses as expected |
+
+Two of the nineteen runs that finished together lost the push race for `tuning-results`
+(their artifacts were recovered by hand); `record.sh` now retries twelve times with random
+backoff.
+
+### Batch-2 screens (each vs champ-001, depth 3, 2,000 pairs, gain SPRT [0, 10])
+
+| Term | Small value | Elo | Large value | Elo |
+|---|---|---|---|---|
+| `RESCUE_DIST_WEIGHT` | 5 | +0.8 [−4.2, +5.7] H0 | **740** | **+47.8 [+37.8, +57.9] H1** |
+| `DRAGON_GUARD_WEIGHT` | **50** | **+9.8 [+3.9, +15.7] H1** | 5000 | −94.0 [−104.5, −83.8] H0 |
+| `PUSH_THREAT_PENALTY` | 50 | +6.4 [−1.6, +14.4] open | 1100 | −64.4 [−74.7, −54.2] H0 |
+| `ROYAL_DIST_WEIGHT` | 5 | +3.7 [−3.1, +10.6] open | 80 | −16.2 [−25.8, −6.5] H0 |
+| `DRAGON_MENACE_PENALTY` | 50 | +2.1 [−4.2, +8.4] open | 5000 | −132.4 [−143.4, −121.8] H0 |
+| `SPY_ANCHOR_WEIGHT` | 20 | −2.3 [−7.0, +2.3] H0 | 330 | −31.1 [−39.6, −22.6] H0 |
+| `HOLDING_PENALTY` | 50 | −0.2 [−4.1, +3.8] H0 | 1900 | −46.5 [−56.2, −36.9] H0 |
+
+The one large value that helps is the rescue gradient, and it helps a great deal: +48 Elo
+over the current champion from a single term. The interpretation is straightforward once
+seen -- a side with pieces in captivity cannot win without them, and nothing in the
+evaluator was pulling anyone towards the jail; the captives' squared value was a sunk cost
+the search had no gradient to recover. Games with the term on run longer (71 plies against
+60), consistent with rescues happening. It is being confirmed at depth 4 and probed at 300
+and 1000 before anything is adopted. Dragon guard at 50 is a real but small second gain;
+push-threat, royal-distance and dragon-menace at small values are positive but unproven
+and go into the SPSA batch to be settled; spy-anchor and holding are rejected.
