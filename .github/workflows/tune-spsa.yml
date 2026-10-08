@@ -139,7 +139,7 @@ jobs:
         run: |
           mkdir -p rec/runs && cp -R "tuning/runs/${{ inputs.name }}" rec/runs/
           cp apply.txt rec/apply-${{ github.run_id }}.txt
-          sh tuning/ci/record.sh "spsa/${{ inputs.name }}" rec/runs rec/apply-${{ github.run_id }}.txt
+          bash tuning/ci/record.sh "spsa/${{ inputs.name }}" rec/runs rec/apply-${{ github.run_id }}.txt
       - name: Dispatch the next wave
         if: ${{ steps.apply.outputs.more == 'yes' }}
         env:

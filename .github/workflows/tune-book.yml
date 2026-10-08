@@ -69,4 +69,4 @@ jobs:
         with:
           name: book
           path: merged/
-      - run: sh tuning/ci/record.sh "book/${{ github.run_id }}" merged/book.jsonl merged/report.txt
+      - run: bash tuning/ci/record.sh "book/${{ github.run_id }}" merged/book.jsonl merged/report.txt

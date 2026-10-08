@@ -97,4 +97,4 @@ jobs:
           files="merged/summary.json merged/report.txt"
           if [ "$(stat -c %s merged/pairs.jsonl.gz)" -lt 5000000 ]; then files="$files merged/pairs.jsonl.gz"; fi
           printf '%s\n' '${{ toJSON(inputs) }}' > merged/inputs.json
-          sh tuning/ci/record.sh "$dest" $files merged/inputs.json
+          bash tuning/ci/record.sh "$dest" $files merged/inputs.json

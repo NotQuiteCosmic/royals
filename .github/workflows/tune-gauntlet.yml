@@ -94,4 +94,4 @@ jobs:
           printf '%s\n' '${{ toJSON(inputs) }}' > merged/inputs.json
           files="merged/summary.json merged/report.txt merged/inputs.json"
           if [ "$(stat -c %s merged/pairs.jsonl.gz)" -lt 5000000 ]; then files="$files merged/pairs.jsonl.gz"; fi
-          sh tuning/ci/record.sh "gauntlet/${{ github.run_id }}-d${{ inputs.depth }}" $files
+          bash tuning/ci/record.sh "gauntlet/${{ github.run_id }}-d${{ inputs.depth }}" $files

@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Make a run's results durable: commit files to the `tuning-results` branch.
 #
 #   tuning/ci/record.sh <dest-dir-in-branch> <file>...
@@ -41,8 +41,13 @@ while :; do
         git commit -q -m "${GITHUB_WORKFLOW:-tuning}: ${GITHUB_RUN_ID:-local} -> $dest"
         git push -q origin "$branch"
     ) && break
-    if [ "$attempt" -ge 5 ]; then echo "record: giving up after $attempt attempts" >&2; exit 1; fi
-    echo "record: push rejected, refetching (attempt $attempt)"
+    if [ "$attempt" -ge 12 ]; then echo "record: giving up after $attempt attempts" >&2; exit 1; fi
+    # Fifteen merge jobs finishing in the same minute all race for this branch; five quick
+    # retries lost twice. Back off a random few seconds so the losers spread out, then pick
+    # up whatever landed and try again.
+    pause=$(( (RANDOM % 20) + 3 ))
+    echo "record: push rejected, refetching in ${pause}s (attempt $attempt)"
+    sleep "$pause"
     (cd "$work" && git fetch -q origin "$branch" && git reset -q --hard "origin/$branch")
 done
 git worktree remove --force "$work" >/dev/null 2>&1 || true
