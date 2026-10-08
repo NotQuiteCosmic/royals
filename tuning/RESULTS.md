@@ -423,3 +423,20 @@ the search had no gradient to recover. Games with the term on run longer (71 pli
 and 1000 before anything is adopted. Dragon guard at 50 is a real but small second gain;
 push-threat, royal-distance and dragon-menace at small values are positive but unproven
 and go into the SPSA batch to be settled; spy-anchor and holding are rejected.
+
+### The balanced book, built (2026-10-08)
+
+`tuning/book-d3-balanced.jsonl`: the 5,000 openings of the book most often decisive across
+the four depth-3 sweeps (every opening measured four times). Honest check, ranking on three
+sweeps and judging on the fourth, decisive share of the kept half against the whole book:
+
+| Held-out sweep | whole book | top half |
+|---|---|---|
+| champ-001 vs original | 36% | 53% |
+| champ-001 vs spread-1300 | 22% | 31% |
+| prisoner-diag vs spread-1300 | 28% | 39% |
+| original vs group-stack4 | 36% | 52% |
+
+About 1.45x the information per game in every case. It is a **depth-3** book: decisiveness
+does not carry across depths, so a depth-4 SPSA would need a book ranked from depth-4
+sweeps. SPSA at depth 3 uses it from here on (`--book tuning/book-d3-balanced.jsonl`).
