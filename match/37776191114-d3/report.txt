@@ -1,0 +1,2 @@
+667049716bbf v 25bf58963724 "champ002-vs-theta-3000"  3000 pairs  pent [240, 25, 2496, 17, 222]  elo -2.5 [-7.5, +2.4]  llr +3.87  caps 78/6000  passes 0  mean plies 73  SPRT H1
+3000 pairs from 20 files -> merged/pairs.jsonl
