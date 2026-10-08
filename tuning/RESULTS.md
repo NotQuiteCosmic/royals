@@ -454,3 +454,33 @@ Still rising at 1000, which was the weight's range ceiling; the range is now 500
 screens at 2000 and 3500 will find where it turns over. The batch-2 SPSA (run `batch2`,
 19 weights, balanced book, started from champ-001 + rescue 740 + dragon guard 50) will
 settle the value jointly with everything else.
+
+### Rescue distance, the curve (depth 3, 2,000 pairs each, vs champ-001)
+
+| 300 | 740 | 1000 | 2000 | 3500 |
+|---|---|---|---|---|
+| +28 [+18, +37] | +48 [+38, +58] | +54 [+44, +64] | +30 [+20, +40] | −21 [−32, −11] |
+
+A broad optimum between about 750 and 1000; beyond it the pull towards the jail starts to
+cost more than the rescues gain (games lengthen: 62 → 93 mean plies from 300 to 3500).
+
+## Run 3: SPSA `batch2` on Actions (19 weights, balanced book, 20,000 pairs, 2026-10-08)
+
+Twenty self-dispatched waves of 20 shards × 50 pairs, about thirteen minutes each, from
+champ-001 with rescue 740 and dragon guard 50 switched on, over the depth-3 balanced book.
+
+| Weight | Start | End | | Weight | Start | End |
+|---|---|---|---|---|---|---|
+| `RESCUE_DIST_WEIGHT` | 740 | 752 | | `STACK_2` | 4120 | 4271 |
+| `DRAGON_GUARD_WEIGHT` | 50 | 50 | | `STACK_4` | 15310 | 14517 |
+| `PUSH_THREAT_PENALTY` | 0 | 1 | | `STACK_5` | 25370 | 25802 |
+| `ROYAL_DIST_WEIGHT` | 0 | 0 | | `SPREAD_WEIGHT` | 1530 | 1551 |
+| `DRAGON_MENACE_PENALTY` | 0 | 0 | | `PRISONER_PAWN_WEIGHT` | 830 | 844 |
+
+Rescue stayed where the screens put it: the slope between 740 and 1000 is flat enough that
+20,000 pairs did not move it, which agrees with +48 and +54 being within noise of each
+other. The three undecided small terms never left the floor and are rejected along with
+spy-anchor and holding. `STACK_4` drifted down for the third run in a row (15,310 → 14,517),
+`STACK_2` and `STACK_5` up: the stack table keeps bending the same way, and this time with
+the balanced book's extra signal behind it. The result (`tuning/screens/batch2-theta.json`)
+goes to the gauntlet at depths 3 and 4 and a depth-5 match.
