@@ -237,9 +237,11 @@ copies figures into `tuning/RESULTS.md`. Locally the harness defaults to half th
 the machine stays usable; runners pass `--workers 4` to use all of theirs.
 
 `tuning/pool/` holds the weight sets that have earned a place: `original.json` is the
-evaluator before any tuning and is in every gauntlet forever; `champ-001.json` is what the
-October 2026 tuning adopted and what `ai.DEFAULT_WEIGHTS` now holds. `tuning/RESULTS.md` is
-the record of every run.
+evaluator before any tuning and is in every gauntlet forever; `champ-001.json` the first
+October 2026 tuning (gather tie-breakers, bent stack table); `champ-002.json` the second
+(the rescue gradient, a dragon term) and what `ai.DEFAULT_WEIGHTS` now holds. A weight
+file names every weight; one that predates a term means that term at 0, never at the
+current default. `tuning/RESULTS.md` is the record of every run.
 
 ## The web layer
 

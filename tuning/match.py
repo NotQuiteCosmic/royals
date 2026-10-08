@@ -12,7 +12,7 @@ one pair per task, so the two halves of a pair land in one line of the results f
 file is JSONL, appended and flushed a line at a time, and a run that is interrupted can be
 started again with the same arguments: pairs already on disk are counted, not replayed.
 
-    pypy3 -m tuning.match sprt --a tuning/pool/champ-001.json --b cand.json --elo0 0 --elo1 10
+    pypy3 -m tuning.match sprt --a tuning/pool/champ-002.json --b cand.json --elo0 0 --elo1 10
 
 Workers are long-lived -- PyPy needs a few games to warm its JIT, and the first game out
 of each worker is about twice as slow as the rest. A sliding window of tasks keeps every

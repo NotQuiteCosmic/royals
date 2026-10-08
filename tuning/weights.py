@@ -23,10 +23,23 @@ def default():
     return dict(AI.DEFAULT_WEIGHTS)
 
 
+# The twelve weights every set has always had. A file must name all of them; any other
+# name it leaves out is a candidate term that did not exist when the file was written,
+# and the file means it at 0.
+CORE = tuple(AI.WEIGHT_NAMES[:12])
+
+
 def complete(weights):
-    """A full weight set: the defaults with `weights` laid over them. Validates by the
-    same rules setWeights uses, without putting anything in force."""
-    full = default()
+    """A full weight set from a possibly partial one. Names the file does not mention are
+    taken as 0, NOT as the current defaults: a weight file written before a term existed
+    means that term off, and must go on meaning that after the term's default changes. (It
+    did not, once: the determinism check loaded champ-001.json after champ-002 was adopted
+    and silently played it with rescue 750.) The twelve core names must be present.
+    Validates by the same rules setWeights uses, without putting anything in force."""
+    missing = [name for name in CORE if name not in weights]
+    if missing:
+        raise KeyError("a weight set must name the core weights; missing %s" % ", ".join(missing))
+    full = {name: 0 for name in AI.WEIGHT_NAMES}
     for name, value in weights.items():
         if name not in AI.WEIGHT_RANGES:
             raise KeyError("no evaluation weight called %r" % (name,))

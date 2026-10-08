@@ -25,7 +25,7 @@ import sys
 import time
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DEFAULT_A = "tuning/pool/champ-001.json"
+DEFAULT_A = "tuning/pool/champ-002.json"
 DEFAULT_B = "tuning/pool/original.json"
 RESULTS_BRANCH = "tuning-results"
 

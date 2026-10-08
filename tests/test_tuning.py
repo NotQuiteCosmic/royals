@@ -24,10 +24,16 @@ def engine_left_clean():
     assert AI.getWeights() == AI.DEFAULT_WEIGHTS, "a game left non-default weights in force"
 
 
-def test_weight_ids_depend_on_values_not_on_which_keys_were_given():
-    assert W.weight_id({}) == W.weight_id(W.default())
-    assert W.weight_id({"DIAG_WEIGHT": 250}) == W.weight_id({})
-    assert W.weight_id({"DIAG_WEIGHT": 251}) != W.weight_id({})
+def test_weight_ids_depend_on_values_and_missing_terms_mean_zero():
+    import pytest as _pytest
+    full = W.default()
+    core_only = {k: full[k] for k in W.CORE}
+    # a file that predates a candidate term means that term off, whatever the default now is
+    assert W.complete(core_only)["RESCUE_DIST_WEIGHT"] == 0
+    assert W.weight_id(dict(core_only, RESCUE_DIST_WEIGHT=0)) == W.weight_id(core_only)
+    assert W.weight_id(dict(full, DIAG_WEIGHT=251)) != W.weight_id(full)
+    with _pytest.raises(KeyError):
+        W.complete({"DIAG_WEIGHT": 250})
 
 
 def test_opening_replays_from_its_tokens():
@@ -52,7 +58,7 @@ def test_random_plies_replay_and_keep_red_to_move():
 
 def test_a_short_game_records_and_replays():
     opening = O.make_opening(3, noise=0.5)
-    record = G.play_game(opening, W.default(), {"DIAG_WEIGHT": 0}, depth=1, ply_cap=6)
+    record = G.play_game(opening, W.default(), dict(W.default(), DIAG_WEIGHT=0), depth=1, ply_cap=6)
     assert record["plies"] <= 6
     assert record["blue_id"] != record["red_id"]
     assert record["termination"] in ("ply_cap", "gather", "double_pass")
@@ -123,7 +129,7 @@ from tuning import spsa as P  # noqa: E402
 
 def test_play_pair_is_two_games_on_one_opening_with_colours_swapped():
     row = O.make_opening(3, noise=0.5).to_row()
-    job = {"opening": row, "a": W.default(), "b": W.complete({"DIAG_WEIGHT": 0}),
+    job = {"opening": row, "a": W.default(), "b": dict(W.default(), DIAG_WEIGHT=0),
            "depth": 1, "ply_cap": 4, "tag": "t"}
     pair = M.play_pair(job)
     first, second = pair["games"]
@@ -193,7 +199,7 @@ def test_queue_runs_to_completion_and_is_idempotent(tmp_path):
         for seed in (3, 11):
             f.write(json.dumps(O.make_opening(seed, noise=0.5).to_row()) + "\n")
     a = tmp_path / "a.json"; b = tmp_path / "b.json"
-    W.save(W.default(), str(a)); W.save({"DIAG_WEIGHT": 0}, str(b))
+    W.save(W.default(), str(a)); W.save(dict(W.default(), DIAG_WEIGHT=0), str(b))
     out = tmp_path / "r.jsonl"
     queue = tmp_path / "queue.jsonl"
     verdicts = tmp_path / "verdicts.jsonl"
@@ -239,7 +245,7 @@ def test_merge_dedupes_and_pools_to_the_unsharded_answer(tmp_path):
     with open(book, "w") as f:
         for seed in (3, 11, 57, 99):
             f.write(json.dumps(O.make_opening(seed, noise=0.5).to_row()) + "\n")
-    a, b = W.default(), W.complete({"DIAG_WEIGHT": 0})
+    a, b = W.default(), dict(W.default(), DIAG_WEIGHT=0)
     def args(out, shard):
         return types.SimpleNamespace(book=str(book), out=str(out), depth=1, ply_cap=4, workers=2,
                                      pairs=4, alpha=0.05, beta=0.05, shard=shard)

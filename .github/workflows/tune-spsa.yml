@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       name:       { description: "run name (state lives under tuning/runs/<name>)", required: true }
-      base:       { description: "starting weights (repo path); only used by init", default: "tuning/pool/champ-001.json" }
+      base:       { description: "starting weights (repo path); only used by init", default: "tuning/pool/champ-002.json" }
       params:     { description: "space-separated weights to tune (empty = all); init only", default: "" }
       c:          { description: "probe sizes NAME=value, space-separated; init only", default: "" }
       iterations: { description: "total iterations; init only", default: "20000" }

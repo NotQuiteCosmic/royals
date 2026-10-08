@@ -10,7 +10,7 @@ name: tune-match
 on:
   workflow_dispatch:
     inputs:
-      a:        { description: "weights A (repo path)", default: "tuning/pool/champ-001.json" }
+      a:        { description: "weights A (repo path)", default: "tuning/pool/champ-002.json" }
       b:        { description: "weights B (repo path)", default: "tuning/pool/original.json" }
       depth:    { description: "search depth", default: "3" }
       pairs_per_shard: { description: "colour-swapped pairs per shard", default: "50" }

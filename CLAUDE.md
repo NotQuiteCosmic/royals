@@ -27,7 +27,7 @@ PYTHONPATH=engine/src:web/src python3 -m pytest tests/ -q             # 136 unit
 python3 -m py_compile engine/src/royals_engine/*.py apps/*/*.py tuning/*.py
 ```
 
-Expected green state: `golden.txt` 13,496 lines identical, `golden_search.txt` 245 lines
+Expected green state: `golden.txt` 13,496 lines identical, `golden_search.txt` 224 lines
 identical, 136 tests passing (22 engine-purity, 51 notation, 22 web API, 27 weights,
 14 tuning harness).
 
@@ -41,7 +41,7 @@ colour.** CI doesn't install the web package either, so the web layer is uncover
 
 ```bash
 python3 tuning/bench.py [--set NAME=value]                 # nodes/s; CPython gates at 3%
-pypy3 -m tuning.match sprt --a tuning/pool/champ-001.json --b cand.json --elo0 0 --elo1 10
+pypy3 -m tuning.match sprt --a tuning/pool/champ-002.json --b cand.json --elo0 0 --elo1 10
 pypy3 -m tuning.match gauntlet --challenger cand.json      # non-regression vs the pool
 pypy3 -m tuning.match tournament --players a.json b.json c.json
 pypy3 -m tuning.spsa --name run1 --iterations 20000        # tune; --resume to continue

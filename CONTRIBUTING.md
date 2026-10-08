@@ -38,7 +38,7 @@ looking at. `PYTHONPATH=engine/src` (and `web/src` for the web tests) makes the 
 you are in the one that runs. `tuning/` does this for itself.
 
 Everything should be green before you commit. As of the last run: **136 unit tests pass,
-`golden.txt` 13,496 lines identical, `golden_search.txt` 245 lines identical.**
+`golden.txt` 13,496 lines identical, `golden_search.txt` 224 lines identical.**
 
 The 136 break down as 22 engine-purity, 51 notation, 22 web API, 27 evaluator weights and
 14 tuning harness. The web API tests call `pytest.importorskip("fastapi")`, so without the

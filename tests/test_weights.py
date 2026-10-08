@@ -32,15 +32,16 @@ ORIGINAL = {
     "DRAGON_MENACE_PENALTY": 0, "RESCUE_DIST_WEIGHT": 0, "HOLDING_PENALTY": 0,
 }
 
-# What shipped after the October 2026 tuning -- see tuning/RESULTS.md and the comments in ai.py.
+# What shipped after the second October 2026 tuning (champ-002) -- see tuning/RESULTS.md and
+# the comments in ai.py. tuning/pool/champ-002.json holds the same numbers.
 TUNED = {
-    "DIAG_WEIGHT": 250, "GROUP_PENALTY": 1480,
-    "PRISONER_PAWN_WEIGHT": 830, "PRISONER_SPY_WEIGHT": 800,
-    "STACK_1": 1020, "STACK_2": 4120, "STACK_3": 8740, "STACK_4": 15310, "STACK_5": 25370,
-    "CAPTIVE_PCT": 205, "SPREAD_WEIGHT": 1530, "ROYAL_SPY_PENALTY": 5010,
+    "DIAG_WEIGHT": 250, "GROUP_PENALTY": 1490,
+    "PRISONER_PAWN_WEIGHT": 840, "PRISONER_SPY_WEIGHT": 800,
+    "STACK_1": 1010, "STACK_2": 4270, "STACK_3": 8660, "STACK_4": 14520, "STACK_5": 25800,
+    "CAPTIVE_PCT": 203, "SPREAD_WEIGHT": 1550, "ROYAL_SPY_PENALTY": 5020,
     "SPY_DIST_WEIGHT": 5, "THREAT_PENALTY": 0, "SPY_STACK_WEIGHT": 0, "WRONG_COLOUR_PENALTY": 31,
-    "PUSH_THREAT_PENALTY": 0, "ROYAL_DIST_WEIGHT": 0, "SPY_ANCHOR_WEIGHT": 0, "DRAGON_GUARD_WEIGHT": 0,
-    "DRAGON_MENACE_PENALTY": 0, "RESCUE_DIST_WEIGHT": 0, "HOLDING_PENALTY": 0,
+    "PUSH_THREAT_PENALTY": 0, "ROYAL_DIST_WEIGHT": 0, "SPY_ANCHOR_WEIGHT": 0, "DRAGON_GUARD_WEIGHT": 50,
+    "DRAGON_MENACE_PENALTY": 0, "RESCUE_DIST_WEIGHT": 750, "HOLDING_PENALTY": 0,
 }
 
 
@@ -77,7 +78,7 @@ def test_defaults_are_what_is_in_force_at_import():
 
 def test_defaults_are_the_tuned_set():
     assert AI.DEFAULT_WEIGHTS == TUNED
-    assert AI.STACK_VALUE == (0, 1020, 4120, 8740, 15310, 25370, 0)
+    assert AI.STACK_VALUE == (0, 1010, 4270, 8660, 14520, 25800, 0)
     # the gather tie-breakers are on, so the post-pass runs by default
     assert AI.ANY_POST is True
 
@@ -243,9 +244,10 @@ def test_post_pass_runs_only_when_a_candidate_term_is_on(original):
     assert AI.ANY_POST is False
 
 
-def test_the_rejected_and_untested_terms_are_off_by_default():
+def test_the_rejected_terms_are_off_by_default():
     for name in AI.WEIGHT_NAMES[12:]:
-        if name in ("SPY_DIST_WEIGHT", "WRONG_COLOUR_PENALTY"): continue
+        if name in ("SPY_DIST_WEIGHT", "WRONG_COLOUR_WEIGHT", "WRONG_COLOUR_PENALTY",
+                    "DRAGON_GUARD_WEIGHT", "RESCUE_DIST_WEIGHT"): continue
         assert AI.DEFAULT_WEIGHTS[name] == 0, name
 
 

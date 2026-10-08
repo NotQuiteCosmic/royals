@@ -212,24 +212,26 @@ INFINITY = WIN_SCORE * 1000
 # into locals once at the top of evaluateSides, so the cost of that is one LOAD_GLOBAL per
 # weight per call against a loop over 49 squares.
 #
-# The defaults were tuned by self-play in October 2026 -- see tuning/RESULTS.md for every
-# game count and interval behind the numbers below. Until then they were the hand-tuned
-# values the evaluator had always used (DIAG 250, GROUP 1500, PRISONER 800, stacks n*n*1000,
-# CAPTIVE 200, SPREAD 1500, ROYAL_SPY 5000), which tuning/pool/original.json keeps and every
-# gauntlet still plays against. Measured at scale on GitHub Actions, the tuned set beats it
-# at every depth from 3 to 7, every interval clear of zero (self-play Elo, which runs hot):
-#   depth 3  +41 [+28, +54]  1000 pairs      depth 6  +18 [+2, +35]    500 pairs
-#   depth 4  +20 [+15, +25]  5000 pairs      depth 7  +44 [+20, +67]   200 pairs
-#   depth 5  +12 [+4, +21]   2000 pairs
-# Read that as "a real gain of ten to forty Elo at any depth", not as a trend: the tie-
-# breaker story said the gain should fade as the search deepens, and depth 7 says it does
-# not. It costs about 10% of node rate, because the two gather terms turn the post-pass on
-# at every leaf -- wall time, not strength, at a fixed depth.
-# The whole gain comes from two places, found by ablation:
-#   - the two tiny gather terms at the bottom of this block, worth about +25 together;
-#   - the stack table bending away from the square law, worth about +15.
-# Everything else moved less than its own probe size over 20,000 paired games, twice, so the
-# hand tuning of those terms stands as it was.
+# The defaults were tuned by self-play in October 2026, twice -- see tuning/RESULTS.md for
+# every game count and interval behind the numbers below. Before that they were the
+# hand-tuned values the evaluator had always used (DIAG 250, GROUP 1500, PRISONER 800,
+# stacks n*n*1000, CAPTIVE 200, SPREAD 1500, ROYAL_SPY 5000), kept as
+# tuning/pool/original.json; the first tuned set is tuning/pool/champ-001.json; both stay
+# in every gauntlet.
+#
+# Round one (champ-001) found two tiny gather tie-breakers and bent the stack table, worth
+# +35 Elo [+31, +39] over the original at depth 3 (10,000 pairs) and +20 at depths 4 and 5.
+# Round two (champ-002, these defaults) found the rescue gradient and a dragon term, worth
+# a great deal more -- against champ-001: +48 [+34, +62] at depth 3, +113 [+94, +133] at
+# depth 4 (the raw SPSA vector), +73 [+59, +88] at depth 5; against the original at depth 4,
+# +126 [+113, +141] over 1,000 pairs. Self-play Elo, which runs hot. The cost is about 7%
+# of node rate against the original (35,500 against 38,300 nodes/s, CPython, depth 5): the
+# candidate terms are a post-pass over the groups at the leaf -- wall time, not strength, at
+# a fixed depth.
+#
+# Everything else moved less than its own probe size over 60,000 paired games across three
+# SPSA runs, except the stack table, which bent the same way every time: a 4-stack is worth
+# less than the square law said, a 2 and a 5 more.
 
 # What a jump's worth of mobility is worth against the stacking score: JUMPREACH is 4 in the
 # middle of the board and 2 on the rim, so at a quarter point a lone piece is worth up to half
@@ -242,37 +244,37 @@ DIAG_WEIGHT = 250
 # are not alike -- a captive spy can break itself out and shatters its captor's stack when it
 # does; captive pawns are inert until a push frees them -- though tuning found no daylight
 # between them worth more than noise.
-PRISONER_PAWN_WEIGHT = 830
+PRISONER_PAWN_WEIGHT = 840
 PRISONER_SPY_WEIGHT = 800
 
 # each separate group costs about 1.5
-GROUP_PENALTY = 1480
+GROUP_PENALTY = 1490
 
 # What a standing stack of n pieces is worth, for n from 1 to 5. This was n*n*SCALE, a
 # square law, and the tuner bent it the same way in two independent runs: a 4-stack is worth
 # a little less than the square law said and a 2 and a 5 a little more. On its own the bend
 # is worth about 15 Elo at depth 3. Six is the win and is scored by WIN_SCORE, not from
 # here -- see STACK_VALUE below.
-STACK_1 = 1020
-STACK_2 = 4120
-STACK_3 = 8740
-STACK_4 = 15310
-STACK_5 = 25370
+STACK_1 = 1010
+STACK_2 = 4270
+STACK_3 = 8660
+STACK_4 = 14520
+STACK_5 = 25800
 
 # Pieces of yours being held cost this percentage of what the same stack would be worth
 # standing. 200 was the old "being held costs double": the group is counted as a stack for
 # its owner and then charged twice over, so its net worth is minus one stack. At 100
 # captivity would be neutral; below it, strangely, a comfort.
-CAPTIVE_PCT = 205
+CAPTIVE_PCT = 203
 
 # The spread penalty's multiplier, about 1.5 times the larger coordinate standard deviation.
 # It used to be baked into spreadPenalty as a 9 under the root -- see there for why pulling
 # it out as a weight changes nothing. This is the term that drives play: at 0 the evaluator
 # loses 114 Elo [74, 156], six times what losing the mobility term costs.
-SPREAD_WEIGHT = 1530
+SPREAD_WEIGHT = 1550
 
 # Royal and spy on one square short of a win cost this times the square of the group count.
-ROYAL_SPY_PENALTY = 5010
+ROYAL_SPY_PENALTY = 5020
 
 ####### Candidate terms #######
 # Things about a position the evaluator did not use to look at. Each is here because the
@@ -333,14 +335,21 @@ ROYAL_DIST_WEIGHT = 0
 SPY_ANCHOR_WEIGHT = 0
 
 # Own dragon orthogonally next to the spy's square: a wall nothing jumps past and a
-# strength-3 pusher nothing light shifts. And the enemy's dragon there: it can push a
-# three-weight stack and nothing can take it. Dragons are otherwise invisible here.
-DRAGON_GUARD_WEIGHT = 0
+# strength-3 pusher nothing light shifts. +10 Elo [+4, +16] at 50; -94 at 5000. And the
+# enemy's dragon there: it can push a three-weight stack and nothing can take it -- but
+# +2 at 50 and -132 at 5000, so off. Dragons were otherwise invisible here.
+DRAGON_GUARD_WEIGHT = 50
 DRAGON_MENACE_PENALTY = 0
 
 # Per captive, the torus Manhattan distance from the nearest own standing group to the
-# square holding them. Freeing needs orthogonal adjacency; this is the gradient towards it.
-RESCUE_DIST_WEIGHT = 0
+# square holding them. Freeing needs orthogonal adjacency; this is the gradient towards it,
+# and it is the single most valuable term found by tuning: a side with pieces in captivity
+# cannot win without them, and until this nothing pulled anyone towards the jail -- the
+# captives' lost value was a sunk cost the search had no gradient to recover. Against
+# champ-001 at depth 3: +28 at 300, +48 at 740, +54 at 1000, +30 at 2000, -21 at 3500 (2,000
+# pairs each); +92 [+82, +102] at depth 4 at 740. SPSA left it at 752 from 740. A broad
+# optimum between about 750 and 1000; past it the pull costs more than the rescues gain.
+RESCUE_DIST_WEIGHT = 750
 
 # Per prisoner carried by a standing group. The capture is already paid for by
 # PRISONER_*_WEIGHT; this prices the encumbrance -- less strength, no landing on company.

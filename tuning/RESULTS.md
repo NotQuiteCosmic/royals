@@ -500,3 +500,27 @@ its own number before adoption.
 
 Depth 5, `batch2-theta` vs champ-001, 1,000 pairs: **+73.3 [+59.3, +87.6]**. The gain holds
 at every depth checked: +57 (d3), +113 (d4), +73 (d5) over the current champion.
+
+## Adopted (2026-10-08): `champ-002`
+
+`tuning/pool/champ-002.json`, the rounded batch-2 vector, is `ai.DEFAULT_WEIGHTS`. Against
+the raw SPSA vector it is −2.5 Elo [−7.5, +2.4] over 3,000 pairs, a non-regression by SPRT
+[−10, 0]; on its own: +48.1 [+34.2, +62.1] over champ-001 at depth 3 (1,000 pairs) and
++126.4 [+112.6, +140.5] over the original at depth 4 (1,000 pairs). What changed from
+champ-001: `RESCUE_DIST_WEIGHT` 0 → 750, `DRAGON_GUARD_WEIGHT` 0 → 50, the stack table bent
+further (1010 / 4270 / 8660 / 14520 / 25800), and small moves in `GROUP_PENALTY` (1490),
+`PRISONER_PAWN_WEIGHT` (840), `SPREAD_WEIGHT` (1550), `ROYAL_SPY_PENALTY` (5020),
+`CAPTIVE_PCT` (203).
+
+Goldens re-recorded: the non-eval content of `golden.txt` is still byte-identical to
+master's; `golden_search.txt` is now 224 lines (games end sooner). Both pass under CPython
+and PyPy.
+
+A bug caught by the determinism check on the way in: `tuning.weights.complete` filled a
+weight file's missing names from the *current* defaults, so `champ-001.json` -- written
+before the batch-2 terms existed -- would have been played with rescue 750 the moment
+champ-002 was adopted. Missing candidate terms now load as 0, every tracked weight file
+names every weight, and the ids the Actions reports recorded are unchanged.
+
+Bench, same session, CPython depth 5: champ-002 35,500 nodes/s, champ-001 35,100, original
+38,300 -- about 7% below the original, level with champ-001.
