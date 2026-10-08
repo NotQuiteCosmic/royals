@@ -484,3 +484,16 @@ spy-anchor and holding. `STACK_4` drifted down for the third run in a row (15,31
 `STACK_2` and `STACK_5` up: the stack table keeps bending the same way, and this time with
 the balanced book's extra signal behind it. The result (`tuning/screens/batch2-theta.json`)
 goes to the gauntlet at depths 3 and 4 and a depth-5 match.
+
+### Gauntlets of the batch-2 result (`batch2-theta`)
+
+| Depth | vs champ-001 | vs original | Verdict |
+|---|---|---|---|
+| 3 (1000 pairs each) | +57.0 [+42.7, +71.4] | +93.8 [+78.7, +109.2] | passed |
+| 4 (500 pairs each) | +113.3 [+93.9, +133.4] | +131.7 [+111.6, +152.8] | passed |
+
+The rescue gradient is most of it, and it is worth more the deeper the search: at depth 4
+the new vector beats the one adopted two days ago by over a hundred self-play Elo. A
+rounded version (`champ-002-candidate`: rescue 750, dragon guard 50, the stack table and
+the rest to the nearest ten) is checked for equivalence against the raw vector and given
+its own number before adoption.
