@@ -1,0 +1,28 @@
+[
+  {
+    "a_id": "667049716bbf",
+    "b_id": "12040d59cfe4",
+    "caps": 271,
+    "ci": [
+      112.6,
+      140.5
+    ],
+    "elo": 126.4,
+    "games": 2000,
+    "mean_plies": 194.3,
+    "pairs": 1000,
+    "pentanomial": [
+      43,
+      64,
+      395,
+      149,
+      349
+    ],
+    "sprt": {
+      "elo0": 0.0,
+      "elo1": 10.0,
+      "status": "H1"
+    },
+    "tag": "champ002-vs-original-d4"
+  }
+]

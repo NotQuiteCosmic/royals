@@ -1,0 +1,2 @@
+667049716bbf v 12040d59cfe4 "champ002-vs-original-d4"  1000 pairs  pent [43, 64, 395, 149, 349]  elo +126.4 [+112.6, +140.5]  llr +29.69  caps 271/2000  passes 0  mean plies 194  SPRT H1
+1000 pairs from 20 files -> merged/pairs.jsonl
