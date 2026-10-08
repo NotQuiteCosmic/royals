@@ -386,7 +386,7 @@ WEIGHT_RANGES = {
     "SPY_ANCHOR_WEIGHT": (0, 5000),
     "DRAGON_GUARD_WEIGHT": (0, 5000),
     "DRAGON_MENACE_PENALTY": (0, 5000),
-    "RESCUE_DIST_WEIGHT": (0, 1000),
+    "RESCUE_DIST_WEIGHT": (0, 5000),    # screens were still rising at the old ceiling of 1000
     "HOLDING_PENALTY": (0, 5000),
 }
 

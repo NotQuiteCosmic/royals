@@ -440,3 +440,17 @@ sweeps and judging on the fourth, decisive share of the kept half against the wh
 About 1.45x the information per game in every case. It is a **depth-3** book: decisiveness
 does not carry across depths, so a depth-4 SPSA would need a book ranked from depth-4
 sweeps. SPSA at depth 3 uses it from here on (`--book tuning/book-d3-balanced.jsonl`).
+
+### Rescue distance, confirmed (2,000 pairs each, vs champ-001)
+
+| Setting | Elo |
+|---|---|
+| 740 at **depth 4** | **+91.9 [+82.4, +101.6]** -- larger than at depth 3; 15% of games capped, mean 194 plies |
+| 300 at depth 3 | +27.8 [+18.3, +37.3] |
+| 740 at depth 3 | +47.8 [+37.8, +57.9] |
+| 1000 at depth 3 | +53.9 [+43.8, +64.2] |
+
+Still rising at 1000, which was the weight's range ceiling; the range is now 5000 and
+screens at 2000 and 3500 will find where it turns over. The batch-2 SPSA (run `batch2`,
+19 weights, balanced book, started from champ-001 + rescue 740 + dragon guard 50) will
+settle the value jointly with everything else.
