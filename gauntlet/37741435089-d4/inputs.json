@@ -1,0 +1,7 @@
+{
+  "challenger": "tuning/screens/batch2-theta.json",
+  "depth": "4",
+  "pairs_per_shard": "50",
+  "shards": "10",
+  "ply_cap": "600"
+}
